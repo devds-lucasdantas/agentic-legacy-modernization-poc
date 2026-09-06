@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+.eggs/
+
+# Environment
+.env
+
+# COBOL build artifacts
+*.exe
+*.dll
+*.so
+*.o
+*.int
+*.idy
+ACCOUNTS.TMP
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Artifacts (generated, not versioned — uploaded as CI artifacts)
+artifacts/*.json
+artifacts/*.md
+
+# Do NOT ignore these:
+# legacy/core-banking-system/ACCOUNTS.DAT  — this is the seed fixture, not a build artifact
