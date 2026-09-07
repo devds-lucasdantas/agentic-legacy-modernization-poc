@@ -14,7 +14,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
-from agents.legacy_analyzer.schemas.assessment import LegacyAssessment, SourceEvidence
+from agents.legacy_analyzer.schemas.assessment_v1 import LegacyAssessment, SourceEvidence
 from src.cobol.source_reader import prepare_source
 from src.validation.evidence_validator import (
     EvidenceValidationResult,
@@ -172,12 +172,9 @@ def evaluate_assessment(
     # 1. Scope and SHA256 validation
     analyzed_file = assessment.scope.analyzed_file.replace("\\", "/").upper()
     report.scope_valid = (
-        "BANK-MAIN.CBL" in analyzed_file
-        and not assessment.scope.has_external_callees_analyzed
+        "BANK-MAIN.CBL" in analyzed_file and not assessment.scope.has_external_callees_analyzed
     )
-    report.source_sha256_match = (
-        assessment.scope.source_sha256.lower() == expected_sha256.lower()
-    )
+    report.source_sha256_match = assessment.scope.source_sha256.lower() == expected_sha256.lower()
 
     # 2. Evidence validation across all cited evidence
     evidence_ok, invalid_ev_list = validate_all_evidence(assessment, source_lines)
@@ -493,9 +490,7 @@ def evaluate_assessment(
 
     # Invented Program ID
     if assessment.program.program_id.strip().upper() != "BANK-MAIN":
-        report.unsupported_facts.append(
-            f"Invented Program ID: '{assessment.program.program_id}'"
-        )
+        report.unsupported_facts.append(f"Invented Program ID: '{assessment.program.program_id}'")
     elif "program.evidence" in invalid_contexts:
         report.unsupported_facts.append("Program ID with invalid evidence")
 
