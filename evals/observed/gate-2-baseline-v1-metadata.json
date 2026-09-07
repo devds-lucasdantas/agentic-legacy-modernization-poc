@@ -1,0 +1,19 @@
+{
+  "gate": "2",
+  "run_label": "baseline-v1",
+  "timestamp": "2026-09-07T00:28:28.518224+00:00",
+  "model": "gpt-5-mini",
+  "model_version": null,
+  "reasoning_effort": "low",
+  "source_file": "legacy/core-banking-system/BANK-MAIN.CBL",
+  "source_sha256": "b03adc9592f2853006263ef67fcc6dc716b99333b84bc0198bff7b7f0af1a028",
+  "git_commit_sha": "7bdec2b28c4f23cd16911532de15f2644a57f0fe",
+  "schema_version": "1.0.0",
+  "prompt_version": "gate2-baseline-v1",
+  "evaluator_version": "1.1.0",
+  "elapsed_seconds": 32.78,
+  "input_tokens": 3738,
+  "output_tokens": 3218,
+  "total_tokens": 6956,
+  "schema_valid": true
+}

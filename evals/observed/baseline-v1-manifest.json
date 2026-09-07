@@ -1,0 +1,37 @@
+{
+  "manifest_version": "1.0.0",
+  "description": "Cryptographic integrity manifest for original local Baseline V1 execution artifacts (preserved immutably in artifacts/gate-2/baseline-v1/)",
+  "execution_provenance": {
+    "git_commit_sha": "7bdec2b28c4f23cd16911532de15f2644a57f0fe",
+    "target_file": "legacy/core-banking-system/BANK-MAIN.CBL",
+    "source_sha256": "b03adc9592f2853006263ef67fcc6dc716b99333b84bc0198bff7b7f0af1a028",
+    "timestamp": "2026-09-07T00:28:28.518224+00:00",
+    "evaluator_version": "1.1.0"
+  },
+  "artifacts": [
+    {
+      "filename": "assessment-schema.json",
+      "sha256": "fcd047c2724c6132f263ddc2941b2a57f81b210ba6cd874059c496c6ab714d73",
+      "bytes": 11596,
+      "description": "Exported Pydantic JSON schema used during V1 execution"
+    },
+    {
+      "filename": "bank-main-assessment.json",
+      "sha256": "5d270eb35e1e0311448049f0b68d3370bdbda3d2e9243cd30f83a588a4452fc7",
+      "bytes": 10250,
+      "description": "Raw model-generated structured output from gpt-5-mini in V1 baseline"
+    },
+    {
+      "filename": "evaluation.json",
+      "sha256": "1aa8443e7b73e24d263930d8fbd3a6b10ee7ac22186917b4f2570043293177ae",
+      "bytes": 5451,
+      "description": "Original evaluation report produced by evaluator v1.1.0"
+    },
+    {
+      "filename": "run-metadata.json",
+      "sha256": "e462dfbda3240004a730d9aa961d086b77f9c65652b0cf320aca3a588c802d90",
+      "bytes": 767,
+      "description": "Execution metadata containing token usage, latency, and host parameters"
+    }
+  ]
+}
