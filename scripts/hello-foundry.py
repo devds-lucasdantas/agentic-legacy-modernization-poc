@@ -88,8 +88,9 @@ def main() -> int:
         if not output_text and hasattr(response, "output"):
             output_parts = []
             for item in response.output:
-                if hasattr(item, "content"):
-                    for content_part in item.content:
+                content = getattr(item, "content", None)
+                if content is not None:
+                    for content_part in content:
                         if hasattr(content_part, "text"):
                             output_parts.append(content_part.text)
             output_text = "".join(output_parts)

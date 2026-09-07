@@ -12,7 +12,10 @@ import time
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
+
+from openai import OpenAI
+from openai.types.shared_params import Reasoning
 
 from agents.legacy_analyzer.config import FoundryConfig, load_config
 from agents.legacy_analyzer.schemas.assessment import LegacyAssessment
@@ -69,9 +72,9 @@ class LegacyAnalyzerAgent:
         self.config = config or load_config()
         self.system_prompt = system_prompt or load_system_prompt()
         self.reasoning_effort = reasoning_effort
-        self._openai_client = None
+        self._openai_client: OpenAI | None = None
 
-    def _get_openai_client(self):
+    def _get_openai_client(self) -> OpenAI:
         """Lazy-initialize the authenticated OpenAI client from Foundry project."""
         if self._openai_client is None:
             from azure.ai.projects import AIProjectClient
@@ -135,7 +138,7 @@ class LegacyAnalyzerAgent:
             instructions=self.system_prompt,
             input=user_input,
             text_format=LegacyAssessment,
-            reasoning={"effort": self.reasoning_effort},
+            reasoning=cast(Reasoning, {"effort": self.reasoning_effort}),
         )
 
         elapsed = time.time() - start_time
