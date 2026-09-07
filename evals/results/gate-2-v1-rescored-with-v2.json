@@ -1,0 +1,375 @@
+{
+  "report_type": "HISTORICAL_BASELINE_V1_OFFLINE_RESCORE_UNDER_V2",
+  "description": "Offline re-evaluation of historical observed V1 assessment using Evaluator V2 rules.",
+  "note": "This is NOT a new model execution. It evaluates deterministically convertible structural COBOL claims. 12 historical claims (observations, unsupported_assumptions, call_type) are not deterministically evaluable and remain unevaluated. Furthermore, V1 was subject to schema prompt hints.",
+  "source_sha256": "b03adc9592f2853006263ef67fcc6dc716b99333b84bc0198bff7b7f0af1a028",
+  "historical_claim_count": 36,
+  "converted_claim_count": 24,
+  "unevaluated_claim_count": 12,
+  "unevaluated_claims": [
+    {
+      "category": "call_type",
+      "target": "INIT-DB",
+      "claimed_value": "DYNAMIC",
+      "reason": "Compiler/linker binding (DYNAMIC vs STATIC) is not provable from single COBOL source syntax."
+    },
+    {
+      "category": "call_type",
+      "target": "TRANS-PROC",
+      "claimed_value": "DYNAMIC",
+      "reason": "Compiler/linker binding (DYNAMIC vs STATIC) is not provable from single COBOL source syntax."
+    },
+    {
+      "category": "call_type",
+      "target": "REPORT-GEN",
+      "claimed_value": "DYNAMIC",
+      "reason": "Compiler/linker binding (DYNAMIC vs STATIC) is not provable from single COBOL source syntax."
+    },
+    {
+      "category": "observation",
+      "observation_category": "CONTROL_FLOW",
+      "text": "Program implements a simple interactive menu loop driven by WS-CHOICE and a PERFORM UNTIL that exits when WS-CHOICE = '4'.",
+      "reason": "Free-form architectural/modernization observations are out of scope for Gate 2 structural deterministic scoring."
+    },
+    {
+      "category": "observation",
+      "observation_category": "COUPLING",
+      "text": "Functionality is delegated to external subprograms via CALL statements (INIT-DB, TRANS-PROC, REPORT-GEN), indicating runtime coupling to separate modules whose implementations are not present in this file.",
+      "reason": "Free-form architectural/modernization observations are out of scope for Gate 2 structural deterministic scoring."
+    },
+    {
+      "category": "observation",
+      "observation_category": "PORTABILITY",
+      "text": "Terminal-oriented I/O (DISPLAY/ACCEPT and WITH NO ADVANCING) suggests dependence on character-terminal behavior and may require adaptation for non-interactive or web-based front ends.",
+      "reason": "Free-form architectural/modernization observations are out of scope for Gate 2 structural deterministic scoring."
+    },
+    {
+      "category": "observation",
+      "observation_category": "ARCHITECTURE",
+      "text": "No COPY statements or file declarations are present in this file; the file acts as a menu/dispatcher rather than performing file or database operations directly.",
+      "reason": "Free-form architectural/modernization observations are out of scope for Gate 2 structural deterministic scoring."
+    },
+    {
+      "category": "unsupported_assumption",
+      "text": "The internal implementation, side effects, parameters, and return behavior of called subprogram INIT-DB are unknown (source not provided).",
+      "reason": "Speculation channel eliminated in V2; external callee internals are host-owned scope boundaries, not model claims."
+    },
+    {
+      "category": "unsupported_assumption",
+      "text": "The internal implementation, side effects, parameters, and return behavior of called subprogram TRANS-PROC are unknown (source not provided).",
+      "reason": "Speculation channel eliminated in V2; external callee internals are host-owned scope boundaries, not model claims."
+    },
+    {
+      "category": "unsupported_assumption",
+      "text": "The internal implementation, side effects, parameters, and return behavior of called subprogram REPORT-GEN are unknown (source not provided).",
+      "reason": "Speculation channel eliminated in V2; external callee internals are host-owned scope boundaries, not model claims."
+    },
+    {
+      "category": "unsupported_assumption",
+      "text": "Whether the CALLs expect linkage parameters, use shared files, or rely on specific runtime environment settings cannot be determined from this single file.",
+      "reason": "Speculation channel eliminated in V2; external callee internals are host-owned scope boundaries, not model claims."
+    },
+    {
+      "category": "unsupported_assumption",
+      "text": "Any persistence layer, database schema, or file I/O performed by external subprograms is not visible in this file and cannot be inferred.",
+      "reason": "Speculation channel eliminated in V2; external callee internals are host-owned scope boundaries, not model claims."
+    }
+  ],
+  "evaluation_v2_results": {
+    "raw_predicted_count": 24,
+    "unique_predicted_count": 24,
+    "duplicate_prediction_count": 0,
+    "supported_predicted_count": 23,
+    "unsupported_predicted_count": 1,
+    "invalid_evidence_count": 1,
+    "expected_fact_count": 15,
+    "matched_expected_count": 14,
+    "missing_expected_count": 1,
+    "precision": 0.9583,
+    "recall": 0.9333,
+    "gate_2_pass_under_v2_rules": false
+  },
+  "invalid_evidences": [
+    {
+      "canonical_id": "DATA_FIELD:WS-CHOICE:DECLARES:VARIABLE[LEVEL=01,PICTURE=X,SECTION=WORKING-STORAGE]",
+      "error": "Snippet 'DATA DIVISION.\nWORKING-STORAGE SECTION.\n01 WS-CHOICE  PIC X.' does not match actual source at lines 7..9: 'WORKING-STORAGE SECTION.        01 WS-CHOICE  PIC X.'"
+    }
+  ],
+  "unsupported_predictions": [
+    {
+      "canonical_id": "DATA_FIELD:WS-CHOICE:DECLARES:VARIABLE[LEVEL=01,PICTURE=X,SECTION=WORKING-STORAGE]",
+      "reason": "Invalid evidence: Snippet 'DATA DIVISION.\nWORKING-STORAGE SECTION.\n01 WS-CHOICE  PIC X.' does not match actual source at lines 7..9: 'WORKING-STORAGE SECTION.        01 WS-CHOICE  PIC X.'"
+    }
+  ],
+  "matched_expected_facts": [
+    {
+      "fact_id": "program.id",
+      "description": "PROGRAM-ID declaration identifying program as BANK-MAIN.",
+      "expected_fact": {
+        "kind": "PROGRAM",
+        "subject": "BANK-MAIN",
+        "predicate": "DECLARES",
+        "object": "PROGRAM-ID",
+        "attributes": {}
+      },
+      "matched": true,
+      "matched_prediction": {
+        "canonical_id": "PROGRAM:BANK-MAIN:DECLARES:PROGRAM-ID"
+      },
+      "evidence_valid": true,
+      "notes": null
+    },
+    {
+      "fact_id": "call.init_db",
+      "description": "External invocation to subprogram INIT-DB.",
+      "expected_fact": {
+        "kind": "CALL",
+        "subject": "BANK-MAIN",
+        "predicate": "INVOKES",
+        "object": "INIT-DB",
+        "attributes": {}
+      },
+      "matched": true,
+      "matched_prediction": {
+        "canonical_id": "CALL:BANK-MAIN:INVOKES:INIT-DB"
+      },
+      "evidence_valid": true,
+      "notes": null
+    },
+    {
+      "fact_id": "call.trans_proc",
+      "description": "External invocation to subprogram TRANS-PROC.",
+      "expected_fact": {
+        "kind": "CALL",
+        "subject": "BANK-MAIN",
+        "predicate": "INVOKES",
+        "object": "TRANS-PROC",
+        "attributes": {}
+      },
+      "matched": true,
+      "matched_prediction": {
+        "canonical_id": "CALL:BANK-MAIN:INVOKES:TRANS-PROC"
+      },
+      "evidence_valid": true,
+      "notes": null
+    },
+    {
+      "fact_id": "call.report_gen",
+      "description": "External invocation to subprogram REPORT-GEN.",
+      "expected_fact": {
+        "kind": "CALL",
+        "subject": "BANK-MAIN",
+        "predicate": "INVOKES",
+        "object": "REPORT-GEN",
+        "attributes": {}
+      },
+      "matched": true,
+      "matched_prediction": {
+        "canonical_id": "CALL:BANK-MAIN:INVOKES:REPORT-GEN"
+      },
+      "evidence_valid": true,
+      "notes": null
+    },
+    {
+      "fact_id": "menu.option_1",
+      "description": "Menu option 1 triggers CALL 'INIT-DB'.",
+      "expected_fact": {
+        "kind": "MENU_OPTION",
+        "subject": "1",
+        "predicate": "ACTION",
+        "object": "CALL:INIT-DB",
+        "attributes": {
+          "DESCRIPTION": "INIT DATABASE"
+        }
+      },
+      "matched": true,
+      "matched_prediction": {
+        "canonical_id": "MENU_OPTION:1:ACTION:CALL:INIT-DB[DESCRIPTION=INIT DATABASE]"
+      },
+      "evidence_valid": true,
+      "notes": null
+    },
+    {
+      "fact_id": "menu.option_2",
+      "description": "Menu option 2 triggers CALL 'TRANS-PROC'.",
+      "expected_fact": {
+        "kind": "MENU_OPTION",
+        "subject": "2",
+        "predicate": "ACTION",
+        "object": "CALL:TRANS-PROC",
+        "attributes": {
+          "DESCRIPTION": "TRANSACTION"
+        }
+      },
+      "matched": true,
+      "matched_prediction": {
+        "canonical_id": "MENU_OPTION:2:ACTION:CALL:TRANS-PROC[DESCRIPTION=TRANSACTION]"
+      },
+      "evidence_valid": true,
+      "notes": null
+    },
+    {
+      "fact_id": "menu.option_3",
+      "description": "Menu option 3 triggers CALL 'REPORT-GEN'.",
+      "expected_fact": {
+        "kind": "MENU_OPTION",
+        "subject": "3",
+        "predicate": "ACTION",
+        "object": "CALL:REPORT-GEN",
+        "attributes": {
+          "DESCRIPTION": "REPORT"
+        }
+      },
+      "matched": true,
+      "matched_prediction": {
+        "canonical_id": "MENU_OPTION:3:ACTION:CALL:REPORT-GEN[DESCRIPTION=REPORT]"
+      },
+      "evidence_valid": true,
+      "notes": null
+    },
+    {
+      "fact_id": "menu.option_4",
+      "description": "Menu option 4 triggers exit display message 'Bye.'.",
+      "expected_fact": {
+        "kind": "MENU_OPTION",
+        "subject": "4",
+        "predicate": "ACTION",
+        "object": "DISPLAY:BYE.",
+        "attributes": {
+          "DESCRIPTION": "EXIT"
+        }
+      },
+      "matched": true,
+      "matched_prediction": {
+        "canonical_id": "MENU_OPTION:4:ACTION:DISPLAY:BYE.[DESCRIPTION=EXIT]"
+      },
+      "evidence_valid": true,
+      "notes": null
+    },
+    {
+      "fact_id": "menu.option_other",
+      "description": "Option OTHER triggers error display message 'Invalid.'.",
+      "expected_fact": {
+        "kind": "MENU_OPTION",
+        "subject": "OTHER",
+        "predicate": "ACTION",
+        "object": "DISPLAY:INVALID.",
+        "attributes": {
+          "DESCRIPTION": "INVALID"
+        }
+      },
+      "matched": true,
+      "matched_prediction": {
+        "canonical_id": "MENU_OPTION:OTHER:ACTION:DISPLAY:INVALID.[DESCRIPTION=INVALID]"
+      },
+      "evidence_valid": true,
+      "notes": null
+    },
+    {
+      "fact_id": "control.perform_loop",
+      "description": "Top-level PERFORM loop until WS-CHOICE = '4'.",
+      "expected_fact": {
+        "kind": "CONTROL_FLOW",
+        "subject": "PERFORM_UNTIL",
+        "predicate": "CONDITION",
+        "object": "WS-CHOICE = '4'",
+        "attributes": {}
+      },
+      "matched": true,
+      "matched_prediction": {
+        "canonical_id": "CONTROL_FLOW:PERFORM_UNTIL:CONDITION:WS-CHOICE = '4'"
+      },
+      "evidence_valid": true,
+      "notes": null
+    },
+    {
+      "fact_id": "control.evaluate_choice",
+      "description": "EVALUATE decision dispatch construct on WS-CHOICE.",
+      "expected_fact": {
+        "kind": "CONTROL_FLOW",
+        "subject": "EVALUATE",
+        "predicate": "DISPATCHES",
+        "object": "WS-CHOICE",
+        "attributes": {}
+      },
+      "matched": true,
+      "matched_prediction": {
+        "canonical_id": "CONTROL_FLOW:EVALUATE:DISPATCHES:WS-CHOICE"
+      },
+      "evidence_valid": true,
+      "notes": null
+    },
+    {
+      "fact_id": "control.stop_run",
+      "description": "Program exit statement STOP RUN.",
+      "expected_fact": {
+        "kind": "CONTROL_FLOW",
+        "subject": "STOP_RUN",
+        "predicate": "TERMINATES",
+        "object": "STOP RUN",
+        "attributes": {}
+      },
+      "matched": true,
+      "matched_prediction": {
+        "canonical_id": "CONTROL_FLOW:STOP_RUN:TERMINATES:STOP RUN"
+      },
+      "evidence_valid": true,
+      "notes": null
+    },
+    {
+      "fact_id": "io.accept_choice",
+      "description": "Interactive console input reading choice into WS-CHOICE.",
+      "expected_fact": {
+        "kind": "IO_OPERATION",
+        "subject": "ACCEPT",
+        "predicate": "READS",
+        "object": "WS-CHOICE",
+        "attributes": {}
+      },
+      "matched": true,
+      "matched_prediction": {
+        "canonical_id": "IO_OPERATION:ACCEPT:READS:WS-CHOICE"
+      },
+      "evidence_valid": true,
+      "notes": null
+    },
+    {
+      "fact_id": "dependency.no_copybooks",
+      "description": "Confirmed explicit absence of COPY statements.",
+      "expected_fact": {
+        "kind": "DEPENDENCY_SCAN",
+        "subject": "COPY",
+        "predicate": "DEPENDENCY_COUNT",
+        "object": "0",
+        "attributes": {}
+      },
+      "matched": true,
+      "matched_prediction": {
+        "canonical_id": "DEPENDENCY_SCAN:COPY:DEPENDENCY_COUNT:0"
+      },
+      "evidence_valid": true,
+      "notes": null
+    }
+  ],
+  "missing_expected_facts": [
+    {
+      "fact_id": "data.ws_choice",
+      "description": "Working-Storage menu selection variable WS-CHOICE of type PIC X.",
+      "expected_fact": {
+        "kind": "DATA_FIELD",
+        "subject": "WS-CHOICE",
+        "predicate": "DECLARES",
+        "object": "VARIABLE",
+        "attributes": {
+          "LEVEL": "01",
+          "PICTURE": "X",
+          "SECTION": "WORKING-STORAGE"
+        }
+      },
+      "matched": false,
+      "matched_prediction": null,
+      "evidence_valid": true,
+      "notes": null
+    }
+  ]
+}
