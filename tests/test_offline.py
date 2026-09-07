@@ -4,7 +4,10 @@ from typing import get_args
 
 from agents.legacy_analyzer.agent import LegacyAnalyzerAgent, ReasoningEffort
 from agents.legacy_analyzer.config import FoundryConfig
-from evals.fixtures.synthetic_assessments import make_perfect_assessment
+from evals.fixtures.synthetic_assessments import (
+    make_perfect_assessment_v1,
+    make_perfect_assessment_v2,
+)
 
 
 def test_agent_initialization():
@@ -18,15 +21,23 @@ def test_agent_initialization():
     assert len(agent.system_prompt) > 0
 
 
-def test_schema_field_presence():
-    assessment = make_perfect_assessment()
-    assert assessment.schema_version == "1.0.0"
-    assert assessment.scope.analyzed_file.endswith("BANK-MAIN.CBL")
+def test_schema_v2_field_presence():
+    assessment = make_perfect_assessment_v2()
+    assert assessment.schema_version == "2.0.0"
     assert assessment.program.program_id == "BANK-MAIN"
     assert len(assessment.call_dependencies) == 3
     assert len(assessment.menu_options) == 5
     assert len(assessment.control_flow) == 3
     assert len(assessment.io_operations) == 2
+    assert assessment.copybook_dependencies == []
+
+
+def test_schema_v1_backwards_compatibility():
+    assessment_v1 = make_perfect_assessment_v1()
+    assert assessment_v1.schema_version == "1.0.0"
+    assert assessment_v1.scope.analyzed_file.endswith("BANK-MAIN.CBL")
+    assert len(assessment_v1.observations) >= 1
+    assert len(assessment_v1.unsupported_assumptions) >= 1
 
 
 def test_reasoning_effort_type_contract():
@@ -36,5 +47,6 @@ def test_reasoning_effort_type_contract():
     assert "high" in valid_efforts
     assert "none" in valid_efforts
     assert "max" in valid_efforts
+    assert "minimal" in valid_efforts
+    assert "xhigh" in valid_efforts
     assert "invalid_effort" not in valid_efforts
-

@@ -7,17 +7,22 @@ from pathlib import Path
 
 import pytest
 
-from agents.legacy_analyzer.schemas import (
+from agents.legacy_analyzer.schemas.assessment import (
+    LegacyAssessment as LegacyAssessmentV2,
+)
+from agents.legacy_analyzer.schemas.assessment_v1 import (
     CallDependency,
     DataField,
-    LegacyAssessment,
     MenuOption,
     SourceEvidence,
 )
 from agents.legacy_analyzer.schemas.export import get_assessment_json_schema
 from evals.fixtures.synthetic_assessments import (
     make_hallucinating_assessment,
-    make_perfect_assessment,
+    make_perfect_assessment_v2,
+)
+from evals.fixtures.synthetic_assessments import (
+    make_perfect_assessment_v1 as make_perfect_assessment,
 )
 from src.cobol.source_reader import (
     EXPECTED_BANK_MAIN_SHA256,
@@ -116,12 +121,12 @@ class TestPydanticSchema:
         assert "menu_options" in props
         assert "control_flow" in props
         assert "io_operations" in props
-        assert "scope" in props
+        assert "copybook_dependencies" in props
 
     def test_assessment_roundtrip_serialization(self):
-        assessment = make_perfect_assessment()
+        assessment = make_perfect_assessment_v2()
         json_str = assessment.model_dump_json()
-        restored = LegacyAssessment.model_validate_json(json_str)
+        restored = LegacyAssessmentV2.model_validate_json(json_str)
         assert restored.program.program_id == "BANK-MAIN"
         assert len(restored.call_dependencies) == 3
 
@@ -210,9 +215,7 @@ class TestEvidenceValidation:
         assert report.evidence_valid is False
         assert report.invalid_evidence_count == 1
         # INIT-DB should NOT match because evidence is invalid
-        assert any(
-            mf.fact_id == "call.init_db" and not mf.matched for mf in report.missing_facts
-        )
+        assert any(mf.fact_id == "call.init_db" and not mf.matched for mf in report.missing_facts)
         assert report.gate_2_pass is False
 
 
