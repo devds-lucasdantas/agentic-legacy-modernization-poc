@@ -12,7 +12,7 @@ import time
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Literal
 
 from openai import OpenAI
 from openai.types.shared_params import Reasoning
@@ -24,6 +24,16 @@ from src.cobol.source_reader import (
     prepare_source,
 )
 
+ReasoningEffort = Literal[
+    "none",
+    "minimal",
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+    "max",
+]
+
 
 @dataclass
 class ExecutionMetadata:
@@ -34,7 +44,7 @@ class ExecutionMetadata:
     timestamp: str = ""
     model: str = ""
     model_version: str | None = None
-    reasoning_effort: str = "low"
+    reasoning_effort: ReasoningEffort = "low"
     source_file: str = ""
     source_sha256: str = ""
     git_commit_sha: str = ""
@@ -67,11 +77,11 @@ class LegacyAnalyzerAgent:
         self,
         config: FoundryConfig | None = None,
         system_prompt: str | None = None,
-        reasoning_effort: str = "low",
+        reasoning_effort: ReasoningEffort = "low",
     ) -> None:
         self.config = config or load_config()
         self.system_prompt = system_prompt or load_system_prompt()
-        self.reasoning_effort = reasoning_effort
+        self.reasoning_effort: ReasoningEffort = reasoning_effort
         self._openai_client: OpenAI | None = None
 
     def _get_openai_client(self) -> OpenAI:
@@ -133,12 +143,14 @@ class LegacyAnalyzerAgent:
         # 2. Invoke Responses API with Structured Outputs
         start_time = time.time()
 
+        reasoning: Reasoning = {"effort": self.reasoning_effort}
+
         parsed_response = openai_client.responses.parse(
             model=self.config.foundry_model,
             instructions=self.system_prompt,
             input=user_input,
             text_format=LegacyAssessment,
-            reasoning=cast(Reasoning, {"effort": self.reasoning_effort}),
+            reasoning=reasoning,
         )
 
         elapsed = time.time() - start_time

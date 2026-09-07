@@ -1,6 +1,8 @@
 """General offline integration tests for legacy analyzer agent components."""
 
-from agents.legacy_analyzer.agent import LegacyAnalyzerAgent
+from typing import get_args
+
+from agents.legacy_analyzer.agent import LegacyAnalyzerAgent, ReasoningEffort
 from agents.legacy_analyzer.config import FoundryConfig
 from evals.fixtures.synthetic_assessments import make_perfect_assessment
 
@@ -25,3 +27,14 @@ def test_schema_field_presence():
     assert len(assessment.menu_options) == 5
     assert len(assessment.control_flow) == 3
     assert len(assessment.io_operations) == 2
+
+
+def test_reasoning_effort_type_contract():
+    valid_efforts = get_args(ReasoningEffort)
+    assert "low" in valid_efforts
+    assert "medium" in valid_efforts
+    assert "high" in valid_efforts
+    assert "none" in valid_efforts
+    assert "max" in valid_efforts
+    assert "invalid_effort" not in valid_efforts
+
