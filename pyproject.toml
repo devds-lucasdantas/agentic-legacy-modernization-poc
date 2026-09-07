@@ -33,3 +33,8 @@ select = ["E", "F", "W", "I", "N", "UP"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests", "evals/tests"]
+pythonpath = [".", "src"]
+markers = [
+    "live: marks tests that connect to live Azure AI Foundry (excluded by default)",
+]
+addopts = "-m 'not live'"

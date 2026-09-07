@@ -1,0 +1,271 @@
+{
+  "$schema": "bank-main-single-golden-dataset",
+  "dataset_version": "1.0.0",
+  "scope": [
+    "legacy/core-banking-system/BANK-MAIN.CBL"
+  ],
+  "source_sha256": "b03adc9592f2853006263ef67fcc6dc716b99333b84bc0198bff7b7f0af1a028",
+  "facts": [
+    {
+      "id": "program.id",
+      "category": "program",
+      "expected": "BANK-MAIN",
+      "line_start": 2,
+      "line_end": 2,
+      "snippet": "PROGRAM-ID. BANK-MAIN.",
+      "is_negative": false,
+      "description": "PROGRAM-ID declaration identifying the program name as BANK-MAIN."
+    },
+    {
+      "id": "data.ws_choice",
+      "category": "data_fields",
+      "expected": {
+        "name": "WS-CHOICE",
+        "level": "01",
+        "picture": "X",
+        "section": "WORKING-STORAGE"
+      },
+      "line_start": 8,
+      "line_end": 8,
+      "snippet": "01 WS-CHOICE  PIC X.",
+      "is_negative": false,
+      "description": "Working-Storage menu selection variable WS-CHOICE of type PIC X."
+    },
+    {
+      "id": "control.perform_loop",
+      "category": "control_flow",
+      "expected": {
+        "construct_type": "PERFORM_UNTIL",
+        "condition": "WS-CHOICE = '4'"
+      },
+      "line_start": 12,
+      "line_end": 12,
+      "snippet": "PERFORM UNTIL WS-CHOICE = '4'",
+      "is_negative": false,
+      "description": "Top-level loop executing the menu until user selects choice '4'."
+    },
+    {
+      "id": "io.accept_choice",
+      "category": "io_operations",
+      "expected": {
+        "operation_type": "ACCEPT",
+        "target": "WS-CHOICE"
+      },
+      "line_start": 20,
+      "line_end": 20,
+      "snippet": "ACCEPT WS-CHOICE",
+      "is_negative": false,
+      "description": "Interactive console input reading the user choice into WS-CHOICE."
+    },
+    {
+      "id": "control.evaluate_choice",
+      "category": "control_flow",
+      "expected": {
+        "construct_type": "EVALUATE",
+        "condition": "WS-CHOICE"
+      },
+      "line_start": 22,
+      "line_end": 22,
+      "snippet": "EVALUATE WS-CHOICE",
+      "is_negative": false,
+      "description": "Decision branch construct evaluating WS-CHOICE to dispatch menu actions."
+    },
+    {
+      "id": "call.init_db",
+      "category": "call_dependencies",
+      "expected": {
+        "target_program": "INIT-DB"
+      },
+      "line_start": 24,
+      "line_end": 24,
+      "snippet": "CALL 'INIT-DB'",
+      "is_negative": false,
+      "description": "Dynamic call to subprogram INIT-DB when option 1 is selected."
+    },
+    {
+      "id": "call.trans_proc",
+      "category": "call_dependencies",
+      "expected": {
+        "target_program": "TRANS-PROC"
+      },
+      "line_start": 26,
+      "line_end": 26,
+      "snippet": "CALL 'TRANS-PROC'",
+      "is_negative": false,
+      "description": "Dynamic call to subprogram TRANS-PROC when option 2 is selected."
+    },
+    {
+      "id": "call.report_gen",
+      "category": "call_dependencies",
+      "expected": {
+        "target_program": "REPORT-GEN"
+      },
+      "line_start": 28,
+      "line_end": 28,
+      "snippet": "CALL 'REPORT-GEN'",
+      "is_negative": false,
+      "description": "Dynamic call to subprogram REPORT-GEN when option 3 is selected."
+    },
+    {
+      "id": "menu.option_1",
+      "category": "menu_options",
+      "expected": {
+        "option_key": "1",
+        "action_type": "CALL",
+        "action_target": "INIT-DB"
+      },
+      "line_start": 23,
+      "line_end": 24,
+      "snippet": "WHEN '1'\n     CALL 'INIT-DB'",
+      "is_negative": false,
+      "description": "Menu option 1 triggers CALL 'INIT-DB'."
+    },
+    {
+      "id": "menu.option_2",
+      "category": "menu_options",
+      "expected": {
+        "option_key": "2",
+        "action_type": "CALL",
+        "action_target": "TRANS-PROC"
+      },
+      "line_start": 25,
+      "line_end": 26,
+      "snippet": "WHEN '2'\n     CALL 'TRANS-PROC'",
+      "is_negative": false,
+      "description": "Menu option 2 triggers CALL 'TRANS-PROC'."
+    },
+    {
+      "id": "menu.option_3",
+      "category": "menu_options",
+      "expected": {
+        "option_key": "3",
+        "action_type": "CALL",
+        "action_target": "REPORT-GEN"
+      },
+      "line_start": 27,
+      "line_end": 28,
+      "snippet": "WHEN '3'\n     CALL 'REPORT-GEN'",
+      "is_negative": false,
+      "description": "Menu option 3 triggers CALL 'REPORT-GEN'."
+    },
+    {
+      "id": "menu.option_4",
+      "category": "menu_options",
+      "expected": {
+        "option_key": "4",
+        "action_type": "DISPLAY_EXIT",
+        "action_target": "Bye."
+      },
+      "line_start": 29,
+      "line_end": 30,
+      "snippet": "WHEN '4'\n     DISPLAY 'Bye.'",
+      "is_negative": false,
+      "description": "Menu option 4 triggers exit display message 'Bye.'."
+    },
+    {
+      "id": "menu.option_other",
+      "category": "menu_options",
+      "expected": {
+        "option_key": "OTHER",
+        "action_type": "DISPLAY_ERROR",
+        "action_target": "Invalid."
+      },
+      "line_start": 31,
+      "line_end": 32,
+      "snippet": "WHEN OTHER\n     DISPLAY 'Invalid.'",
+      "is_negative": false,
+      "description": "Invalid choice triggers error display message 'Invalid.'."
+    },
+    {
+      "id": "control.stop_run",
+      "category": "control_flow",
+      "expected": {
+        "construct_type": "STOP_RUN",
+        "condition_or_target": "STOP RUN"
+      },
+      "line_start": 36,
+      "line_end": 36,
+      "snippet": "STOP RUN.",
+      "is_negative": false,
+      "description": "Local program termination after PERFORM loop completes."
+    },
+    {
+      "id": "dependency.no_copybooks",
+      "category": "negative_dependency",
+      "expected": {
+        "copybook_count": 0
+      },
+      "line_start": 1,
+      "line_end": 36,
+      "snippet": "",
+      "is_negative": true,
+      "description": "Negative fact: BANK-MAIN.CBL contains zero COPY statements."
+    }
+  ],
+  "prohibited_facts": [
+    {
+      "id": "prohibit.callee.init_db_seeds_accounts",
+      "forbidden_patterns": [
+        "creates 3 accounts",
+        "seed accounts",
+        "creates three accounts",
+        "populates accounts.dat",
+        "writes to accounts.dat"
+      ],
+      "description": "Claiming INIT-DB creates accounts or writes seed data (callee internal logic; out of scope)."
+    },
+    {
+      "id": "prohibit.callee.trans_proc_transactions",
+      "forbidden_patterns": [
+        "performs deposits",
+        "deposit logic",
+        "withdrawal logic",
+        "performs withdrawals",
+        "calculates balance change"
+      ],
+      "description": "Claiming TRANS-PROC performs deposits/withdrawals (callee internal logic; out of scope)."
+    },
+    {
+      "id": "prohibit.callee.trans_proc_windows_system",
+      "forbidden_patterns": [
+        "cmd /c",
+        "cmd /c del",
+        "cmd /c ren",
+        "system calls",
+        "windows-specific"
+      ],
+      "description": "Claiming TRANS-PROC executes Windows system commands (callee internal logic; out of scope)."
+    },
+    {
+      "id": "prohibit.callee.report_gen_balance",
+      "forbidden_patterns": [
+        "total bank balance",
+        "summary report of 3 accounts",
+        "calculates total balance",
+        "prints balance summary"
+      ],
+      "description": "Claiming REPORT-GEN calculates total balance or summarizes accounts (callee internal logic; out of scope)."
+    },
+    {
+      "id": "prohibit.callee.stop_run_defect",
+      "forbidden_patterns": [
+        "subprograms use stop run",
+        "callees terminate run unit",
+        "callees use stop run",
+        "menu cannot really loop",
+        "cannot loop because callees"
+      ],
+      "description": "Claiming subprograms contain STOP RUN defects (requires reading callees; out of scope)."
+    },
+    {
+      "id": "prohibit.callee.accounts_cpy_dead_code",
+      "forbidden_patterns": [
+        "accounts.cpy is dead code",
+        "unused copybook accounts.cpy",
+        "accounts.cpy is not referenced",
+        "copybook is unused"
+      ],
+      "description": "Claiming ACCOUNTS.CPY is dead code (requires multi-file repo inspection; out of scope)."
+    }
+  ]
+}

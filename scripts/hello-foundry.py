@@ -136,7 +136,10 @@ def main() -> int:
             print("HINT: Quota exceeded. Check your model deployment quota in Azure Portal.")
         elif "disallowed" in error_str or "policy" in error_str:
             print("HINT: Your subscription may restrict AI services in this region.")
-            print("Check Azure Portal → Policy → Assignments → 'Allowed resource deployment regions'.")
+            print(
+                "Check Azure Portal → Policy → Assignments → "
+                "'Allowed resource deployment regions'."
+            )
 
         return 1
 
