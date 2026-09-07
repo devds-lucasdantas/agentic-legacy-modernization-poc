@@ -20,9 +20,11 @@ import time
 
 try:
     from dotenv import load_dotenv
+
     load_dotenv()
 except ImportError:
     pass
+
 
 def main() -> int:
     # --- Validate environment ---
@@ -46,6 +48,7 @@ def main() -> int:
     # --- Authenticate ---
     try:
         from azure.identity import DefaultAzureCredential
+
         credential = DefaultAzureCredential()
         print("[OK] DefaultAzureCredential created")
     except Exception as e:
@@ -55,6 +58,7 @@ def main() -> int:
     # --- Connect to Foundry project ---
     try:
         from azure.ai.projects import AIProjectClient
+
         project_client = AIProjectClient(
             endpoint=endpoint,
             credential=credential,
@@ -138,8 +142,7 @@ def main() -> int:
         elif "disallowed" in error_str or "policy" in error_str:
             print("HINT: Your subscription may restrict AI services in this region.")
             print(
-                "Check Azure Portal → Policy → Assignments → "
-                "'Allowed resource deployment regions'."
+                "Check Azure Portal → Policy → Assignments → 'Allowed resource deployment regions'."
             )
 
         return 1
