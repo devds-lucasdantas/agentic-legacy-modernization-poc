@@ -14,13 +14,12 @@ ALLOWED_SOURCES: set[str] = {
     "legacy/core-banking-system/BANK-MAIN.CBL",
 }
 
-EXPECTED_BANK_MAIN_SHA256 = (
-    "b03adc9592f2853006263ef67fcc6dc716b99333b84bc0198bff7b7f0af1a028"
-)
+EXPECTED_BANK_MAIN_SHA256 = "b03adc9592f2853006263ef67fcc6dc716b99333b84bc0198bff7b7f0af1a028"
 
 
 class ScopeViolationError(ValueError):
     """Raised when an unauthorized source file is requested."""
+
     pass
 
 

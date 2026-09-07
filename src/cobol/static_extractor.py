@@ -69,39 +69,47 @@ def extract_static_facts(source_text: str) -> StaticExtractedFacts:
     for idx, line in enumerate(lines, start=1):
         m = re.search(r"\bACCEPT\s+([A-Za-z0-9-]+)", line, re.IGNORECASE)
         if m:
-            accept_statements.append({
-                "line": idx,
-                "target": m.group(1).upper(),
-                "snippet": line.strip(),
-            })
+            accept_statements.append(
+                {
+                    "line": idx,
+                    "target": m.group(1).upper(),
+                    "snippet": line.strip(),
+                }
+            )
 
     # 6. PERFORM UNTIL loops
     perform_loops: list[dict[str, Any]] = []
     for idx, line in enumerate(lines, start=1):
         m = re.search(r"PERFORM\s+UNTIL\s+(.+)", line, re.IGNORECASE)
         if m:
-            perform_loops.append({
-                "line": idx,
-                "condition": m.group(1).strip(),
-                "snippet": line.strip(),
-            })
+            perform_loops.append(
+                {
+                    "line": idx,
+                    "condition": m.group(1).strip(),
+                    "snippet": line.strip(),
+                }
+            )
 
     # 7. EVALUATE branches
     evaluate_branches: list[dict[str, Any]] = []
     for idx, line in enumerate(lines, start=1):
         m_when = re.search(r"WHEN\s+['\"]([^'\"]+)['\"]", line, re.IGNORECASE)
         if m_when:
-            evaluate_branches.append({
-                "line": idx,
-                "condition": m_when.group(1),
-                "snippet": line.strip(),
-            })
+            evaluate_branches.append(
+                {
+                    "line": idx,
+                    "condition": m_when.group(1),
+                    "snippet": line.strip(),
+                }
+            )
         elif re.search(r"WHEN\s+OTHER\b", line, re.IGNORECASE):
-            evaluate_branches.append({
-                "line": idx,
-                "condition": "OTHER",
-                "snippet": line.strip(),
-            })
+            evaluate_branches.append(
+                {
+                    "line": idx,
+                    "condition": "OTHER",
+                    "snippet": line.strip(),
+                }
+            )
 
     # 8. WORKING-STORAGE fields
     working_storage_fields: list[dict[str, Any]] = []
@@ -120,13 +128,15 @@ def extract_static_facts(source_text: str) -> StaticExtractedFacts:
                 re.IGNORECASE,
             )
             if m_field:
-                working_storage_fields.append({
-                    "line": idx,
-                    "level": m_field.group(1),
-                    "name": m_field.group(2).upper(),
-                    "picture": m_field.group(3).upper() if m_field.group(3) else None,
-                    "snippet": line.strip(),
-                })
+                working_storage_fields.append(
+                    {
+                        "line": idx,
+                        "level": m_field.group(1),
+                        "name": m_field.group(2).upper(),
+                        "picture": m_field.group(3).upper() if m_field.group(3) else None,
+                        "snippet": line.strip(),
+                    }
+                )
 
     return StaticExtractedFacts(
         program_id=program_id,
