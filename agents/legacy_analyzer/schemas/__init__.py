@@ -7,10 +7,17 @@ from agents.legacy_analyzer.schemas.assessment import (
     IOOperation,
     LegacyAssessment,
     MenuOption,
-    ModernizationObservation,
     ProgramIdentity,
-    ScopeDeclaration,
     SourceEvidence,
+)
+from agents.legacy_analyzer.schemas.assessment_v1 import (
+    LegacyAssessment as LegacyAssessmentV1,
+)
+from agents.legacy_analyzer.schemas.assessment_v1 import (
+    ModernizationObservation as ModernizationObservationV1,
+)
+from agents.legacy_analyzer.schemas.assessment_v1 import (
+    ScopeDeclaration as ScopeDeclarationV1,
 )
 
 __all__ = [
@@ -19,9 +26,10 @@ __all__ = [
     "DataField",
     "IOOperation",
     "LegacyAssessment",
+    "LegacyAssessmentV1",
     "MenuOption",
-    "ModernizationObservation",
+    "ModernizationObservationV1",
     "ProgramIdentity",
-    "ScopeDeclaration",
+    "ScopeDeclarationV1",
     "SourceEvidence",
 ]

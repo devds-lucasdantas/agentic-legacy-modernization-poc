@@ -30,6 +30,7 @@ def export_schema_to_file(destination_path: Path | str) -> Path:
 
 if __name__ == "__main__":
     import sys
+
     out_path = Path("artifacts/assessment-schema.json") if len(sys.argv) < 2 else Path(sys.argv[1])
     saved = export_schema_to_file(out_path)
     print(f"Exported schema to: {saved}")

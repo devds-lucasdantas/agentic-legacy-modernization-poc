@@ -5,6 +5,7 @@ Enforces:
 - Read-only deterministic source preparation with line numbers
 - SHA256 provenance calculation
 - OpenAI Responses API native Structured Outputs with Pydantic v2
+- Robust refusal and completion status inspection
 - Execution metadata collection
 """
 
@@ -40,7 +41,7 @@ class ExecutionMetadata:
     """Execution metadata for an analysis run."""
 
     gate: str = "2"
-    run_label: str = "baseline-v1"
+    run_label: str = "baseline-v2"
     timestamp: str = ""
     model: str = ""
     model_version: str | None = None
@@ -48,9 +49,9 @@ class ExecutionMetadata:
     source_file: str = ""
     source_sha256: str = ""
     git_commit_sha: str = ""
-    schema_version: str = "1.0.0"
-    prompt_version: str = "gate2-baseline-v1"
-    evaluator_version: str = "1.1.0"
+    schema_version: str = "2.0.0"
+    prompt_version: str = "gate2-baseline-v2"
+    evaluator_version: str = "2.0.0"
     response_id: str | None = None
     elapsed_seconds: float = 0.0
     input_tokens: int | None = None
@@ -101,7 +102,7 @@ class LegacyAnalyzerAgent:
     def analyze_source(
         self,
         source_path: str | Path = "legacy/core-banking-system/BANK-MAIN.CBL",
-        run_label: str = "baseline-v1",
+        run_label: str = "baseline-v2",
         repo_root: Path | None = None,
         git_commit_sha: str = "",
     ) -> tuple[LegacyAssessment, ExecutionMetadata]:
@@ -109,7 +110,7 @@ class LegacyAnalyzerAgent:
 
         Args:
             source_path: Path to target source file (must be allowlisted).
-            run_label: Identifier for this run, e.g. 'baseline-v1'.
+            run_label: Identifier for this run, e.g. 'baseline-v2'.
             repo_root: Optional repository root path.
             git_commit_sha: Git commit SHA of the frozen baseline code.
 
@@ -156,7 +157,19 @@ class LegacyAnalyzerAgent:
         elapsed = time.time() - start_time
         metadata.elapsed_seconds = round(elapsed, 2)
 
-        # 3. Extract parsed Pydantic object and API metadata
+        # 3. Validate completion status and check for refusal
+        refusal = getattr(parsed_response, "refusal", None)
+        if refusal:
+            raise ValueError(f"Model refused request: {refusal}")
+
+        status = getattr(parsed_response, "status", None)
+        if status == "incomplete":
+            incomplete_details = getattr(parsed_response, "incomplete_details", None)
+            raise ValueError(
+                f"Model response incomplete: status='incomplete', details={incomplete_details}"
+            )
+
+        # 4. Extract parsed Pydantic object and API metadata
         assessment: LegacyAssessment | None = getattr(parsed_response, "output_parsed", None)
         if not isinstance(assessment, LegacyAssessment):
             output_text = getattr(parsed_response, "output_text", None)
