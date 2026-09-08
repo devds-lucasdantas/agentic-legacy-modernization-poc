@@ -1,10 +1,17 @@
-"""Pydantic v2 schemas for structured legacy COBOL assessments (Version 2.0.0).
+"""Pydantic v2 schemas for structured legacy COBOL assessments (Version 2.1.0).
 
 Designed for OpenAI Responses API native Structured Outputs (`responses.parse`).
+Uses strict discriminated unions to ensure invalid states are unrepresentable:
+- MenuOption: CallMenuOption vs DisplayMenuOption (discriminator: action_type)
+- ControlFlowConstruct: PerformUntil vs Evaluate vs StopRun (discriminator: construct_type)
+- IOOperation: AcceptIO vs DisplayIO (discriminator: operation_type)
+
 All field descriptions are completely generic and free of fixture answer hints.
-Host-controlled execution metadata (file path, SHA256, callee boundaries) is
+Host-controlled execution metadata (file path, SHA256, schema version, callee boundaries) is
 managed outside this schema.
 """
+
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -14,7 +21,6 @@ class SourceEvidence(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    source_file: str = Field(description="Relative path or filename containing the evidence.")
     line_start: int = Field(description="1-indexed starting line number in the source file.")
     line_end: int = Field(description="1-indexed ending line number in the source file.")
     snippet: str = Field(description="Exact source code line or text snippet evidencing this fact.")
@@ -48,74 +54,135 @@ class DataField(BaseModel):
     name: str = Field(description="The name of the declared data field.")
     level: str = Field(description="COBOL level number, such as '01', '05', or '77'.")
     picture: str | None = Field(
-        default=None,
-        description="The PICTURE clause string if declared, without the leading PIC keyword.",
+        description="PICTURE clause string if declared, without PIC keyword, or null if unpictured."
     )
     section: str = Field(
-        default="WORKING-STORAGE",
-        description=(
-            "Data division section where the item is declared (e.g. 'WORKING-STORAGE', 'FILE')."
-        ),
+        description="Data division section where declared (e.g. 'WORKING-STORAGE', 'FILE')."
     )
     evidence: SourceEvidence = Field(description="Source citation for the variable declaration.")
 
 
-class MenuOption(BaseModel):
-    """User-selectable option or evaluation branch discovered in the program."""
+# Discriminated Menu Option Variants
+class CallMenuOption(BaseModel):
+    """Menu choice or evaluation branch that invokes an external subprogram."""
 
     model_config = ConfigDict(extra="forbid")
 
+    action_type: Literal["CALL"] = "CALL"
     option_key: str = Field(
-        description="The selection key or branch condition literal (e.g. '1', '2', 'OTHER')."
+        description="The selection key or branch condition literal (e.g. '1', '2')."
     )
-    description: str = Field(
-        description="Menu choice description as displayed to user or handled by branch."
-    )
-    action_type: str = Field(
-        description="Action triggered: 'CALL', 'DISPLAY_EXIT', 'DISPLAY_ERROR', or 'OTHER'."
-    )
-    action_target: str | None = Field(
-        default=None,
-        description="Target program called or message displayed when this option is selected.",
+    target_program: str = Field(
+        description="The name of the external subprogram invoked by this menu branch."
     )
     evidence: SourceEvidence = Field(
-        description="Source citation for this option's handling in EVALUATE or IF logic."
+        description="Source citation for this option's branch condition and CALL invocation."
     )
 
 
-class ControlFlowConstruct(BaseModel):
-    """Control flow mechanism (loops, conditional branches, exits)."""
+class DisplayMenuOption(BaseModel):
+    """Menu choice or evaluation branch that displays a message to the user."""
 
     model_config = ConfigDict(extra="forbid")
 
-    construct_type: str = Field(
-        description="Construct type: 'PERFORM_UNTIL', 'EVALUATE', 'STOP_RUN', or 'IF'."
+    action_type: Literal["DISPLAY"] = "DISPLAY"
+    option_key: str = Field(
+        description="The selection key or branch condition literal (e.g. '4', 'OTHER')."
     )
-    condition_or_target: str = Field(description="Condition expression or exit target statement.")
-    evidence: SourceEvidence = Field(description="Source citation for the control flow statement.")
+    display_literal: str = Field(
+        description="Literal message displayed when this menu branch is selected."
+    )
+    evidence: SourceEvidence = Field(
+        description="Source citation for this option's branch condition and DISPLAY statement."
+    )
 
 
-class IOOperation(BaseModel):
-    """Terminal or file input/output operation directly visible in this source."""
+MenuOption = Annotated[
+    CallMenuOption | DisplayMenuOption,
+    Field(discriminator="action_type"),
+]
+
+
+# Discriminated Control Flow Variants
+class PerformUntilConstruct(BaseModel):
+    """Loop construct executed until a termination condition is met."""
 
     model_config = ConfigDict(extra="forbid")
 
-    operation_type: str = Field(
-        description="Type of operation: 'ACCEPT', 'DISPLAY', 'READ', or 'WRITE'."
+    construct_type: Literal["PERFORM_UNTIL"] = "PERFORM_UNTIL"
+    condition: str = Field(
+        description="The loop termination condition expression following the UNTIL keyword."
     )
-    target_or_content: str = Field(description="Field accepted or literal text content displayed.")
-    evidence: SourceEvidence = Field(description="Source citation for the I/O statement.")
+    evidence: SourceEvidence = Field(
+        description="Source citation for the PERFORM UNTIL loop construct."
+    )
+
+
+class EvaluateConstruct(BaseModel):
+    """Multi-way branch or decision table construct (EVALUATE)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    construct_type: Literal["EVALUATE"] = "EVALUATE"
+    subject: str = Field(
+        description="The expression or identifier evaluated in the EVALUATE statement."
+    )
+    evidence: SourceEvidence = Field(
+        description="Source citation for the EVALUATE statement header and subject."
+    )
+
+
+class StopRunConstruct(BaseModel):
+    """Program termination statement (STOP RUN)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    construct_type: Literal["STOP_RUN"] = "STOP_RUN"
+    evidence: SourceEvidence = Field(description="Source citation for the STOP RUN statement.")
+
+
+ControlFlowConstruct = Annotated[
+    PerformUntilConstruct | EvaluateConstruct | StopRunConstruct,
+    Field(discriminator="construct_type"),
+]
+
+
+# Discriminated I/O Operation Variants
+class AcceptIO(BaseModel):
+    """Terminal input operation (ACCEPT)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    operation_type: Literal["ACCEPT"] = "ACCEPT"
+    target_identifier: str = Field(description="Field or identifier into which input is accepted.")
+    evidence: SourceEvidence = Field(description="Source citation for the ACCEPT statement.")
+
+
+class DisplayIO(BaseModel):
+    """Terminal output operation (DISPLAY)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    operation_type: Literal["DISPLAY"] = "DISPLAY"
+    literal: str = Field(description="Literal text or variable content displayed to the terminal.")
+    evidence: SourceEvidence = Field(description="Source citation for the DISPLAY statement.")
+
+
+IOOperation = Annotated[
+    AcceptIO | DisplayIO,
+    Field(discriminator="operation_type"),
+]
 
 
 class LegacyAssessment(BaseModel):
-    """Top-level canonical assessment for a single COBOL source module (Version 2.0.0)."""
+    """Top-level canonical assessment for a single COBOL source module (Version 2.1.0).
+
+    Host execution metadata (schema_version, git_commit_sha, prompt_version) is tracked
+    externally in ExecutionMetadata.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
-    schema_version: str = Field(
-        default="2.0.0",
-        description="Version of this assessment schema.",
-    )
     program: ProgramIdentity = Field(description="Identity of the analyzed COBOL program.")
     data_fields: list[DataField] = Field(
         description="Key variables declared in Working-Storage or other data sections."
@@ -135,6 +202,6 @@ class LegacyAssessment(BaseModel):
     copybook_dependencies: list[str] = Field(
         description=(
             "List of copybook names imported via COPY statements. "
-            "Must be explicitly empty if none exist."
+            "Must be explicitly empty list if none exist."
         )
     )
