@@ -1,17 +1,17 @@
-"""Offline rescoring adapter for historical Baseline V1 assessment under Evaluator V2 rules.
+"""Offline rescoring adapter for historical Baseline V1 assessment under Evaluator V2.1 rules.
 
 Ensures:
 1. Does NOT modify the original V1 JSON.
-2. Does NOT silently discard historical V1 fields removed in V2 (unsupported_assumptions,
-   observations, call_type).
-3. Explicitly reports converted_claim_count, unevaluated_claim_count, and unevaluated_claims.
-4. Documents that the rescore evaluates deterministic structural claims only, not
-   comprehensive validation of every historical text assertion.
+2. Preserves actual V1 values faithfully — zero answer substitution (e.g. no rewriting
+   of loop conditions or evaluate subjects).
+3. Evaluates predictions through the shared unified evaluation core (evaluator_core.py).
+4. Explicitly reports converted_claim_count, unevaluated_claim_count, and unevaluated_claims.
+5. Emits a new versioned rescore artifact (evals/results/gate-2-v1-rescored-with-v2.1.json).
 """
 
 import json
+import re
 import sys
-from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
@@ -22,15 +22,17 @@ if str(REPO_ROOT) not in sys.path:
 from src.cobol.atomic_facts import (  # noqa: E402
     AtomicFact,
     PredictedFact,
-    normalize_token,
+    normalize_string_literal,
 )
-from src.cobol.oracle import SourceSupportOracle  # noqa: E402
+from src.cobol.support_index import SourceSupportIndex  # noqa: E402
+from src.validation.evaluator_core import (  # noqa: E402
+    HostVerificationReport,
+    evaluate_predicted_facts,
+)
 from src.validation.evaluator_v2 import (  # noqa: E402
-    ExpectedFactMatch,
     load_golden_dataset_v2,
     load_source_lines,
 )
-from src.validation.evidence_validator import validate_claim_evidence  # noqa: E402
 
 
 def rescore_v1_assessment(
@@ -38,14 +40,14 @@ def rescore_v1_assessment(
     output_path: Path | str | None = None,
     repo_root: Path | None = None,
 ) -> dict[str, Any]:
-    """Rescore historical Baseline V1 assessment under Evaluator V2 rules."""
+    """Rescore historical Baseline V1 assessment faithfully under Evaluator V2.1 rules."""
     p = Path(v1_assessment_path)
     if not p.is_file():
         raise FileNotFoundError(f"V1 assessment not found at: {p}")
 
     v1_data = json.loads(p.read_text(encoding="utf-8"))
     source_lines = load_source_lines(repo_root=repo_root)
-    oracle = SourceSupportOracle(source_lines)
+    support_index = SourceSupportIndex.from_source_lines(source_lines)
     golden = load_golden_dataset_v2()
 
     # Track historical accounting
@@ -56,16 +58,16 @@ def rescore_v1_assessment(
     # 1. Program ID
     prog = v1_data.get("program", {})
     ev = prog.get("evidence", {})
-    historical_claims.append({"field": "program", "value": prog.get("program_id")})
+    prog_id = prog.get("program_id", "")
+    historical_claims.append({"field": "program", "value": prog_id})
     converted_preds.append(
         PredictedFact(
             fact=AtomicFact(
                 kind="PROGRAM",
-                subject=prog.get("program_id", ""),
+                subject=prog_id,
                 predicate="DECLARES",
                 object="PROGRAM-ID",
             ),
-            source_file=ev.get("source_file", ""),
             line_start=ev.get("line_start", 1),
             line_end=ev.get("line_end", 1),
             snippet=ev.get("snippet", ""),
@@ -75,8 +77,6 @@ def rescore_v1_assessment(
     # 2. Data Fields
     for df in v1_data.get("data_fields", []):
         historical_claims.append({"field": "data_fields", "value": df.get("name")})
-        raw_pic = df.get("picture") or ""
-        norm_pic = normalize_token(raw_pic.replace("PIC", "").strip()) if raw_pic else "NONE"
         d_ev = df.get("evidence", {})
         converted_preds.append(
             PredictedFact(
@@ -86,12 +86,11 @@ def rescore_v1_assessment(
                     predicate="DECLARES",
                     object="VARIABLE",
                     attributes=(
-                        ("level", df.get("level", "")),
-                        ("picture", norm_pic),
-                        ("section", df.get("section", "WORKING-STORAGE")),
+                        ("LEVEL", df.get("level", "")),
+                        ("PICTURE", df.get("picture") or "NONE"),
+                        ("SECTION", df.get("section", "WORKING-STORAGE")),
                     ),
                 ),
-                source_file=d_ev.get("source_file", ""),
                 line_start=d_ev.get("line_start", 1),
                 line_end=d_ev.get("line_end", 1),
                 snippet=d_ev.get("snippet", ""),
@@ -100,35 +99,34 @@ def rescore_v1_assessment(
 
     # 3. Call Dependencies
     for c in v1_data.get("call_dependencies", []):
-        historical_claims.append({"field": "call_dependencies", "value": c.get("target_program")})
+        target_prog = c.get("target_program", "")
+        historical_claims.append({"field": "call_dependencies", "value": target_prog})
         c_ev = c.get("evidence", {})
         converted_preds.append(
             PredictedFact(
                 fact=AtomicFact(
                     kind="CALL",
-                    subject="BANK-MAIN",
+                    subject=prog_id or "BANK-MAIN",
                     predicate="INVOKES",
-                    object=c.get("target_program", ""),
+                    object=target_prog,
                 ),
-                source_file=c_ev.get("source_file", ""),
                 line_start=c_ev.get("line_start", 1),
                 line_end=c_ev.get("line_end", 1),
                 snippet=c_ev.get("snippet", ""),
             )
         )
-        # Record call_type as unevaluated compiler/linker claim
         if "call_type" in c:
             historical_claims.append(
                 {
                     "field": "call_type",
-                    "target": c.get("target_program"),
+                    "target": target_prog,
                     "value": c["call_type"],
                 }
             )
             unevaluated_claims.append(
                 {
                     "category": "call_type",
-                    "target": c.get("target_program"),
+                    "target": target_prog,
                     "claimed_value": c["call_type"],
                     "reason": (
                         "Compiler/linker binding (DYNAMIC vs STATIC) is not "
@@ -139,53 +137,51 @@ def rescore_v1_assessment(
 
     # 4. Menu Options
     for mo in v1_data.get("menu_options", []):
-        historical_claims.append({"field": "menu_options", "value": mo.get("option_key")})
+        opt_key = mo.get("option_key", "")
+        historical_claims.append({"field": "menu_options", "value": opt_key})
         action_type = mo.get("action_type", "").upper().strip()
-        target = (mo.get("action_target") or "").upper().strip()
-        if "CALL" in action_type:
-            clean_tgt = target.replace("CALL", "").replace("'", "").replace('"', "").strip()
-            action_obj = f"CALL:{clean_tgt}"
-        elif "DISPLAY" in action_type:
-            clean_tgt = target.replace("DISPLAY", "").replace("'", "").replace('"', "").strip()
-            action_obj = f"DISPLAY:{clean_tgt}"
-        else:
-            action_obj = f"{action_type}:{target}"
-
-        desc_norm = normalize_token(mo.get("description", ""))
-        if "INIT" in desc_norm:
-            desc_norm = "INIT DATABASE"
-        elif "TRANS" in desc_norm:
-            desc_norm = "TRANSACTION"
-        elif "REPORT" in desc_norm:
-            desc_norm = "REPORT"
-        elif "EXIT" in desc_norm or "BYE" in desc_norm:
-            desc_norm = "EXIT"
-        elif "INVALID" in desc_norm:
-            desc_norm = "INVALID"
-
+        action_target = mo.get("action_target", "")
         mo_ev = mo.get("evidence", {})
-        converted_preds.append(
-            PredictedFact(
-                fact=AtomicFact(
-                    kind="MENU_OPTION",
-                    subject=mo.get("option_key", ""),
-                    predicate="ACTION",
-                    object=action_obj,
-                    attributes=(("description", desc_norm),),
-                ),
-                source_file=mo_ev.get("source_file", ""),
-                line_start=mo_ev.get("line_start", 1),
-                line_end=mo_ev.get("line_end", 1),
-                snippet=mo_ev.get("snippet", ""),
-            )
-        )
 
-    # 5. Control Flow
+        if "CALL" in action_type:
+            # Clean target
+            clean_tgt = action_target.replace("CALL", "").strip().strip("'").strip('"')
+            converted_preds.append(
+                PredictedFact(
+                    fact=AtomicFact(
+                        kind="MENU_OPTION",
+                        subject=opt_key,
+                        predicate="CALLS",
+                        object=clean_tgt,
+                    ),
+                    line_start=mo_ev.get("line_start", 1),
+                    line_end=mo_ev.get("line_end", 1),
+                    snippet=mo_ev.get("snippet", ""),
+                )
+            )
+        elif "DISPLAY" in action_type:
+            clean_lit = action_target.replace("DISPLAY", "").strip().strip("'").strip('"')
+            converted_preds.append(
+                PredictedFact(
+                    fact=AtomicFact(
+                        kind="MENU_OPTION",
+                        subject=opt_key,
+                        predicate="DISPLAYS",
+                        object=clean_lit,
+                    ),
+                    line_start=mo_ev.get("line_start", 1),
+                    line_end=mo_ev.get("line_end", 1),
+                    snippet=mo_ev.get("snippet", ""),
+                )
+            )
+
+    # 5. Control Flow (Preserves actual V1 condition/subject without overwriting)
     for cf in v1_data.get("control_flow", []):
         historical_claims.append({"field": "control_flow", "value": cf.get("construct_type")})
         c_type = cf.get("construct_type", "").upper().strip()
-        cond = cf.get("condition_or_target", "").upper().strip()
+        cond_or_target = cf.get("condition_or_target", "").strip()
         cf_ev = cf.get("evidence", {})
+
         if "PERFORM" in c_type:
             converted_preds.append(
                 PredictedFact(
@@ -193,30 +189,33 @@ def rescore_v1_assessment(
                         kind="CONTROL_FLOW",
                         subject="PERFORM_UNTIL",
                         predicate="CONDITION",
-                        object="WS-CHOICE = '4'",
+                        object=cond_or_target,
                     ),
-                    source_file=cf_ev.get("source_file", ""),
                     line_start=cf_ev.get("line_start", 1),
                     line_end=cf_ev.get("line_end", 1),
                     snippet=cf_ev.get("snippet", ""),
                 )
             )
         elif "EVALUATE" in c_type:
+            # Extract subject if format is 'EVALUATE <subj> ...'
+            eval_subj = cond_or_target
+            m_subj = re.match(r"^EVALUATE\s+([A-Za-z0-9-]+)", cond_or_target, re.IGNORECASE)
+            if m_subj:
+                eval_subj = m_subj.group(1).upper()
             converted_preds.append(
                 PredictedFact(
                     fact=AtomicFact(
                         kind="CONTROL_FLOW",
                         subject="EVALUATE",
                         predicate="DISPATCHES",
-                        object="WS-CHOICE",
+                        object=eval_subj,
                     ),
-                    source_file=cf_ev.get("source_file", ""),
                     line_start=cf_ev.get("line_start", 1),
                     line_end=cf_ev.get("line_end", 1),
                     snippet=cf_ev.get("snippet", ""),
                 )
             )
-        elif "STOP" in c_type or "STOP" in cond:
+        elif "STOP" in c_type or "STOP" in cond_or_target.upper():
             converted_preds.append(
                 PredictedFact(
                     fact=AtomicFact(
@@ -225,7 +224,6 @@ def rescore_v1_assessment(
                         predicate="TERMINATES",
                         object="STOP RUN",
                     ),
-                    source_file=cf_ev.get("source_file", ""),
                     line_start=cf_ev.get("line_start", 1),
                     line_end=cf_ev.get("line_end", 1),
                     snippet=cf_ev.get("snippet", ""),
@@ -236,27 +234,41 @@ def rescore_v1_assessment(
     for io_op in v1_data.get("io_operations", []):
         historical_claims.append({"field": "io_operations", "value": io_op.get("operation_type")})
         op_type = io_op.get("operation_type", "").upper().strip()
-        target = io_op.get("target_or_content", "").upper().strip()
+        target = io_op.get("target_or_content", "").strip()
         io_ev = io_op.get("evidence", {})
-        converted_preds.append(
-            PredictedFact(
-                fact=AtomicFact(
-                    kind="IO_OPERATION",
-                    subject=op_type,
-                    predicate="READS" if op_type == "ACCEPT" else "WRITES",
-                    object=target,
-                ),
-                source_file=io_ev.get("source_file", ""),
-                line_start=io_ev.get("line_start", 1),
-                line_end=io_ev.get("line_end", 1),
-                snippet=io_ev.get("snippet", ""),
-            )
-        )
 
-    # 7. Copybook Dependencies
-    cpys = v1_data.get("scope", {}).get("copybook_dependencies_found", [])
-    historical_claims.append({"field": "copybook_dependencies_found", "value": cpys})
-    if not cpys:
+        if op_type == "ACCEPT":
+            converted_preds.append(
+                PredictedFact(
+                    fact=AtomicFact(
+                        kind="IO_OPERATION",
+                        subject="ACCEPT",
+                        predicate="READS",
+                        object=target,
+                    ),
+                    line_start=io_ev.get("line_start", 1),
+                    line_end=io_ev.get("line_end", 1),
+                    snippet=io_ev.get("snippet", ""),
+                )
+            )
+        elif op_type == "DISPLAY":
+            converted_preds.append(
+                PredictedFact(
+                    fact=AtomicFact(
+                        kind="IO_OPERATION",
+                        subject="DISPLAY",
+                        predicate="WRITES",
+                        object=normalize_string_literal(target),
+                    ),
+                    line_start=io_ev.get("line_start", 1),
+                    line_end=io_ev.get("line_end", 1),
+                    snippet=io_ev.get("snippet", ""),
+                )
+            )
+
+    # 7. Dependency Scan
+    copy_deps = v1_data.get("copybook_dependencies_found", [])
+    if not copy_deps:
         converted_preds.append(
             PredictedFact(
                 fact=AtomicFact(
@@ -265,14 +277,13 @@ def rescore_v1_assessment(
                     predicate="DEPENDENCY_COUNT",
                     object="0",
                 ),
-                source_file="BANK-MAIN.CBL",
                 line_start=1,
-                line_end=37,
-                snippet="NO COPY STATEMENTS FOUND",
+                line_end=len(source_lines),
+                snippet="",
             )
         )
 
-    # 8. Observations (Unevaluated in V2 scorable core)
+    # 8. Account for V1 fields removed in V2 as unevaluated claims
     for obs in v1_data.get("observations", []):
         historical_claims.append({"field": "observations", "value": obs.get("category")})
         unevaluated_claims.append(
@@ -280,184 +291,71 @@ def rescore_v1_assessment(
                 "category": "observation",
                 "observation_category": obs.get("category"),
                 "text": obs.get("observation"),
-                "reason": (
-                    "Free-form architectural/modernization observations are out "
-                    "of scope for Gate 2 structural deterministic scoring."
-                ),
+                "reason": "Free-form observations removed from scorable schema in V2.",
             }
         )
 
-    # 9. Unsupported Assumptions (Unevaluated)
     for ua in v1_data.get("unsupported_assumptions", []):
         historical_claims.append({"field": "unsupported_assumptions", "value": ua})
         unevaluated_claims.append(
             {
                 "category": "unsupported_assumption",
                 "text": ua,
-                "reason": (
-                    "Speculation channel eliminated in V2; external callee internals "
-                    "are host-owned scope boundaries, not model claims."
-                ),
+                "reason": "Free-form assumption escape hatch removed in V2.",
             }
         )
 
-    # Evaluate converted predictions
-    raw_pred_count = len(converted_preds)
-    seen: dict[AtomicFact, PredictedFact] = {}
-    unique_preds: list[PredictedFact] = []
-    duplicates: list[dict[str, Any]] = []
+    # Perform evaluation via unified evaluation core
+    copy_re = re.compile(r"\bCOPY\s+[A-Za-z0-9-]+\b", re.IGNORECASE)
+    copy_matches = sum(1 for line in source_lines if copy_re.search(line))
+    host_verif = HostVerificationReport(
+        copy_statements_found_count=copy_matches,
+        scanned_line_count=len(source_lines),
+        source_sha256="",
+        verification_method="WHOLE_FILE_SCAN",
+    )
 
-    for pred in converted_preds:
-        if pred.fact in seen:
-            duplicates.append({"canonical_id": pred.fact.canonical_id})
-        else:
-            seen[pred.fact] = pred
-            unique_preds.append(pred)
+    core_report = evaluate_predicted_facts(
+        predictions=converted_preds,
+        support_index=support_index,
+        golden_data=golden,
+        source_lines=source_lines,
+        host_verifications=host_verif,
+    )
 
-    supported_preds: list[PredictedFact] = []
-    unsupported_preds: list[dict[str, Any]] = []
-    invalid_evidences: list[dict[str, Any]] = []
-
-    for pred in unique_preds:
-        supp_entry = oracle.get_supported_fact(pred.fact)
-        if supp_entry is None:
-            unsupported_preds.append(
-                {"canonical_id": pred.fact.canonical_id, "reason": "Not in source oracle"}
-            )
-            continue
-
-        if pred.fact.kind == "DEPENDENCY_SCAN" and pred.fact.object == "0":
-            ev_ok = True
-            ev_err = None
-        else:
-            ev_res = validate_claim_evidence(
-                pred, supp_entry, source_lines, context=pred.fact.canonical_id
-            )
-            ev_ok = ev_res.is_valid
-            ev_err = ev_res.error_message
-
-        if not ev_ok:
-            invalid_evidences.append({"canonical_id": pred.fact.canonical_id, "error": ev_err})
-            unsupported_preds.append(
-                {"canonical_id": pred.fact.canonical_id, "reason": f"Invalid evidence: {ev_err}"}
-            )
-        else:
-            supported_preds.append(pred)
-
-    # Golden Recall
-    expected_list = golden.get("expected_facts", [])
-    matched_facts: list[ExpectedFactMatch] = []
-    missing_facts: list[ExpectedFactMatch] = []
-    used: set[AtomicFact] = set()
-
-    for item in expected_list:
-        f_id = item["id"]
-        f_desc = item["description"]
-        exp_dict = item["fact"]
-        attr_tuple = tuple(sorted(exp_dict.get("attributes", {}).items()))
-        expected_atomic = AtomicFact(
-            kind=exp_dict["kind"],
-            subject=exp_dict["subject"],
-            predicate=exp_dict["predicate"],
-            object=exp_dict["object"],
-            attributes=attr_tuple,
-        )
-
-        matched_pred = None
-        for sp in supported_preds:
-            if sp.fact == expected_atomic and sp.fact not in used:
-                matched_pred = sp
-                used.add(sp.fact)
-                break
-
-        if matched_pred is not None:
-            matched_facts.append(
-                ExpectedFactMatch(
-                    fact_id=f_id,
-                    description=f_desc,
-                    expected_fact=expected_atomic.to_dict(),
-                    matched=True,
-                    matched_prediction={"canonical_id": matched_pred.fact.canonical_id},
-                    evidence_valid=True,
-                )
-            )
-        else:
-            missing_facts.append(
-                ExpectedFactMatch(
-                    fact_id=f_id,
-                    description=f_desc,
-                    expected_fact=expected_atomic.to_dict(),
-                    matched=False,
-                )
-            )
-
-    matched_count = len(matched_facts)
-    missing_count = len(missing_facts)
-    unique_count = len(unique_preds)
-    supported_count = len(supported_preds)
-
-    precision = round(supported_count / unique_count, 4) if unique_count > 0 else 0.0
-    recall = round(matched_count / len(expected_list), 4) if expected_list else 0.0
-
-    result = {
-        "report_type": "HISTORICAL_BASELINE_V1_OFFLINE_RESCORE_UNDER_V2",
-        "description": (
-            "Offline re-evaluation of historical observed V1 assessment using Evaluator V2 rules."
-        ),
-        "note": (
-            "This is NOT a new model execution. It evaluates deterministically convertible "
-            "structural COBOL claims. 12 historical claims (observations, "
-            "unsupported_assumptions, call_type) are not deterministically evaluable and "
-            "remain unevaluated. Furthermore, V1 was subject to schema prompt hints."
-        ),
-        "source_sha256": "b03adc9592f2853006263ef67fcc6dc716b99333b84bc0198bff7b7f0af1a028",
-        "historical_claim_count": len(historical_claims),
-        "converted_claim_count": len(converted_preds),
-        "unevaluated_claim_count": len(unevaluated_claims),
-        "unevaluated_claims": unevaluated_claims,
-        "evaluation_v2_results": {
-            "raw_predicted_count": raw_pred_count,
-            "unique_predicted_count": unique_count,
-            "duplicate_prediction_count": len(duplicates),
-            "supported_predicted_count": supported_count,
-            "unsupported_predicted_count": len(unsupported_preds),
-            "invalid_evidence_count": len(invalid_evidences),
-            "expected_fact_count": len(expected_list),
-            "matched_expected_count": matched_count,
-            "missing_expected_count": missing_count,
-            "precision": precision,
-            "recall": recall,
-            "gate_2_pass_under_v2_rules": (
-                len(duplicates) == 0
-                and len(unsupported_preds) == 0
-                and len(invalid_evidences) == 0
-                and recall >= 0.90
-                and precision >= 0.95
-            ),
+    report_dict: dict[str, Any] = {
+        "rescore_evaluator_version": "2.1.0",
+        "golden_dataset_version": "2.1.0",
+        "v1_source_file": str(p),
+        "claim_accounting": {
+            "historical_claim_count": len(historical_claims),
+            "converted_claim_count": len(converted_preds),
+            "unevaluated_claim_count": len(unevaluated_claims),
+            "unevaluated_claims": unevaluated_claims,
         },
-        "invalid_evidences": invalid_evidences,
-        "unsupported_predictions": unsupported_preds,
-        "matched_expected_facts": [asdict(m) for m in matched_facts],
-        "missing_expected_facts": [asdict(m) for m in missing_facts],
+        "evaluation_metrics": core_report.to_dict(),
+        "notes": (
+            "Historical Baseline V1 offline rescore under Evaluator V2.1 rules. "
+            "Original V1 JSON preserved intact. Evaluates structural claims losslessly."
+        ),
     }
 
-    if output_path:
+    if output_path is not None:
         out_p = Path(output_path)
         out_p.parent.mkdir(parents=True, exist_ok=True)
-        out_p.write_text(json.dumps(result, indent=2), encoding="utf-8")
+        out_p.write_text(json.dumps(report_dict, indent=2), encoding="utf-8")
 
-    return result
+    return report_dict
 
 
 if __name__ == "__main__":
-    repo_root = Path(__file__).resolve().parent.parent.parent
-    v1_assessment = repo_root / "evals" / "observed" / "gate-2-baseline-v1-assessment.json"
-    output_rescore = repo_root / "evals" / "results" / "gate-2-v1-rescored-with-v2.json"
-    res = rescore_v1_assessment(v1_assessment, output_rescore, repo_root=repo_root)
-    print("V1 Offline Rescore under V2 completed.")
-    print(f"Historical claims: {res['historical_claim_count']}")
-    print(f"Converted claims:  {res['converted_claim_count']}")
-    print(f"Unevaluated:       {res['unevaluated_claim_count']}")
-    print(f"Precision:         {res['evaluation_v2_results']['precision']}")
-    print(f"Recall:            {res['evaluation_v2_results']['recall']}")
-    print(f"V2 Pass:           {res['evaluation_v2_results']['gate_2_pass_under_v2_rules']}")
+    v1_path = REPO_ROOT / "evals" / "observed" / "gate-2-baseline-v1-assessment.json"
+    rescore_out = REPO_ROOT / "evals" / "results" / "gate-2-v1-rescored-with-v2.1.json"
+    result = rescore_v1_assessment(v1_path, output_path=rescore_out)
+    print("Rescore completed!")
+    print(f"Historical claims: {result['claim_accounting']['historical_claim_count']}")
+    print(f"Converted claims:  {result['claim_accounting']['converted_claim_count']}")
+    print(f"Unevaluated:       {result['claim_accounting']['unevaluated_claim_count']}")
+    print(f"Gate 2 Pass:       {result['evaluation_metrics']['gate_2_pass']}")
+    print(f"Precision:         {result['evaluation_metrics']['precision']}")
+    print(f"Recall:            {result['evaluation_metrics']['recall']}")

@@ -1,6 +1,6 @@
 {
   "$schema": "bank-main-single-golden-dataset-v2",
-  "dataset_version": "2.0.0",
+  "dataset_version": "2.1.0",
   "scope": [
     "legacy/core-banking-system/BANK-MAIN.CBL"
   ],
@@ -8,181 +8,141 @@
   "expected_facts": [
     {
       "id": "program.id",
-      "fact": {
-        "kind": "PROGRAM",
-        "subject": "BANK-MAIN",
-        "predicate": "DECLARES",
-        "object": "PROGRAM-ID",
-        "attributes": {}
-      },
+      "kind": "PROGRAM",
+      "subject": "BANK-MAIN",
+      "predicate": "DECLARES",
+      "object": "PROGRAM-ID",
+      "attributes": {},
       "description": "PROGRAM-ID declaration identifying program as BANK-MAIN."
     },
     {
       "id": "data.ws_choice",
-      "fact": {
-        "kind": "DATA_FIELD",
-        "subject": "WS-CHOICE",
-        "predicate": "DECLARES",
-        "object": "VARIABLE",
-        "attributes": {
-          "level": "01",
-          "picture": "X",
-          "section": "WORKING-STORAGE"
-        }
+      "kind": "DATA_FIELD",
+      "subject": "WS-CHOICE",
+      "predicate": "DECLARES",
+      "object": "VARIABLE",
+      "attributes": {
+        "level": "01",
+        "picture": "X(1)",
+        "section": "WORKING-STORAGE"
       },
-      "description": "Working-Storage menu selection variable WS-CHOICE of type PIC X."
+      "description": "Working-Storage menu selection variable WS-CHOICE of type PIC X(1)."
     },
     {
       "id": "call.init_db",
-      "fact": {
-        "kind": "CALL",
-        "subject": "BANK-MAIN",
-        "predicate": "INVOKES",
-        "object": "INIT-DB",
-        "attributes": {}
-      },
+      "kind": "CALL",
+      "subject": "BANK-MAIN",
+      "predicate": "INVOKES",
+      "object": "INIT-DB",
+      "attributes": {},
       "description": "External invocation to subprogram INIT-DB."
     },
     {
       "id": "call.trans_proc",
-      "fact": {
-        "kind": "CALL",
-        "subject": "BANK-MAIN",
-        "predicate": "INVOKES",
-        "object": "TRANS-PROC",
-        "attributes": {}
-      },
+      "kind": "CALL",
+      "subject": "BANK-MAIN",
+      "predicate": "INVOKES",
+      "object": "TRANS-PROC",
+      "attributes": {},
       "description": "External invocation to subprogram TRANS-PROC."
     },
     {
       "id": "call.report_gen",
-      "fact": {
-        "kind": "CALL",
-        "subject": "BANK-MAIN",
-        "predicate": "INVOKES",
-        "object": "REPORT-GEN",
-        "attributes": {}
-      },
+      "kind": "CALL",
+      "subject": "BANK-MAIN",
+      "predicate": "INVOKES",
+      "object": "REPORT-GEN",
+      "attributes": {},
       "description": "External invocation to subprogram REPORT-GEN."
     },
     {
       "id": "menu.option_1",
-      "fact": {
-        "kind": "MENU_OPTION",
-        "subject": "1",
-        "predicate": "ACTION",
-        "object": "CALL:INIT-DB",
-        "attributes": {
-          "description": "INIT DATABASE"
-        }
-      },
+      "kind": "MENU_OPTION",
+      "subject": "1",
+      "predicate": "CALLS",
+      "object": "INIT-DB",
+      "attributes": {},
       "description": "Menu option 1 triggers CALL 'INIT-DB'."
     },
     {
       "id": "menu.option_2",
-      "fact": {
-        "kind": "MENU_OPTION",
-        "subject": "2",
-        "predicate": "ACTION",
-        "object": "CALL:TRANS-PROC",
-        "attributes": {
-          "description": "TRANSACTION"
-        }
-      },
+      "kind": "MENU_OPTION",
+      "subject": "2",
+      "predicate": "CALLS",
+      "object": "TRANS-PROC",
+      "attributes": {},
       "description": "Menu option 2 triggers CALL 'TRANS-PROC'."
     },
     {
       "id": "menu.option_3",
-      "fact": {
-        "kind": "MENU_OPTION",
-        "subject": "3",
-        "predicate": "ACTION",
-        "object": "CALL:REPORT-GEN",
-        "attributes": {
-          "description": "REPORT"
-        }
-      },
+      "kind": "MENU_OPTION",
+      "subject": "3",
+      "predicate": "CALLS",
+      "object": "REPORT-GEN",
+      "attributes": {},
       "description": "Menu option 3 triggers CALL 'REPORT-GEN'."
     },
     {
       "id": "menu.option_4",
-      "fact": {
-        "kind": "MENU_OPTION",
-        "subject": "4",
-        "predicate": "ACTION",
-        "object": "DISPLAY:BYE.",
-        "attributes": {
-          "description": "EXIT"
-        }
-      },
+      "kind": "MENU_OPTION",
+      "subject": "4",
+      "predicate": "DISPLAYS",
+      "object": "Bye.",
+      "attributes": {},
       "description": "Menu option 4 triggers exit display message 'Bye.'."
     },
     {
       "id": "menu.option_other",
-      "fact": {
-        "kind": "MENU_OPTION",
-        "subject": "OTHER",
-        "predicate": "ACTION",
-        "object": "DISPLAY:INVALID.",
-        "attributes": {
-          "description": "INVALID"
-        }
-      },
+      "kind": "MENU_OPTION",
+      "subject": "OTHER",
+      "predicate": "DISPLAYS",
+      "object": "Invalid.",
+      "attributes": {},
       "description": "Option OTHER triggers error display message 'Invalid.'."
     },
     {
       "id": "control.perform_loop",
-      "fact": {
-        "kind": "CONTROL_FLOW",
-        "subject": "PERFORM_UNTIL",
-        "predicate": "CONDITION",
-        "object": "WS-CHOICE = '4'",
-        "attributes": {}
-      },
+      "kind": "CONTROL_FLOW",
+      "subject": "PERFORM_UNTIL",
+      "predicate": "CONDITION",
+      "object": "WS-CHOICE = '4'",
+      "attributes": {},
       "description": "Top-level PERFORM loop until WS-CHOICE = '4'."
     },
     {
       "id": "control.evaluate_choice",
-      "fact": {
-        "kind": "CONTROL_FLOW",
-        "subject": "EVALUATE",
-        "predicate": "DISPATCHES",
-        "object": "WS-CHOICE",
-        "attributes": {}
-      },
+      "kind": "CONTROL_FLOW",
+      "subject": "EVALUATE",
+      "predicate": "DISPATCHES",
+      "object": "WS-CHOICE",
+      "attributes": {},
       "description": "EVALUATE decision dispatch construct on WS-CHOICE."
     },
     {
       "id": "control.stop_run",
-      "fact": {
-        "kind": "CONTROL_FLOW",
-        "subject": "STOP_RUN",
-        "predicate": "TERMINATES",
-        "object": "STOP RUN",
-        "attributes": {}
-      },
+      "kind": "CONTROL_FLOW",
+      "subject": "STOP_RUN",
+      "predicate": "TERMINATES",
+      "object": "STOP RUN",
+      "attributes": {},
       "description": "Program exit statement STOP RUN."
     },
     {
       "id": "io.accept_choice",
-      "fact": {
-        "kind": "IO_OPERATION",
-        "subject": "ACCEPT",
-        "predicate": "READS",
-        "object": "WS-CHOICE",
-        "attributes": {}
-      },
+      "kind": "IO_OPERATION",
+      "subject": "ACCEPT",
+      "predicate": "READS",
+      "object": "WS-CHOICE",
+      "attributes": {},
       "description": "Interactive console input reading choice into WS-CHOICE."
     },
     {
       "id": "dependency.no_copybooks",
-      "fact": {
-        "kind": "DEPENDENCY_SCAN",
-        "subject": "COPY",
-        "predicate": "DEPENDENCY_COUNT",
-        "object": "0",
-        "attributes": {}
-      },
+      "kind": "DEPENDENCY_SCAN",
+      "subject": "COPY",
+      "predicate": "DEPENDENCY_COUNT",
+      "object": "0",
+      "attributes": {},
       "description": "Confirmed explicit absence of COPY statements."
     }
   ]

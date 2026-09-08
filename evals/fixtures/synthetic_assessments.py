@@ -1,14 +1,17 @@
 """Synthetic assessment fixtures for deterministic offline testing of evaluator."""
 
 from agents.legacy_analyzer.schemas.assessment import (
+    AcceptIO,
     CallDependency,
-    ControlFlowConstruct,
+    CallMenuOption,
     DataField,
-    IOOperation,
+    DisplayMenuOption,
+    EvaluateConstruct,
     LegacyAssessment,
-    MenuOption,
+    PerformUntilConstruct,
     ProgramIdentity,
     SourceEvidence,
+    StopRunConstruct,
 )
 from agents.legacy_analyzer.schemas.assessment_v1 import (
     CallDependency as CallDependencyV1,
@@ -44,13 +47,11 @@ from src.cobol.source_reader import EXPECTED_BANK_MAIN_SHA256
 
 
 def make_perfect_assessment_v2() -> LegacyAssessment:
-    """Return a synthetic assessment conforming to Schema V2 matching all expected facts."""
+    """Return a synthetic assessment conforming to Schema V2.1 matching all expected facts."""
     return LegacyAssessment(
-        schema_version="2.0.0",
         program=ProgramIdentity(
             program_id="BANK-MAIN",
             evidence=SourceEvidence(
-                source_file="BANK-MAIN.CBL",
                 line_start=1,
                 line_end=2,
                 snippet="IDENTIFICATION DIVISION.\nPROGRAM-ID. BANK-MAIN.",
@@ -63,7 +64,6 @@ def make_perfect_assessment_v2() -> LegacyAssessment:
                 picture="X",
                 section="WORKING-STORAGE",
                 evidence=SourceEvidence(
-                    source_file="BANK-MAIN.CBL",
                     line_start=8,
                     line_end=8,
                     snippet="01 WS-CHOICE  PIC X.",
@@ -74,7 +74,6 @@ def make_perfect_assessment_v2() -> LegacyAssessment:
             CallDependency(
                 target_program="INIT-DB",
                 evidence=SourceEvidence(
-                    source_file="BANK-MAIN.CBL",
                     line_start=24,
                     line_end=24,
                     snippet="CALL 'INIT-DB'",
@@ -83,7 +82,6 @@ def make_perfect_assessment_v2() -> LegacyAssessment:
             CallDependency(
                 target_program="TRANS-PROC",
                 evidence=SourceEvidence(
-                    source_file="BANK-MAIN.CBL",
                     line_start=26,
                     line_end=26,
                     snippet="CALL 'TRANS-PROC'",
@@ -92,7 +90,6 @@ def make_perfect_assessment_v2() -> LegacyAssessment:
             CallDependency(
                 target_program="REPORT-GEN",
                 evidence=SourceEvidence(
-                    source_file="BANK-MAIN.CBL",
                     line_start=28,
                     line_end=28,
                     snippet="CALL 'REPORT-GEN'",
@@ -100,61 +97,46 @@ def make_perfect_assessment_v2() -> LegacyAssessment:
             ),
         ],
         menu_options=[
-            MenuOption(
+            CallMenuOption(
                 option_key="1",
-                description="Init Database",
-                action_type="CALL",
-                action_target="INIT-DB",
+                target_program="INIT-DB",
                 evidence=SourceEvidence(
-                    source_file="BANK-MAIN.CBL",
                     line_start=23,
                     line_end=24,
                     snippet="WHEN '1'\n     CALL 'INIT-DB'",
                 ),
             ),
-            MenuOption(
+            CallMenuOption(
                 option_key="2",
-                description="Transaction",
-                action_type="CALL",
-                action_target="TRANS-PROC",
+                target_program="TRANS-PROC",
                 evidence=SourceEvidence(
-                    source_file="BANK-MAIN.CBL",
                     line_start=25,
                     line_end=26,
                     snippet="WHEN '2'\n     CALL 'TRANS-PROC'",
                 ),
             ),
-            MenuOption(
+            CallMenuOption(
                 option_key="3",
-                description="Report",
-                action_type="CALL",
-                action_target="REPORT-GEN",
+                target_program="REPORT-GEN",
                 evidence=SourceEvidence(
-                    source_file="BANK-MAIN.CBL",
                     line_start=27,
                     line_end=28,
                     snippet="WHEN '3'\n     CALL 'REPORT-GEN'",
                 ),
             ),
-            MenuOption(
+            DisplayMenuOption(
                 option_key="4",
-                description="Exit",
-                action_type="DISPLAY_EXIT",
-                action_target="Bye.",
+                display_literal="Bye.",
                 evidence=SourceEvidence(
-                    source_file="BANK-MAIN.CBL",
                     line_start=29,
                     line_end=30,
                     snippet="WHEN '4'\n     DISPLAY 'Bye.'",
                 ),
             ),
-            MenuOption(
+            DisplayMenuOption(
                 option_key="OTHER",
-                description="Invalid choice",
-                action_type="DISPLAY_ERROR",
-                action_target="Invalid.",
+                display_literal="Invalid.",
                 evidence=SourceEvidence(
-                    source_file="BANK-MAIN.CBL",
                     line_start=31,
                     line_end=32,
                     snippet="WHEN OTHER\n     DISPLAY 'Invalid.'",
@@ -162,31 +144,24 @@ def make_perfect_assessment_v2() -> LegacyAssessment:
             ),
         ],
         control_flow=[
-            ControlFlowConstruct(
-                construct_type="PERFORM_UNTIL",
-                condition_or_target="WS-CHOICE = '4'",
+            PerformUntilConstruct(
+                condition="WS-CHOICE = '4'",
                 evidence=SourceEvidence(
-                    source_file="BANK-MAIN.CBL",
                     line_start=12,
                     line_end=34,
                     snippet="PERFORM UNTIL WS-CHOICE = '4'\n...\nEND-PERFORM.",
                 ),
             ),
-            ControlFlowConstruct(
-                construct_type="EVALUATE",
-                condition_or_target="WS-CHOICE",
+            EvaluateConstruct(
+                subject="WS-CHOICE",
                 evidence=SourceEvidence(
-                    source_file="BANK-MAIN.CBL",
                     line_start=22,
                     line_end=33,
                     snippet="EVALUATE WS-CHOICE\n...\nEND-EVALUATE",
                 ),
             ),
-            ControlFlowConstruct(
-                construct_type="STOP_RUN",
-                condition_or_target="STOP RUN",
+            StopRunConstruct(
                 evidence=SourceEvidence(
-                    source_file="BANK-MAIN.CBL",
                     line_start=36,
                     line_end=36,
                     snippet="STOP RUN.",
@@ -194,26 +169,14 @@ def make_perfect_assessment_v2() -> LegacyAssessment:
             ),
         ],
         io_operations=[
-            IOOperation(
-                operation_type="ACCEPT",
-                target_or_content="WS-CHOICE",
+            AcceptIO(
+                target_identifier="WS-CHOICE",
                 evidence=SourceEvidence(
-                    source_file="BANK-MAIN.CBL",
                     line_start=20,
                     line_end=20,
                     snippet="ACCEPT WS-CHOICE",
                 ),
-            ),
-            IOOperation(
-                operation_type="DISPLAY",
-                target_or_content="'Bye.'",
-                evidence=SourceEvidence(
-                    source_file="BANK-MAIN.CBL",
-                    line_start=30,
-                    line_end=30,
-                    snippet="DISPLAY 'Bye.'",
-                ),
-            ),
+            )
         ],
         copybook_dependencies=[],
     )

@@ -1,23 +1,27 @@
-"""Deterministic validator for SourceEvidence in Gate 2 V2.
+"""Deterministic validator for SourceEvidence in Gate 2 V2.1.
 
 Verifies:
-1. Source file is strictly allowed (e.g. BANK-MAIN.CBL).
-3. Snippet strictly matches or is contained within actual source lines
-   (norm_snippet in norm_actual).
+1. Basic syntactic validity: line bounds within source length, line_start <= line_end,
+   non-empty snippet.
+2. Snippet containment: cited snippet must strictly appear in the actual source slice.
    Arbitrary fabricated text or blank-line citations are strictly rejected.
-4. Ellipsis snippets must match non-empty fragments in strict source order.
-5. Claim-specific evidence binding ensures the citation overlaps the oracle support span,
-   is not excessively broad, and contains all required evidence fragments for that claim.
+3. Ellipsis snippets: must match non-empty fragments in strict forward source order.
+4. Occurrence-specific evidence binding:
+   - Binds the predicted fact citation directly to a specific SupportedFactOccurrence.
+   - Citation span must overlap/cover the occurrence's statement span.
+   - Span bounds are derived dynamically from the occurrence's parsed span
+     (occurrence span length + 2 lines tolerance for surrounding boundary tokens),
+     eliminating magic formatting constants.
+   - Required semantic operand fragments must all be present in the snippet and source slice.
 """
 
 import re
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 
 from agents.legacy_analyzer.schemas.assessment import SourceEvidence
 from agents.legacy_analyzer.schemas.assessment_v1 import SourceEvidence as SourceEvidenceV1
-from src.cobol.atomic_facts import PredictedFact, SupportedFact
+from src.cobol.atomic_facts import PredictedFact, SupportedFactOccurrence
 
 
 @dataclass
@@ -31,13 +35,7 @@ class EvidenceValidationResult:
 
 
 def normalize_snippet(text: str) -> str:
-    """Normalize text for evidence comparison: collapse whitespace, uppercase.
-
-    Normalization policy:
-    - Strips leading and trailing whitespace.
-    - Collapses consecutive whitespace characters (including newlines) into a single space.
-    - Converts to uppercase for case-insensitive COBOL comparison.
-    """
+    """Normalize text for evidence comparison: collapse whitespace, uppercase."""
     return " ".join(text.strip().split()).upper()
 
 
@@ -53,7 +51,7 @@ def validate_evidence(
         evidence: The SourceEvidence instance to validate.
         source_lines: List of raw source lines (1-indexed via index 0 = line 1).
         context: Contextual label (e.g. 'call_dependencies[0]').
-        allowed_filename: Allowed base filename (default 'BANK-MAIN.CBL').
+        allowed_filename: Allowed base filename (for schemas that include source_file).
 
     Returns:
         EvidenceValidationResult indicating validity and details if invalid.
@@ -61,18 +59,27 @@ def validate_evidence(
     evidence_dict = evidence.model_dump()
     max_line = len(source_lines)
 
-    # 1. Source file check
-    source_path = Path(evidence.source_file.replace("\\", "/"))
-    if source_path.name.upper() != allowed_filename.upper():
-        return EvidenceValidationResult(
-            is_valid=False,
-            error_message=(
-                f"Evidence references outside file '{evidence.source_file}'; "
-                f"expected '{allowed_filename}'"
-            ),
-            field_context=context,
-            evidence=evidence_dict,
-        )
+    # 1. Source file check (only if present in evidence schema, e.g. V1)
+    if hasattr(evidence, "source_file") and getattr(evidence, "source_file", None):
+        sf = getattr(evidence, "source_file").replace("\\", "/")
+        # Reject traversal attempts
+        if ".." in sf or sf.startswith("/"):
+            return EvidenceValidationResult(
+                is_valid=False,
+                error_message=f"Disallowed path format in source_file: '{sf}'",
+                field_context=context,
+                evidence=evidence_dict,
+            )
+        sf_name = sf.split("/")[-1].upper()
+        if sf_name != allowed_filename.upper():
+            return EvidenceValidationResult(
+                is_valid=False,
+                error_message=(
+                    f"Evidence references outside file '{sf}'; expected '{allowed_filename}'"
+                ),
+                field_context=context,
+                evidence=evidence_dict,
+            )
 
     # 2. Line range check
     if evidence.line_start < 1 or evidence.line_end > max_line:
@@ -135,48 +142,42 @@ def validate_evidence(
             )
 
         current_idx = 0
-        all_matched = True
         for part in raw_parts:
             norm_part = normalize_snippet(part)
+            if not norm_part:
+                continue
             found_idx = norm_actual.find(norm_part, current_idx)
             if found_idx == -1:
-                all_matched = False
-                break
+                return EvidenceValidationResult(
+                    is_valid=False,
+                    error_message=(
+                        f"Ellipsis snippet fragment '{part}' not found in source slice in order"
+                    ),
+                    field_context=context,
+                    evidence=evidence_dict,
+                )
             current_idx = found_idx + len(norm_part)
 
-        if all_matched:
-            return EvidenceValidationResult(
-                is_valid=True,
-                field_context=context,
-                evidence=evidence_dict,
-            )
-
-        return EvidenceValidationResult(
-            is_valid=False,
-            error_message=(
-                f"Ellipsis snippet '{evidence.snippet}' fragments not found in sequence "
-                f"in source lines {evidence.line_start}..{evidence.line_end}: "
-                f"'{actual_slice_text.strip()}'"
-            ),
-            field_context=context,
-            evidence=evidence_dict,
-        )
-
-    # Non-ellipsis: snippet MUST be contained in the actual slice.
-    # NEVER allow norm_actual in norm_snippet (prevents fabricated suffix/prefix text)
-    if norm_snippet in norm_actual:
         return EvidenceValidationResult(
             is_valid=True,
             field_context=context,
             evidence=evidence_dict,
         )
 
+    # Standard contiguous snippet: must be strictly contained in actual slice
+    if norm_snippet not in norm_actual:
+        return EvidenceValidationResult(
+            is_valid=False,
+            error_message=(
+                f"Evidence snippet '{evidence.snippet}' does not match actual source text "
+                f"in lines [{evidence.line_start}..{evidence.line_end}]"
+            ),
+            field_context=context,
+            evidence=evidence_dict,
+        )
+
     return EvidenceValidationResult(
-        is_valid=False,
-        error_message=(
-            f"Snippet '{evidence.snippet}' does not match actual source at lines "
-            f"{evidence.line_start}..{evidence.line_end}: '{actual_slice_text.strip()}'"
-        ),
+        is_valid=True,
         field_context=context,
         evidence=evidence_dict,
     )
@@ -184,20 +185,19 @@ def validate_evidence(
 
 def validate_claim_evidence(
     predicted: PredictedFact,
-    supported_oracle_entry: SupportedFact,
+    supported_occurrence: SupportedFactOccurrence,
     source_lines: list[str],
     context: str = "",
 ) -> EvidenceValidationResult:
-    """Validate that a predicted fact's evidence actually supports that specific claim.
+    """Validate that a predicted fact's evidence specifically supports that fact occurrence.
 
     Rules:
-    1. Base syntactic validation (source file, line bounds, snippet containment).
-    2. Overlap constraint: cited line range must overlap with oracle support span.
-    3. Span length constraint: cited line span must not be excessively large.
-    4. Fragment constraint: required key tokens for this claim must be present.
+    1. Base syntactic validation (line bounds, snippet containment).
+    2. Overlap constraint: cited line range must overlap with occurrence statement span.
+    3. Span length constraint: derived dynamically from occurrence span length + 2 lines tolerance.
+    4. Required semantic operands: all required fragments for this occurrence must be present.
     """
     ev_obj = SourceEvidence(
-        source_file=predicted.source_file,
         line_start=predicted.line_start,
         line_end=predicted.line_end,
         snippet=predicted.snippet,
@@ -208,9 +208,9 @@ def validate_claim_evidence(
     if not base_res.is_valid:
         return base_res
 
-    # 2. Overlap constraint with oracle support span
-    o_start = supported_oracle_entry.line_start
-    o_end = supported_oracle_entry.line_end
+    # 2. Overlap constraint with occurrence statement span
+    o_start = supported_occurrence.line_start
+    o_end = supported_occurrence.line_end
 
     has_overlap = not (predicted.line_end < o_start or predicted.line_start > o_end)
     if not has_overlap:
@@ -218,31 +218,25 @@ def validate_claim_evidence(
             is_valid=False,
             error_message=(
                 f"Cited line span [{predicted.line_start}, {predicted.line_end}] does not "
-                f"overlap with source support span [{o_start}, {o_end}] for fact "
+                f"overlap with statement support span [{o_start}, {o_end}] for fact "
                 f"'{predicted.fact.canonical_id}'"
             ),
             field_context=context,
             evidence=ev_obj.model_dump(),
         )
 
-    # 3. Maximum allowed span length per category
+    # 3. Dynamic span bound: occurrence span length + 2 lines tolerance (eliminates magic constants)
+    occ_len = o_end - o_start + 1
+    max_allowed = max(occ_len + 2, 4)
     span_len = predicted.line_end - predicted.line_start + 1
-    kind = predicted.fact.kind
-
-    if kind in ("PROGRAM", "DATA_FIELD", "MENU_OPTION"):
-        max_allowed = 4
-    elif kind in ("CALL", "CONTROL_FLOW", "IO_OPERATION"):
-        max_allowed = 6
-    else:
-        max_allowed = 15
 
     if span_len > max_allowed:
         return EvidenceValidationResult(
             is_valid=False,
             error_message=(
                 f"Cited line span [{predicted.line_start}, {predicted.line_end}] "
-                f"(length {span_len}) exceeds maximum allowed span length ({max_allowed}) "
-                f"for fact category '{kind}'"
+                f"(length {span_len}) exceeds allowed span bound ({max_allowed}) "
+                f"for statement span [{o_start}..{o_end}]"
             ),
             field_context=context,
             evidence=ev_obj.model_dump(),
@@ -253,8 +247,9 @@ def validate_claim_evidence(
     actual_slice_lines = source_lines[predicted.line_start - 1 : predicted.line_end]
     norm_actual = normalize_snippet(" ".join(actual_slice_lines))
 
-    for frag in supported_oracle_entry.required_evidence_fragments:
-        if frag not in norm_snippet:
+    for frag in supported_occurrence.required_evidence_fragments:
+        norm_frag = normalize_snippet(frag)
+        if norm_frag not in norm_snippet:
             return EvidenceValidationResult(
                 is_valid=False,
                 error_message=(
@@ -264,7 +259,7 @@ def validate_claim_evidence(
                 field_context=context,
                 evidence=ev_obj.model_dump(),
             )
-        if frag not in norm_actual:
+        if norm_frag not in norm_actual:
             return EvidenceValidationResult(
                 is_valid=False,
                 error_message=(
