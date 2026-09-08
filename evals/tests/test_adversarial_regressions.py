@@ -1,11 +1,14 @@
-"""Adversarial Regression Test Suite for Gate 2 V2.
+"""Adversarial Regression Test Suite for Gate 2 V2.1.
 
-Verifies that all 23 vulnerabilities identified in the adversarial review
-are deterministically rejected or appropriately scored by Evaluator V2.
+Verifies that all 23 vulnerabilities identified in the review (R1-R14) and the
+5 Required Amendments are deterministically rejected or appropriately scored by Evaluator V2.1.
 100% offline — zero Azure calls.
 """
 
+import hashlib
 import importlib.util
+import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -16,15 +19,17 @@ from pydantic import ValidationError
 
 from agents.legacy_analyzer.agent import ReasoningEffort
 from agents.legacy_analyzer.schemas.assessment import (
-    ControlFlowConstruct,
-    IOOperation,
+    CallMenuOption,
+    DisplayIO,
+    DisplayMenuOption,
     LegacyAssessment,
-    MenuOption,
+    PerformUntilConstruct,
     SourceEvidence,
 )
 from agents.legacy_analyzer.schemas.export import get_assessment_json_schema
 from evals.fixtures.synthetic_assessments import make_perfect_assessment_v2
 from src.cobol.atomic_facts import AtomicFact, PredictedFact
+from src.cobol.fact_extractor import SourceFactExtractor
 from src.cobol.oracle import SourceSupportOracle
 from src.validation.evaluator_v2 import (
     evaluate_assessment_v2,
@@ -71,7 +76,6 @@ class TestEvidenceVulnerabilities:
     def test_1_fabricated_snippet_on_blank_line_rejected(self, source_lines):
         # Line 9 in BANK-MAIN.CBL is completely blank
         ev = SourceEvidence(
-            source_file="BANK-MAIN.CBL",
             line_start=9,
             line_end=9,
             snippet="CALL 'FABRICATED-TARGET'",
@@ -83,7 +87,6 @@ class TestEvidenceVulnerabilities:
     def test_2_real_snippet_plus_fabricated_appended_text_rejected(self, source_lines):
         # Line 24 is "CALL 'INIT-DB'"
         ev = SourceEvidence(
-            source_file="BANK-MAIN.CBL",
             line_start=24,
             line_end=24,
             snippet="CALL 'INIT-DB' AND DROP TABLE USERS",
@@ -101,7 +104,6 @@ class TestEvidenceVulnerabilities:
                 predicate="INVOKES",
                 object="INIT-DB",
             ),
-            source_file="BANK-MAIN.CBL",
             line_start=1,
             line_end=2,
             snippet="PROGRAM-ID. BANK-MAIN.",
@@ -162,7 +164,9 @@ class TestFactPrecisionVulnerabilities:
 
     def test_6_menu_option_1_pointing_to_wrong_target_rejected(self, golden_v2, source_lines):
         assessment = make_perfect_assessment_v2()
-        assessment.menu_options[0].action_target = "PAYROLL-PROC"
+        # In V2.1 discriminated schema, menu_options[0] is CallMenuOption
+        assert isinstance(assessment.menu_options[0], CallMenuOption)
+        assessment.menu_options[0].target_program = "PAYROLL-PROC"
         report = evaluate_assessment_v2(
             assessment, golden_data=golden_v2, source_lines=source_lines
         )
@@ -175,7 +179,9 @@ class TestFactPrecisionVulnerabilities:
 
     def test_7_wrong_loop_condition_rejected(self, golden_v2, source_lines):
         assessment = make_perfect_assessment_v2()
-        assessment.control_flow[0].condition_or_target = "WS-CHOICE = '9'"
+        # In V2.1 discriminated schema, control_flow[0] is PerformUntilConstruct
+        assert isinstance(assessment.control_flow[0], PerformUntilConstruct)
+        assessment.control_flow[0].condition = "WS-CHOICE = '9'"
         report = evaluate_assessment_v2(
             assessment, golden_data=golden_v2, source_lines=source_lines
         )
@@ -191,7 +197,7 @@ class TestFactPrecisionVulnerabilities:
         assessment = make_perfect_assessment_v2()
         # Remove EVALUATE construct
         assessment.control_flow = [
-            cf for cf in assessment.control_flow if "EVALUATE" not in cf.construct_type
+            cf for cf in assessment.control_flow if cf.construct_type != "EVALUATE"
         ]
         report = evaluate_assessment_v2(
             assessment, golden_data=golden_v2, source_lines=source_lines
@@ -209,13 +215,12 @@ class TestFalsePositiveAccounting:
 
     def test_9_invented_io_operation_with_valid_evidence_penalized(self, golden_v2, source_lines):
         assessment = make_perfect_assessment_v2()
-        # Invent WRITE operation citing line 36 (STOP RUN)
+        # Add an extra DisplayIO operation citing line 36 (STOP RUN)
         assessment.io_operations.append(
-            IOOperation(
-                operation_type="WRITE",
-                target_or_content="SECRET-ACCOUNT-RECORD",
+            DisplayIO(
+                operation_type="DISPLAY",
+                literal="SECRET-ACCOUNT-RECORD",
                 evidence=SourceEvidence(
-                    source_file="BANK-MAIN.CBL",
                     line_start=36,
                     line_end=36,
                     snippet="STOP RUN.",
@@ -232,11 +237,10 @@ class TestFalsePositiveAccounting:
     def test_10_invented_control_flow_with_valid_evidence_penalized(self, golden_v2, source_lines):
         assessment = make_perfect_assessment_v2()
         assessment.control_flow.append(
-            ControlFlowConstruct(
-                construct_type="IF",
-                condition_or_target="USER-IS-ADMIN",
+            PerformUntilConstruct(
+                construct_type="PERFORM_UNTIL",
+                condition="USER-IS-ADMIN = 'Y'",
                 evidence=SourceEvidence(
-                    source_file="BANK-MAIN.CBL",
                     line_start=36,
                     line_end=36,
                     snippet="STOP RUN.",
@@ -251,15 +255,13 @@ class TestFalsePositiveAccounting:
         assert report.gate_2_pass is False
 
     def test_11_unrestricted_observation_eliminated_from_schema_v2(self):
-        # In Schema V2, 'observations' is not a permitted field
+        # In Schema V2.1, 'observations' is not a permitted field
         with pytest.raises(ValidationError):
             LegacyAssessment.model_validate(
                 {
-                    "schema_version": "2.0.0",
                     "program": {
                         "program_id": "BANK-MAIN",
                         "evidence": {
-                            "source_file": "BANK-MAIN.CBL",
                             "line_start": 2,
                             "line_end": 2,
                             "snippet": "PROGRAM-ID. BANK-MAIN.",
@@ -276,15 +278,13 @@ class TestFalsePositiveAccounting:
             )
 
     def test_12_unsupported_assumptions_eliminated_from_schema_v2(self):
-        # In Schema V2, 'unsupported_assumptions' is rejected by extra="forbid"
+        # In Schema V2.1, 'unsupported_assumptions' is rejected by extra="forbid"
         with pytest.raises(ValidationError):
             LegacyAssessment.model_validate(
                 {
-                    "schema_version": "2.0.0",
                     "program": {
                         "program_id": "BANK-MAIN",
                         "evidence": {
-                            "source_file": "BANK-MAIN.CBL",
                             "line_start": 2,
                             "line_end": 2,
                             "snippet": "PROGRAM-ID. BANK-MAIN.",
@@ -328,15 +328,13 @@ class TestDuplicatesAndContradictions:
 
     def test_14_contradictory_prediction_detected_and_penalized(self, golden_v2, source_lines):
         assessment = make_perfect_assessment_v2()
-        # Add contradictory option 1
+        # Add contradictory option 1 pointing to PAYROLL-PROC
         assessment.menu_options.append(
-            MenuOption(
+            CallMenuOption(
                 option_key="1",
-                description="Payroll Processing",
                 action_type="CALL",
-                action_target="PAYROLL-PROC",
+                target_program="PAYROLL-PROC",
                 evidence=SourceEvidence(
-                    source_file="BANK-MAIN.CBL",
                     line_start=23,
                     line_end=24,
                     snippet="WHEN '1'\n     CALL 'INIT-DB'",
@@ -352,11 +350,9 @@ class TestDuplicatesAndContradictions:
     def test_16_omitted_required_copybook_list_fails_validation(self):
         # copybook_dependencies has no default_factory; omitting it must raise ValidationError
         raw = {
-            "schema_version": "2.0.0",
             "program": {
                 "program_id": "BANK-MAIN",
                 "evidence": {
-                    "source_file": "BANK-MAIN.CBL",
                     "line_start": 2,
                     "line_end": 2,
                     "snippet": "PROGRAM-ID. BANK-MAIN.",
@@ -380,8 +376,6 @@ class TestRunnerAndEnvironmentHygiene:
         existing_dir = REPO_ROOT / "artifacts" / "gate-2" / "test-existing-run"
         existing_dir.mkdir(parents=True, exist_ok=True)
         try:
-            import os
-
             env = dict(
                 os.environ,
                 GATE2_ALLOW_DIRTY_WORKTREE="1",
@@ -412,7 +406,7 @@ class TestRunnerAndEnvironmentHygiene:
         )
         monkeypatch.setattr(subprocess, "run", lambda *args, **kwargs: fake_result)
         with pytest.raises(RuntimeError, match="Git working tree is dirty"):
-            mod.verify_clean_worktree()
+            mod.verify_clean_worktree(is_baseline_run=False)
 
     def test_20_runner_refuses_unknown_git_sha(self, monkeypatch):
         mod = get_run_gate_2_module()
@@ -425,8 +419,6 @@ class TestRunnerAndEnvironmentHygiene:
             mod.get_git_commit_sha()
 
     def test_21_runner_refuses_mismatched_expected_git_sha(self):
-        import os
-
         env = dict(
             os.environ,
             GATE2_ALLOW_DIRTY_WORKTREE="1",
@@ -437,7 +429,7 @@ class TestRunnerAndEnvironmentHygiene:
             sys.executable,
             str(REPO_ROOT / "scripts" / "run-gate-2.py"),
             "--run-label",
-            "baseline-v2-test",
+            "trial-test",
             "--expected-git-sha",
             "0000000000000000000000000000000000000000",
             "--dry-run",
@@ -460,3 +452,184 @@ class TestRunnerAndEnvironmentHygiene:
     def test_23_reasoning_effort_matches_installed_sdk_typing(self):
         valid_efforts = get_args(ReasoningEffort)
         assert set(valid_efforts) == {"none", "minimal", "low", "medium", "high", "xhigh", "max"}
+
+
+class TestAmendmentsRegressions:
+    """Explicit tests for the 5 Required Amendments and R1-R14 remediation."""
+
+    def test_amendment_1_discriminated_union_structural_invariants(self):
+        """Amendment 1: CALL without target / DISPLAY with CALL target is invalid."""
+        # A CALL without target_program must fail validation
+        with pytest.raises(ValidationError):
+            CallMenuOption.model_validate(
+                {
+                    "option_key": "1",
+                    "action_type": "CALL",
+                    "evidence": {
+                        "line_start": 23,
+                        "line_end": 24,
+                        "snippet": "WHEN '1' CALL 'FOO'",
+                    },
+                }
+            )
+
+        # A DISPLAY without literal must fail validation
+        with pytest.raises(ValidationError):
+            DisplayMenuOption.model_validate(
+                {
+                    "option_key": "4",
+                    "action_type": "DISPLAY",
+                    "evidence": {
+                        "line_start": 29,
+                        "line_end": 30,
+                        "snippet": "WHEN '4' DISPLAY 'BYE'",
+                    },
+                }
+            )
+
+        # A CALL passed into DisplayMenuOption must fail validation
+        with pytest.raises(ValidationError):
+            DisplayMenuOption.model_validate(
+                {
+                    "option_key": "1",
+                    "action_type": "CALL",
+                    "literal": "HELLO",
+                    "evidence": {"line_start": 23, "line_end": 24, "snippet": "WHEN '1'"},
+                }
+            )
+
+        # Control flow explicit variants
+        with pytest.raises(ValidationError):
+            PerformUntilConstruct.model_validate(
+                {
+                    "construct_type": "PERFORM_UNTIL",
+                    "evidence": {"line_start": 17, "line_end": 17, "snippet": "PERFORM"},
+                    # missing condition
+                }
+            )
+
+    def test_amendment_2_parser_fails_closed_on_unrecognized_syntax(self):
+        """Amendment 2: Unrecognized syntax fails closed and omits authoritative negative COPY."""
+        malformed_cobol = """       IDENTIFICATION DIVISION.
+       PROGRAM-ID. TEST-FAIL-CLOSED.
+       DATA DIVISION.
+       PROCEDURE DIVISION.
+           COPY +++ MALFORMED SYNTAX @@@
+           STOP RUN.
+"""
+        extractor = SourceFactExtractor(malformed_cobol.splitlines())
+        res = extractor.extract()
+        assert res.parse_complete is False
+        assert res.unsupported_statement_count > 0
+        assert any("COPY" in s for s in res.unsupported_statements)
+
+        # Authoritative negative fact must NOT be emitted
+        assert not any(
+            occ.fact.kind == "DEPENDENCY_SCAN" and occ.fact.predicate == "DEPENDENCY_COUNT"
+            for occ in res.occurrences
+        )
+
+    def test_amendment_3_baseline_provenance_rejects_dirty_and_env_bypasses(self, monkeypatch):
+        """Amendment 3: Baseline runs reject PYTHONPATH, PYTHONHOME, and dirty worktree bypass."""
+        mod = get_run_gate_2_module()
+
+        # Reject dirty bypass on baseline
+        monkeypatch.setenv("GATE2_ALLOW_DIRTY_WORKTREE", "1")
+        with pytest.raises(RuntimeError, match="GATE2_ALLOW_DIRTY_WORKTREE is strictly prohibited"):
+            mod.verify_environment_variables(is_baseline_run=True)
+        monkeypatch.delenv("GATE2_ALLOW_DIRTY_WORKTREE", raising=False)
+
+        # Reject PYTHONPATH
+        monkeypatch.setenv("PYTHONPATH", "/custom/lib")
+        with pytest.raises(RuntimeError, match="Disallowed non-empty PYTHONPATH"):
+            mod.verify_environment_variables(is_baseline_run=True)
+        monkeypatch.delenv("PYTHONPATH", raising=False)
+
+        # Reject PYTHONHOME
+        monkeypatch.setenv("PYTHONHOME", "/custom/python")
+        with pytest.raises(RuntimeError, match="Disallowed non-empty PYTHONHOME"):
+            mod.verify_environment_variables(is_baseline_run=True)
+        monkeypatch.delenv("PYTHONHOME", raising=False)
+
+    def test_amendment_4_error_artifacts_allowlist_based(self, tmp_path):
+        """Amendment 4: Run-state failure uses allowlist and never leaks raw exceptions."""
+        mod = get_run_gate_2_module()
+
+        # Adversarial exception containing sensitive API keys and raw HTTP headers
+        adversarial_err = ValueError(
+            "Connection failed: Authorization: Bearer sk-proj-SECRETKEY1234567890 "
+            "Endpoint: https://my-sensitive-host.azure.com/keys?key=SECRET_TOKEN_999"
+        )
+
+        state_file = tmp_path / "run-state.json"
+        mod.write_failure_run_state(
+            run_state_file=state_file,
+            failed_phase="MODEL_INVOCATION",
+            exc=adversarial_err,
+            git_sha="abcdef1234567890",
+        )
+
+        assert state_file.exists()
+        state_data = json.loads(state_file.read_text(encoding="utf-8"))
+
+        # Verify only allowlisted fields exist
+        allowed_fields = {
+            "status",
+            "failed_phase",
+            "error_type",
+            "safe_message",
+            "timestamp",
+            "git_sha",
+        }
+        assert set(state_data.keys()).issubset(allowed_fields)
+
+        raw_content = state_file.read_text(encoding="utf-8")
+        assert "SECRETKEY" not in raw_content
+        assert "SECRET_TOKEN" not in raw_content
+        assert "Authorization" not in raw_content
+        assert "https://" not in raw_content
+        assert state_data["error_type"] == "ValueError"
+        assert state_data["safe_message"] == "Execution failed during MODEL_INVOCATION: ValueError"
+
+    def test_amendment_5_environment_manifest_exists_and_reconstructable(self):
+        """Amendment 5: Exact frozen requirements-lock.txt exists and contains required packages."""
+        lock_file = REPO_ROOT / "requirements-lock.txt"
+        assert lock_file.exists(), "requirements-lock.txt must exist"
+        content = lock_file.read_text(encoding="utf-8")
+
+        required_pkgs = [
+            "openai==",
+            "azure-ai-projects==",
+            "azure-identity==",
+            "pydantic==",
+            "pydantic-settings==",
+        ]
+        for pkg in required_pkgs:
+            assert pkg in content, f"Required package constraint {pkg} missing from lockfile"
+
+        # Verify hash can be deterministically computed
+        lock_sha = hashlib.sha256(content.encode("utf-8")).hexdigest()
+        assert len(lock_sha) == 64
+
+    def test_r1_multiplicity_contradiction_eliminated(self, golden_v2, source_lines):
+        """R1: Multiple distinct CALLs must coexist without triggering contradiction."""
+        assessment = make_perfect_assessment_v2()
+        # Verify initial assessment has 3 CALL dependencies
+        assert len(assessment.call_dependencies) == 3
+
+        report = evaluate_assessment_v2(
+            assessment, golden_data=golden_v2, source_lines=source_lines
+        )
+        assert report.contradiction_count == 0
+        assert report.gate_2_pass is True
+
+    def test_r2_evaluator_never_rewrites_predictions(self):
+        """R2: Evaluator must never rewrite or modify input prediction models."""
+        assessment = make_perfect_assessment_v2()
+        orig_dump = assessment.model_dump_json()
+
+        golden = load_golden_dataset_v2()
+        source_lines = load_source_lines(repo_root=REPO_ROOT)
+        _ = evaluate_assessment_v2(assessment, golden_data=golden, source_lines=source_lines)
+
+        assert assessment.model_dump_json() == orig_dump, "Evaluator mutated input assessment!"
