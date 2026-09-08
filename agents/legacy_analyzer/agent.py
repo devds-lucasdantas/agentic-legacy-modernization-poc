@@ -49,9 +49,9 @@ class ExecutionMetadata:
     source_file: str = ""
     source_sha256: str = ""
     git_commit_sha: str = ""
-    schema_version: str = "2.0.0"
-    prompt_version: str = "gate2-baseline-v2"
-    evaluator_version: str = "2.0.0"
+    schema_version: str = "2.1.0"
+    prompt_version: str = "gate2-baseline-v2.1"
+    evaluator_version: str = "2.1.0"
     response_id: str | None = None
     elapsed_seconds: float = 0.0
     input_tokens: int | None = None
@@ -162,22 +162,23 @@ class LegacyAnalyzerAgent:
         if refusal:
             raise ValueError(f"Model refused request: {refusal}")
 
-        status = getattr(parsed_response, "status", None)
-        if status == "incomplete":
-            incomplete_details = getattr(parsed_response, "incomplete_details", None)
-            raise ValueError(
-                f"Model response incomplete: status='incomplete', details={incomplete_details}"
-            )
+        # Check nested output items for refusal where applicable
+        if hasattr(parsed_response, "output") and isinstance(parsed_response.output, list):
+            for item in parsed_response.output:
+                item_refusal = getattr(item, "refusal", None)
+                if item_refusal:
+                    raise ValueError(f"Model refused request in nested output item: {item_refusal}")
 
-        # 4. Extract parsed Pydantic object and API metadata
+        status = getattr(parsed_response, "status", None)
+        if status != "completed":
+            raise ValueError(f"Model response did not complete successfully: status='{status}'")
+
+        # 4. Extract parsed Pydantic object and API metadata (strict: no weak fallback)
         assessment: LegacyAssessment | None = getattr(parsed_response, "output_parsed", None)
         if not isinstance(assessment, LegacyAssessment):
-            output_text = getattr(parsed_response, "output_text", None)
-            if output_text and isinstance(output_text, str):
-                assessment = LegacyAssessment.model_validate_json(output_text)
-
-        if not isinstance(assessment, LegacyAssessment):
-            raise ValueError(f"Failed to parse LegacyAssessment from response: {parsed_response}")
+            raise ValueError(
+                "Responses API response did not contain a valid parsed LegacyAssessment."
+            )
 
         metadata.schema_valid = True
         metadata.response_id = getattr(parsed_response, "id", None)
