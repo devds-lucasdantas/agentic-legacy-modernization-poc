@@ -1,29 +1,25 @@
 #!/usr/bin/env python3
-"""Gate 2 — COBOL Reader Runner (Version 2.3.0)
+"""Gate 2 — COBOL Reader Runner (Version 2.3.1)
 
 Executes single-file COBOL analysis on BANK-MAIN.CBL using Azure AI Foundry
 Responses API with native Structured Outputs.
 
-Enforces Candidate V2.3 Architecture:
-1. Safe run-label validation (re.fullmatch, no path traversal or aliases).
-2. Sanitized Git environment (GIT_NO_REPLACE_OBJECTS=1, purging object redirection).
-3. Mandatory isolated Python execution (-I -B) for baseline runs.
-4. Exact canonical runtime/lock attestation (normalized-pkg-name==version).
-5. Full git tracked tree byte comparison against HEAD (defeating assume-unchanged).
-6. Detection and rejection of untracked/ignored executable overlays.
-7. Immutable Git-derived application snapshot (git archive <expected_sha>).
-8. Three-way provenance separation: Application (Snapshot), Dependencies (Venv),
-   Output (Reserved Dir).
-9. Post-import origin verification ensuring third-party packages originate from sys.prefix and
-   application modules originate from snapshot directory.
-10. Canonical Foundry project identity fingerprint (SHA256 of normalized endpoint) and model check.
-11. Host-owned Python runtime provenance persistence in run-metadata.json.
-12. Zero-stranded run reservation with guaranteed rollback on initial write failure.
-13. Source immutability and allowlist verification.
-14. Dry-run executes preflights only without consuming live artifact directories or snapshots.
-15. Full lifecycle state tracking via run-state.json with allowlist-based error safety.
-16. Zero serialization of raw Foundry endpoint, subscription IDs, or credential tokens.
-17. Deterministic evaluation using Evaluator V2.3 and Golden Dataset V2.2.
+Enforces Candidate V2.3.1 Architecture:
+1. Commit-bound baseline authorization specification (evals/baselines/gate-2-baseline-v2.json).
+2. Self-Authorizing Child Trust Model: every execution path reaching model invocation,
+   including direct internal child execution, must independently establish and satisfy
+   the complete baseline authorization contract.
+3. Provenance Git repository supplied explicitly by the parent.
+4. Runner bootstrap self-verification against committed runner blob in authorized Git SHA.
+5. Snapshot byte identity verified against Git object blobs (git cat-file blob <object-id>).
+6. Child-derived source identity recomputed from verified snapshot bytes (BANK-MAIN.CBL).
+7. Deterministic artifact destination binding (provenance_repo/artifacts/gate-2/run_label).
+8. Canonical runtime/lock attestation strictly before model invocation.
+9. Strict 18-step child verification ordering guaranteeing zero model calls on preflight failure.
+10. Host-owned Python runtime provenance persistence in run-metadata.json.
+11. Baseline authorization spec SHA256 persisted in run-metadata.json.
+12. Zero serialization of raw Foundry endpoint, subscription IDs, or credential tokens.
+13. Deterministic evaluation using Evaluator V2.3 and Golden Dataset V2.2.
 
 Exit codes:
     0 = PASS
@@ -50,6 +46,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 SAFE_RUN_LABEL_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 HEX_64_PATTERN = re.compile(r"^[0-9a-f]{64}$")
+HEX_40_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 
 EXCLUDED_DISTRIBUTIONS = {
     "pip",
@@ -57,6 +54,9 @@ EXCLUDED_DISTRIBUTIONS = {
     "wheel",
     "agentic-legacy-modernization-poc",
 }
+
+EXPECTED_BANK_MAIN_SHA = "b03adc9592f2853006263ef67fcc6dc716b99333b84bc0198bff7b7f0af1a028"
+BASELINE_SPEC_REL_PATH = "evals/baselines/gate-2-baseline-v2.json"
 
 
 def get_sanitized_git_env() -> dict[str, str]:
@@ -102,6 +102,86 @@ def validate_project_fingerprint_format(fingerprint: str) -> None:
         )
 
 
+def load_baseline_authorization_spec(root: Path) -> tuple[dict[str, Any], str]:
+    """Load and validate commit-bound baseline authorization specification.
+
+    Returns:
+        Tuple of (spec_dict, spec_sha256).
+    """
+    spec_path = root / BASELINE_SPEC_REL_PATH
+    if not spec_path.is_file():
+        raise FileNotFoundError(f"Baseline authorization spec not found at: {spec_path}")
+    raw_bytes = spec_path.read_bytes()
+    spec_sha256 = hashlib.sha256(raw_bytes).hexdigest()
+    spec = json.loads(raw_bytes.decode("utf-8"))
+
+    required_keys = {
+        "spec_version",
+        "run_label",
+        "source_path",
+        "source_sha256",
+        "requested_model",
+        "foundry_project_fingerprint",
+        "schema_version",
+        "prompt_version",
+        "evaluator_version",
+        "golden_dataset_version",
+    }
+    missing = required_keys - set(spec.keys())
+    if missing:
+        raise ValueError(f"Baseline authorization spec missing required keys: {sorted(missing)}")
+    return spec, spec_sha256
+
+
+def validate_internal_child_args(args: argparse.Namespace) -> None:
+    """Validate internal child execution argument contract strictly.
+
+    Required internal arguments:
+    - run_label
+    - authorized_git_sha
+    - provenance_repo
+    - snapshot_dir
+    - artifact_dir
+    - expected_model
+    - expected_project_fingerprint
+    """
+    required_attrs = [
+        "run_label",
+        "authorized_git_sha",
+        "provenance_repo",
+        "snapshot_dir",
+        "artifact_dir",
+        "expected_model",
+        "expected_project_fingerprint",
+    ]
+    for attr in required_attrs:
+        val = getattr(args, attr, None)
+        if not val or not str(val).strip():
+            raise ValueError(
+                f"Missing mandatory internal child execution argument: --{attr.replace('_', '-')}"
+            )
+
+    validate_run_label(args.run_label)
+    if not HEX_40_PATTERN.fullmatch(args.authorized_git_sha.lower()):
+        raise ValueError(
+            f"Invalid authorized git commit SHA '{args.authorized_git_sha}'. "
+            "Must be exactly 40 lowercase hexadecimal characters."
+        )
+    validate_project_fingerprint_format(args.expected_project_fingerprint)
+
+    prov_path = Path(args.provenance_repo).resolve()
+    if not prov_path.is_dir():
+        raise ValueError(f"Provenance repository directory not found: {prov_path}")
+
+    snap_path = Path(args.snapshot_dir).resolve()
+    if not snap_path.is_dir():
+        raise ValueError(f"Snapshot directory not found: {snap_path}")
+
+    art_path = Path(args.artifact_dir).resolve()
+    if not art_path.is_dir():
+        raise ValueError(f"Artifact directory not found: {art_path}")
+
+
 def check_git_branch() -> str:
     """Verify current git branch is feat/gate-2-cobol-reader."""
     res = subprocess.run(
@@ -131,6 +211,11 @@ def get_git_commit_sha() -> str:
 def is_isolated_python() -> bool:
     """Return True if Python interpreter was invoked in isolated mode (-I)."""
     return sys.flags.isolated == 1
+
+
+def is_bytecode_writing_disabled() -> bool:
+    """Return True if Python interpreter was invoked with -B (dont_write_bytecode)."""
+    return sys.flags.dont_write_bytecode == 1
 
 
 def verify_environment_variables(is_baseline_run: bool) -> None:
@@ -436,7 +521,189 @@ def verify_no_executable_overlays(is_baseline_run: bool = False) -> None:
         )
 
 
-def create_and_verify_git_snapshot(expected_git_sha: str, temp_dir: Path) -> Path:
+def verify_trusted_runner_bootstrap(
+    provenance_repo: Path, authorized_git_sha: str, executing_file: Path
+) -> None:
+    """Verify executing runner matches committed runner for authorized Git SHA.
+
+    Enforces:
+    - Sanitized Git environment (GIT_NO_REPLACE_OBJECTS=1)
+    - Verifies authorized_git_sha resolves to a commit in provenance_repo
+    - Fetches committed blob for scripts/run-gate-2.py from authorized_git_sha
+    - Compares byte-for-byte / hash-for-hash with executing_file
+    - Fails closed if they differ
+    """
+    sanitized_env = get_sanitized_git_env()
+
+    # 1. Verify authorized_git_sha resolves in provenance repository
+    rev_res = subprocess.run(
+        ["git", "rev-parse", "--verify", f"{authorized_git_sha}^{{commit}}"],
+        cwd=provenance_repo,
+        env=sanitized_env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if rev_res.returncode != 0:
+        raise RuntimeError(
+            f"Authorized Git commit SHA '{authorized_git_sha}' does not resolve "
+            f"in provenance repository: {rev_res.stderr.strip()}"
+        )
+    resolved_sha = rev_res.stdout.strip().lower()
+    if resolved_sha != authorized_git_sha.lower():
+        raise RuntimeError(
+            f"Resolved Git SHA '{resolved_sha}' does not match "
+            f"authorized SHA '{authorized_git_sha.lower()}'"
+        )
+
+    # 2. Fetch committed blob for scripts/run-gate-2.py
+    runner_blob_res = subprocess.run(
+        ["git", "show", f"{authorized_git_sha}:scripts/run-gate-2.py"],
+        cwd=provenance_repo,
+        env=sanitized_env,
+        capture_output=True,
+        check=False,
+    )
+    if runner_blob_res.returncode != 0:
+        raise RuntimeError(
+            f"Failed to retrieve committed runner blob for "
+            f"'{authorized_git_sha}:scripts/run-gate-2.py': "
+            f"{runner_blob_res.stderr.decode('utf-8', errors='replace').strip()}"
+        )
+    committed_runner_bytes = runner_blob_res.stdout
+
+    # 3. Read executing runner bytes
+    executing_path = executing_file.resolve()
+    if not executing_path.is_file():
+        raise RuntimeError(f"Executing runner file not found: {executing_path}")
+    executing_bytes = executing_path.read_bytes()
+
+    if executing_bytes != committed_runner_bytes:
+        executing_sha = hashlib.sha256(executing_bytes).hexdigest()
+        committed_sha = hashlib.sha256(committed_runner_bytes).hexdigest()
+        raise RuntimeError(
+            "Executing runner does not match committed runner blob in authorized Git commit!\n"
+            f"Executing runner SHA256: {executing_sha}\n"
+            f"Committed blob SHA256:   {committed_sha}"
+        )
+
+
+def verify_snapshot_against_git_objects(
+    provenance_repo: Path,
+    authorized_git_sha: str,
+    snapshot_dir: Path,
+) -> set[str]:
+    """Verify snapshot regular-file bytes against Git object blobs byte-for-byte.
+
+    Enforces:
+    - GIT_NO_REPLACE_OBJECTS=1 and sanitized Git environment
+    - git ls-tree -r -z <authorized_git_sha>
+    - Fail closed on unsupported tree entry modes/types (symlinks, submodules)
+    - Regular-file bytes must equal committed blob bytes via git cat-file blob <object-id>
+    - Exact expected regular-file set equality
+    - Zero bytecode (__pycache__, *.pyc, *.pyo, *.pyd)
+    """
+    sanitized_env = get_sanitized_git_env()
+
+    # 1. Fetch tree listing from authorized Git commit
+    ls_tree_res = subprocess.run(
+        ["git", "ls-tree", "-r", "-z", authorized_git_sha],
+        cwd=provenance_repo,
+        env=sanitized_env,
+        capture_output=True,
+        check=False,
+    )
+    if ls_tree_res.returncode != 0:
+        raise RuntimeError(
+            f"git ls-tree failed for commit '{authorized_git_sha}': "
+            f"{ls_tree_res.stderr.decode('utf-8', errors='replace').strip()}"
+        )
+
+    expected_files: set[str] = set()
+    raw_entries = [e for e in ls_tree_res.stdout.split(b"\x00") if e]
+
+    for entry in raw_entries:
+        parts = entry.split(b"\t", 1)
+        if len(parts) != 2:
+            continue
+        meta_bytes, path_bytes = parts
+        meta_parts = meta_bytes.split(b" ")
+        if len(meta_parts) != 3:
+            continue
+        mode_bytes, type_bytes, obj_id_bytes = meta_parts
+        mode = mode_bytes.decode("ascii")
+        typ = type_bytes.decode("ascii")
+        obj_id = obj_id_bytes.decode("ascii")
+        rel_path = path_bytes.decode("utf-8", errors="replace")
+
+        # Fail closed on unsupported tree entry modes/types
+        if mode not in ("100644", "100755"):
+            raise RuntimeError(
+                f"Unsupported tree entry mode '{mode}' for path '{rel_path}'. "
+                "Only regular files (100644, 100755) are permitted."
+            )
+        if typ != "blob":
+            raise RuntimeError(
+                f"Unsupported tree entry type '{typ}' for path '{rel_path}'. "
+                "Only blob entries are permitted."
+            )
+
+        expected_files.add(rel_path)
+
+        file_path = snapshot_dir / rel_path
+        if not file_path.is_file() or file_path.is_symlink():
+            raise RuntimeError(f"Committed file missing or is symlink in snapshot: {rel_path}")
+
+        disk_bytes = file_path.read_bytes()
+
+        # Retrieve committed blob bytes via git cat-file blob <object-id>
+        blob_proc = subprocess.run(
+            ["git", "cat-file", "blob", obj_id],
+            cwd=provenance_repo,
+            env=sanitized_env,
+            capture_output=True,
+            check=False,
+        )
+        if blob_proc.returncode != 0:
+            raise RuntimeError(
+                f"Failed to retrieve committed blob for '{rel_path}' ({obj_id}): "
+                f"{blob_proc.stderr.decode('utf-8', errors='replace').strip()}"
+            )
+        committed_bytes = blob_proc.stdout
+
+        if disk_bytes != committed_bytes:
+            disk_sha = hashlib.sha256(disk_bytes).hexdigest()
+            blob_sha = hashlib.sha256(committed_bytes).hexdigest()
+            raise RuntimeError(
+                f"Snapshot file '{rel_path}' does not match committed Git object bytes!\n"
+                f"Snapshot SHA256: {disk_sha}\n"
+                f"Git blob SHA256: {blob_sha}"
+            )
+
+    # 2. Verify exact regular-file set equality & zero bytecode/cache
+    for root, dirs, files in os.walk(snapshot_dir):
+        if "__pycache__" in dirs:
+            raise RuntimeError(
+                f"Illegal __pycache__ directory detected in snapshot: {root}/__pycache__"
+            )
+        for f in files:
+            if f.endswith((".pyc", ".pyo", ".pyd")):
+                raise RuntimeError(f"Illegal bytecode cache detected in snapshot: {root}/{f}")
+            disk_file = Path(root) / f
+            if disk_file.is_symlink():
+                raise RuntimeError(f"Illegal symlink detected in snapshot: {disk_file}")
+            actual_rel = disk_file.relative_to(snapshot_dir).as_posix()
+            if actual_rel not in expected_files:
+                raise RuntimeError(
+                    f"Unexpected uncommitted file detected in snapshot: {actual_rel}"
+                )
+
+    return expected_files
+
+
+def create_and_verify_git_snapshot(
+    expected_git_sha: str, temp_dir: Path, repo_root: Path = REPO_ROOT
+) -> Path:
     """Extract immutable application snapshot from authorized Git commit object tree.
 
     Uses sanitized Git environment to defeat object redirection / replacement.
@@ -448,7 +715,7 @@ def create_and_verify_git_snapshot(expected_git_sha: str, temp_dir: Path) -> Pat
     # 1. Stream git archive <expected_git_sha> into temp_dir
     archive_proc = subprocess.Popen(
         ["git", "archive", "--format=tar", expected_git_sha],
-        cwd=REPO_ROOT,
+        cwd=repo_root,
         env=sanitized_env,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -469,36 +736,8 @@ def create_and_verify_git_snapshot(expected_git_sha: str, temp_dir: Path) -> Pat
     if returncode != 0:
         raise RuntimeError(f"git archive failed (exit {returncode}): {stderr_out}")
 
-    # 2. Verify snapshot files against git ls-tree -r -z <expected_git_sha>
-    ls_tree_res = subprocess.run(
-        ["git", "ls-tree", "-r", "-z", expected_git_sha],
-        cwd=REPO_ROOT,
-        env=sanitized_env,
-        capture_output=True,
-        check=True,
-    )
-    raw_entries = ls_tree_res.stdout.split(b"\x00")
-    for entry in raw_entries:
-        if not entry:
-            continue
-        parts = entry.split(b"\t", 1)
-        if len(parts) != 2:
-            continue
-        _meta, path_bytes = parts
-        rel_path = path_bytes.decode("utf-8", errors="replace")
-        extracted_file = temp_dir / rel_path
-        if not extracted_file.is_file():
-            raise RuntimeError(f"Committed file missing from extracted snapshot: {rel_path}")
-
-    # 3. Verify zero bytecode / __pycache__ in snapshot
-    for root, dirs, files in os.walk(temp_dir):
-        if "__pycache__" in dirs:
-            raise RuntimeError(
-                f"Illegal __pycache__ directory detected in snapshot: {root}/__pycache__"
-            )
-        for f in files:
-            if f.endswith((".pyc", ".pyo", ".pyd")):
-                raise RuntimeError(f"Illegal bytecode cache detected in snapshot: {root}/{f}")
+    # 2. Verify snapshot files against Git object tree byte-for-byte
+    verify_snapshot_against_git_objects(repo_root, expected_git_sha, temp_dir)
 
     return temp_dir
 
@@ -733,98 +972,235 @@ def verify_import_origins(snapshot_dir: Path | None = None) -> None:
 
 
 def run_child_process(args: argparse.Namespace) -> int:
-    """Execute Gate 2 application child process inside isolated snapshot environment."""
-    # 1. Verify isolated Python and no bytecode
-    if not is_isolated_python() or sys.flags.dont_write_bytecode != 1:
+    """Execute Gate 2 application child process with self-authorizing verification.
+
+    Self-Authorizing Child Trust Model:
+    ANY execution path capable of reaching MODEL_INVOCATION, including direct internal-child mode,
+    must independently satisfy the COMPLETE baseline authorization contract.
+    No caller-controlled nonces or paths are trusted; every identity is derived independently
+    from the verified provenance Git repository, committed BaselineAuthorizationSpec,
+    and verified snapshot bytes.
+    """
+    # Step 1: Validate internal CLI contract
+    try:
+        validate_internal_child_args(args)
+    except Exception as e:
+        print(f"ERROR: Step 1 Internal CLI contract validation failed: {e}")
+        return 1
+
+    # Step 2: Require isolated Python (-I) and no bytecode (-B)
+    if not is_isolated_python() or not is_bytecode_writing_disabled():
         print(
-            "ERROR: Child execution must be invoked with isolated Python (-I) and no bytecode (-B)."
+            "ERROR: Step 2 Child execution must be invoked with isolated Python (-I) "
+            "and no bytecode (-B)."
         )
         return 1
 
+    provenance_repo = Path(args.provenance_repo).resolve()
     snapshot_dir = Path(args.snapshot_dir).resolve()
     artifact_dir = Path(args.artifact_dir).resolve()
 
-    # 2. Verify controlled cwd
-    if Path.cwd().resolve() != snapshot_dir:
-        print(f"ERROR: Child execution cwd must be snapshot directory. Got: {Path.cwd()}")
+    # Step 3: Verify provenance Git repository / authorized commit resolves
+    # Step 4: Verify executing runner against committed runner blob
+    try:
+        verify_trusted_runner_bootstrap(
+            provenance_repo=provenance_repo,
+            authorized_git_sha=args.authorized_git_sha,
+            executing_file=Path(__file__),
+        )
+        print("[OK] Steps 3 & 4: Provenance Git repo and executing runner blob verified")
+    except Exception as e:
+        print(f"ERROR: Runner bootstrap verification failed: {sanitize_console_message(str(e))}")
         return 1
 
-    # 3. Construct isolated sys.path (snapshot root first, repo root purged)
-    sys.path = [p for p in sys.path if Path(p).resolve() != REPO_ROOT.resolve()]
+    # Step 5: Verify EVERY snapshot file against Git object bytes
+    try:
+        verified_files = verify_snapshot_against_git_objects(
+            provenance_repo=provenance_repo,
+            authorized_git_sha=args.authorized_git_sha,
+            snapshot_dir=snapshot_dir,
+        )
+        print(
+            f"[OK] Step 5: Snapshot verified ({len(verified_files)} files match Git object blobs)"
+        )
+    except Exception as e:
+        print(f"ERROR: Snapshot byte verification failed: {sanitize_console_message(str(e))}")
+        return 1
+
+    # Step 6: Load verified committed BaselineAuthorizationSpec
+    try:
+        spec, spec_sha256 = load_baseline_authorization_spec(snapshot_dir)
+        print(
+            f"[OK] Step 6: Committed BaselineAuthorizationSpec loaded "
+            f"(SHA256: {spec_sha256[:12]}...)"
+        )
+    except Exception as e:
+        print(f"ERROR: Failed to load BaselineAuthorizationSpec: {e}")
+        return 1
+
+    # Step 7: Compare CLI assertions against committed spec
+    try:
+        if args.run_label != spec["run_label"]:
+            raise RuntimeError(
+                f"CLI run_label '{args.run_label}' does not match "
+                f"committed spec run_label '{spec['run_label']}'"
+            )
+        if args.expected_model != spec["requested_model"]:
+            raise RuntimeError(
+                f"CLI expected_model '{args.expected_model}' does not match "
+                f"committed spec requested_model '{spec['requested_model']}'"
+            )
+        if args.expected_project_fingerprint != spec["foundry_project_fingerprint"]:
+            raise RuntimeError(
+                "CLI expected_project_fingerprint does not match "
+                "committed spec foundry_project_fingerprint"
+            )
+        print("[OK] Step 7: CLI assertions match committed BaselineAuthorizationSpec")
+    except Exception as e:
+        print(f"ERROR: CLI consistency assertion failed: {e}")
+        return 1
+
+    # Step 8: Recompute and verify BANK-MAIN source SHA
+    try:
+        source_rel_path = spec["source_path"]
+        source_file = snapshot_dir / source_rel_path
+        if not source_file.is_file() or source_file.is_symlink():
+            raise RuntimeError(f"Source file missing or is symlink in snapshot: {source_rel_path}")
+        actual_source_bytes = source_file.read_bytes()
+        actual_source_sha = hashlib.sha256(actual_source_bytes).hexdigest()
+        if actual_source_sha.lower() != spec["source_sha256"].lower():
+            raise RuntimeError(
+                f"Snapshot source SHA256 '{actual_source_sha}' does not match "
+                f"committed spec source_sha256 '{spec['source_sha256']}'"
+            )
+        print("[OK] Step 8: BANK-MAIN source SHA recomputed and verified from snapshot bytes")
+    except Exception as e:
+        print(f"ERROR: Source SHA verification failed: {e}")
+        return 1
+
+    # Step 9: Verify controlled cwd/sys.path
+    if Path.cwd().resolve() != snapshot_dir or Path.cwd().is_symlink():
+        print(f"ERROR: Step 9 Child execution cwd must be snapshot directory. Got: {Path.cwd()}")
+        return 1
+    sys.path = [p for p in sys.path if Path(p).resolve() != provenance_repo.resolve()]
     if sys.path[0] != str(snapshot_dir):
         sys.path.insert(0, str(snapshot_dir))
+    print("[OK] Step 9: Controlled cwd and sys.path verified")
 
-    # 4. Validate artifact destination capability prepared by parent
-    if not artifact_dir.is_dir():
-        print(f"ERROR: Prepared artifact directory not found: {artifact_dir}")
+    # Step 10: Verify deterministic artifact destination and RESERVED-state consistency
+    expected_artifact_dir = (provenance_repo / "artifacts" / "gate-2" / args.run_label).resolve()
+    resolved_artifact_dir = artifact_dir.resolve()
+    if Path(args.artifact_dir).is_symlink() or resolved_artifact_dir.is_symlink():
+        print(f"ERROR: Artifact directory must not be a symlink: {args.artifact_dir}")
         return 1
-    run_state_file = artifact_dir / "run-state.json"
-    if not run_state_file.is_file():
-        print(f"ERROR: Prepared run-state.json not found in: {artifact_dir}")
+    if resolved_artifact_dir != expected_artifact_dir:
+        print(
+            "ERROR: Artifact destination mismatch! "
+            f"Expected: {expected_artifact_dir}, got: {resolved_artifact_dir}"
+        )
+        return 1
+
+    run_state_file = resolved_artifact_dir / "run-state.json"
+    if run_state_file.is_symlink() or not run_state_file.is_file():
+        print(f"ERROR: Prepared run-state.json not found in: {resolved_artifact_dir}")
         return 1
 
     try:
         initial_state = json.loads(run_state_file.read_text(encoding="utf-8"))
         if initial_state.get("status") != "RESERVED":
-            print(f"ERROR: Expected RESERVED run state, got: {initial_state.get('status')}")
-            return 1
-        if initial_state.get("run_label") != args.run_label:
-            print("ERROR: Run label mismatch in prepared reservation state.")
-            return 1
+            raise RuntimeError(f"Expected RESERVED run state, got: {initial_state.get('status')}")
+        if initial_state.get("run_label") != spec["run_label"]:
+            raise RuntimeError("Run label mismatch in prepared reservation state.")
         if initial_state.get("git_commit_sha") != args.authorized_git_sha:
-            print("ERROR: Git commit SHA mismatch in prepared reservation state.")
-            return 1
-        if initial_state.get("foundry_project_fingerprint") != args.expected_project_fingerprint:
-            print("ERROR: Project fingerprint mismatch in prepared reservation state.")
-            return 1
+            raise RuntimeError("Git commit SHA mismatch in prepared reservation state.")
+        if initial_state.get("source_sha256") != actual_source_sha:
+            raise RuntimeError(
+                f"Source SHA in RESERVED state ({initial_state.get('source_sha256')}) "
+                f"does not match actual verified snapshot source SHA ({actual_source_sha})."
+            )
+        if initial_state.get("requested_model") != spec["requested_model"]:
+            raise RuntimeError("Model mismatch in prepared reservation state.")
+        if initial_state.get("foundry_project_fingerprint") != spec["foundry_project_fingerprint"]:
+            raise RuntimeError("Project fingerprint mismatch in prepared reservation state.")
+        print("[OK] Step 10: Deterministic artifact destination and RESERVED state verified")
     except Exception as e:
-        print(f"ERROR: Failed to validate prepared run state: {e}")
+        print(f"ERROR: Reservation validation failed: {e}")
         return 1
 
-    # 5. Verify import origins
+    # Step 11: Verify runtime against verified snapshot requirements-lock.txt
+    lock_file = snapshot_dir / "requirements-lock.txt"
+    try:
+        runtime_manifest, runtime_manifest_sha = verify_runtime_environment(lock_file)
+        print(
+            f"[OK] Step 11: Runtime environment verified pre-invocation "
+            f"({len(runtime_manifest)} packages, SHA256: {runtime_manifest_sha[:12]}...)"
+        )
+    except Exception as e:
+        print(f"ERROR: Runtime environment verification failed: {sanitize_console_message(str(e))}")
+        write_failure_run_state(run_state_file, "PRE_INVOCATION", e, args.authorized_git_sha)
+        return 1
+
+    # Step 12: Import application modules from snapshot
+    try:
+        from agents.legacy_analyzer.agent import LegacyAnalyzerAgent
+        from agents.legacy_analyzer.config import load_config
+        from agents.legacy_analyzer.schemas.export import (
+            export_schema_to_file,
+            export_wire_schema_to_file,
+        )
+        from src.cobol.source_reader import prepare_source
+        from src.validation.evaluator_v2 import evaluate_assessment_v2, load_golden_dataset_v2
+
+        print("[OK] Step 12: Application modules imported from snapshot")
+    except Exception as e:
+        print(f"ERROR: Application module import failed: {sanitize_console_message(str(e))}")
+        write_failure_run_state(run_state_file, "PRE_INVOCATION", e, args.authorized_git_sha)
+        return 1
+
+    # Step 13: Verify application/third-party import origins
     try:
         verify_import_origins(snapshot_dir)
-        print("[OK] Child import origins verified (app from snapshot, deps from attested venv)")
+        print("[OK] Step 13: Import origins verified (app from snapshot, deps from attested venv)")
     except Exception as e:
         print(f"ERROR: Import origin verification failed: {sanitize_console_message(str(e))}")
         write_failure_run_state(run_state_file, "PRE_INVOCATION", e, args.authorized_git_sha)
         return 1
 
-    # 6. Load configuration & application modules from snapshot
-    from agents.legacy_analyzer.agent import LegacyAnalyzerAgent
-    from agents.legacy_analyzer.config import load_config
-    from agents.legacy_analyzer.schemas.export import (
-        export_schema_to_file,
-        export_wire_schema_to_file,
-    )
-    from src.cobol.source_reader import prepare_source
-    from src.validation.evaluator_v2 import evaluate_assessment_v2, load_golden_dataset_v2
-
-    target_rel_path = "legacy/core-banking-system/BANK-MAIN.CBL"
-    prep = prepare_source(target_rel_path, repo_root=snapshot_dir)
-
+    # Step 14: Load effective configuration
     try:
         config = load_config()
-        if args.expected_model and config.foundry_model != args.expected_model:
-            raise RuntimeError(
-                f"Model mismatch! Expected '{args.expected_model}', "
-                f"but configured model is '{config.foundry_model}'"
-            )
-        if (
-            args.expected_project_fingerprint
-            and config.project_fingerprint != args.expected_project_fingerprint
-        ):
-            raise RuntimeError(
-                "Project fingerprint mismatch! "
-                "Configured endpoint does not match authorized fingerprint."
-            )
+        print("[OK] Step 14: Effective configuration loaded")
     except Exception as e:
-        safe_msg = sanitize_console_message(str(e))
-        print(f"ERROR: Configuration check failed in child: {safe_msg}")
+        print(f"ERROR: Failed to load configuration: {sanitize_console_message(str(e))}")
         write_failure_run_state(run_state_file, "PRE_INVOCATION", e, args.authorized_git_sha)
         return 1
 
-    # 7. Model Invocation Lifecycle
+    # Step 15: Verify effective model == committed spec model
+    try:
+        if config.foundry_model != spec["requested_model"]:
+            raise RuntimeError(
+                f"Effective model '{config.foundry_model}' does not match "
+                f"committed spec model '{spec['requested_model']}'"
+            )
+        print("[OK] Step 15: Effective model matches committed spec")
+    except Exception as e:
+        print(f"ERROR: Model verification failed: {sanitize_console_message(str(e))}")
+        write_failure_run_state(run_state_file, "PRE_INVOCATION", e, args.authorized_git_sha)
+        return 1
+
+    # Step 16: Verify effective Foundry fingerprint == committed spec fingerprint
+    try:
+        if config.project_fingerprint != spec["foundry_project_fingerprint"]:
+            raise RuntimeError(
+                "Effective project fingerprint does not match committed spec fingerprint"
+            )
+        print("[OK] Step 16: Effective Foundry fingerprint matches committed spec")
+    except Exception as e:
+        print(f"ERROR: Fingerprint verification failed: {sanitize_console_message(str(e))}")
+        write_failure_run_state(run_state_file, "PRE_INVOCATION", e, args.authorized_git_sha)
+        return 1
+
+    # Step 17: Persist MODEL_INVOCATION state
     current_phase = "MODEL_INVOCATION"
     try:
         atomic_write_json(
@@ -838,11 +1214,20 @@ def run_child_process(args: argparse.Namespace) -> int:
                 "foundry_project_fingerprint": config.project_fingerprint,
             },
         )
+        print("[OK] Step 17: MODEL_INVOCATION state persisted")
+    except Exception as e:
+        print(f"ERROR: Failed to write MODEL_INVOCATION state: {sanitize_console_message(str(e))}")
+        write_failure_run_state(run_state_file, "PRE_INVOCATION", e, args.authorized_git_sha)
+        return 1
+
+    # Step 18: ONLY NOW construct LegacyAnalyzerAgent and invoke model
+    try:
+        prep = prepare_source(spec["source_path"], repo_root=snapshot_dir)
 
         print("--- Executing Responses API Call (Child Process) ---")
         agent = LegacyAnalyzerAgent(config=config, reasoning_effort="low")
         assessment, metadata = agent.analyze_source(
-            source_path=target_rel_path,
+            source_path=spec["source_path"],
             run_label=args.run_label,
             repo_root=snapshot_dir,
             git_commit_sha=args.authorized_git_sha,
@@ -857,9 +1242,7 @@ def run_child_process(args: argparse.Namespace) -> int:
         runtime_manifest_file = artifact_dir / "runtime-manifest.json"
         eval_file = artifact_dir / "evaluation.json"
 
-        # Persist runtime manifest and runtime identity
-        lock_file = snapshot_dir / "requirements-lock.txt"
-        runtime_manifest, runtime_manifest_sha = verify_runtime_environment(lock_file)
+        # Persist runtime manifest using pre-attested values
         atomic_write_json(
             runtime_manifest_file,
             {
@@ -873,11 +1256,12 @@ def run_child_process(args: argparse.Namespace) -> int:
 
         assessment_file.write_text(assessment.model_dump_json(indent=2), encoding="utf-8")
 
-        # Compile metadata with host-owned runtime provenance and safe fingerprint (no raw endpoint)
+        # Compile metadata with host-owned runtime provenance, safe fingerprint, and spec sha
         meta_dict = metadata.to_dict()
         meta_dict.pop("endpoint", None)  # Strictly ensure no raw endpoint
         runtime_id = get_python_runtime_identity(lock_file, runtime_manifest_sha)
         meta_dict["runtime_manifest_sha256"] = runtime_manifest_sha
+        meta_dict["baseline_authorization_spec_sha256"] = spec_sha256
         meta_dict["python_runtime"] = runtime_id
         metadata_file.write_text(json.dumps(meta_dict, indent=2), encoding="utf-8")
 
@@ -913,7 +1297,7 @@ def run_child_process(args: argparse.Namespace) -> int:
 
         # Report Summary
         print("======================================================================")
-        print(" GATE 2 EVALUATION SUMMARY (V2.3)")
+        print(" GATE 2 EVALUATION SUMMARY (V2.3.1)")
         print("======================================================================")
         print(f"Unique Predictions:      {report.unique_predicted_count}")
         print(f"Supported Predictions:   {report.supported_predicted_count}")
@@ -940,7 +1324,7 @@ def run_child_process(args: argparse.Namespace) -> int:
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Gate 2 COBOL Reader runner with verifiable provenance (V2.3)."
+        description="Gate 2 COBOL Reader runner with verifiable provenance (V2.3.1)."
     )
     parser.add_argument(
         "--run-label",
@@ -976,6 +1360,10 @@ def main() -> int:
         help=argparse.SUPPRESS,
     )
     parser.add_argument(
+        "--provenance-repo",
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
         "--snapshot-dir",
         help=argparse.SUPPRESS,
     )
@@ -991,7 +1379,7 @@ def main() -> int:
         return run_child_process(args)
 
     print("======================================================================")
-    print(" GATE 2 — COBOL READER RUNNER (V2.3)")
+    print(" GATE 2 — COBOL READER RUNNER (V2.3.1)")
     print("======================================================================")
     print(f"Run label: {args.run_label}")
     print()
@@ -1021,6 +1409,29 @@ def main() -> int:
             return 1
         if not args.expected_project_fingerprint:
             print("ERROR: --expected-project-fingerprint is mandatory for baseline runs.")
+            return 1
+
+        try:
+            baseline_spec, baseline_spec_sha = load_baseline_authorization_spec(REPO_ROOT)
+            if args.run_label != baseline_spec["run_label"]:
+                print(
+                    f"ERROR: Baseline run label '{args.run_label}' does not match "
+                    f"committed spec '{baseline_spec['run_label']}'."
+                )
+                return 1
+            if args.expected_model != baseline_spec["requested_model"]:
+                print(
+                    f"ERROR: Expected model '{args.expected_model}' does not match "
+                    f"committed spec model '{baseline_spec['requested_model']}'."
+                )
+                return 1
+            if args.expected_project_fingerprint != baseline_spec["foundry_project_fingerprint"]:
+                print(
+                    "ERROR: Expected project fingerprint does not match committed spec fingerprint."
+                )
+                return 1
+        except Exception as e:
+            print(f"ERROR: Baseline authorization spec preflight failed: {e}")
             return 1
 
     if args.expected_project_fingerprint:
@@ -1100,10 +1511,9 @@ def main() -> int:
 
     source_bytes = source_disk_path.read_bytes()
     source_sha = hashlib.sha256(source_bytes).hexdigest()
-    expected_bank_main_sha = "b03adc9592f2853006263ef67fcc6dc716b99333b84bc0198bff7b7f0af1a028"
 
-    if source_sha.lower() != expected_bank_main_sha.lower():
-        print(f"ERROR: Source SHA256 mismatch! Expected {expected_bank_main_sha}")
+    if source_sha.lower() != EXPECTED_BANK_MAIN_SHA.lower():
+        print(f"ERROR: Source SHA256 mismatch! Expected {EXPECTED_BANK_MAIN_SHA}")
         return 1
     print("[OK] Source immutability verified")
 
@@ -1206,6 +1616,8 @@ def main() -> int:
         "--internal-child-exec",
         "--authorized-git-sha",
         head_sha,
+        "--provenance-repo",
+        str(REPO_ROOT.resolve()),
         "--expected-model",
         args.expected_model or configured_model,
         "--expected-project-fingerprint",
@@ -1213,7 +1625,7 @@ def main() -> int:
         "--snapshot-dir",
         str(snapshot_path),
         "--artifact-dir",
-        str(artifact_dir),
+        str(artifact_dir.resolve()),
     ]
 
     child_env = dict(os.environ)
