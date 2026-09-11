@@ -1,4 +1,6 @@
-"""Unit and regression tests for Gate 3 runner and authorization contract."""
+"""Unit and regression tests for Gate 3 runner, authorization contract, and snapshot isolation."""
+
+from __future__ import annotations
 
 import importlib.util
 import json
@@ -39,7 +41,7 @@ def test_validate_run_label():
 
 
 def test_load_authorization_spec_valid():
-    """Verify loading the official Gate 3 authorization spec."""
+    """Verify loading the official Gate 3 authorization spec and all Blocker 10 required fields."""
     mod = get_run_gate_3_module()
     spec_path = REPO_ROOT / mod.DEFAULT_AUTH_SPEC_PATH
     spec, sha256 = mod.load_authorization_spec(spec_path)
@@ -53,44 +55,151 @@ def test_load_authorization_spec_valid():
     assert len(spec["target_bundle"]) == 6
     assert len(sha256) == 64
 
+    # Blocker 10 required fields
+    assert "expected_git_sha" in spec
+    assert spec["reasoning_effort"] == "low"
+    assert len(spec["prompt_sha256"]) == 64
+    assert len(spec["wire_schema_sha256"]) == 64
+    assert len(spec["source_manifest_sha256"]) == 64
+    assert spec["bundle_serialization_version"] == "1.0.0"
+    assert len(spec["bundle_sha256"]) == 64
+    assert len(spec["dependency_lock_sha256"]) == 64
+    assert len(spec["foundry_project_fingerprint"]) == 64
+    assert spec["openai_client_max_retries"] == 0
+    assert spec["application_model_retries"] == 0
+    assert spec["maximum_model_attempts"] == 1
+    assert spec["maximum_logical_invocation_count"] == 1
+
 
 def test_load_authorization_spec_invalid_gate(tmp_path: Path):
     """Verify rejection when gate is not 3."""
     mod = get_run_gate_3_module()
+    spec_path = REPO_ROOT / mod.DEFAULT_AUTH_SPEC_PATH
+    spec, _ = mod.load_authorization_spec(spec_path)
+    spec["gate"] = 2
+
     bad_spec = tmp_path / "bad-spec.json"
-    bad_spec.write_text(
-        json.dumps(
-            {
-                "spec_version": "1.0.0",
-                "gate": 2,
-                "run_label": "bad",
-                "target_bundle": [],
-                "requested_model": "gpt-5-mini",
-                "foundry_project_fingerprint": "a" * 64,
-                "schema_version": "3.0.0",
-                "prompt_version": "v1",
-                "evaluator_version": "3.0.0",
-                "golden_dataset_version": "3.0.0",
-            }
-        ),
-        encoding="utf-8",
-    )
+    bad_spec.write_text(json.dumps(spec), encoding="utf-8")
     with pytest.raises(ValueError, match="gate must be 3"):
         mod.load_authorization_spec(bad_spec)
 
 
-def test_runner_synthetic_execution_passes(tmp_path: Path):
-    """Verify offline synthetic evaluation runs end-to-end and produces valid manifest."""
+def test_load_authorization_spec_invalid_retries(tmp_path: Path):
+    """Verify rejection when retry limits violate zero-retry contract."""
     mod = get_run_gate_3_module()
-    out_dir = tmp_path / "run_out"
-    auth_spec = REPO_ROOT / mod.DEFAULT_AUTH_SPEC_PATH
+    spec_path = REPO_ROOT / mod.DEFAULT_AUTH_SPEC_PATH
+    spec, _ = mod.load_authorization_spec(spec_path)
+
+    bad_spec1 = tmp_path / "bad-retry1.json"
+    spec1 = dict(spec, openai_client_max_retries=2)
+    bad_spec1.write_text(json.dumps(spec1), encoding="utf-8")
+    with pytest.raises(ValueError, match="openai_client_max_retries must be 0"):
+        mod.load_authorization_spec(bad_spec1)
+
+    bad_spec2 = tmp_path / "bad-retry2.json"
+    spec2 = dict(spec, maximum_model_attempts=2)
+    bad_spec2.write_text(json.dumps(spec2), encoding="utf-8")
+    with pytest.raises(ValueError, match="maximum_model_attempts must be 1"):
+        mod.load_authorization_spec(bad_spec2)
+
+
+def test_verify_bundle_integrity_passes():
+    """Verify multi-source bundle verification on current repository tree."""
+    mod = get_run_gate_3_module()
+    spec_path = REPO_ROOT / mod.DEFAULT_AUTH_SPEC_PATH
+    spec, _ = mod.load_authorization_spec(spec_path)
+
+    entries, b_sha, m_sha = mod.verify_bundle_integrity(REPO_ROOT, spec)
+    assert len(entries) == 6
+    assert b_sha == spec["bundle_sha256"]
+    assert m_sha == spec["source_manifest_sha256"]
+
+
+def test_verify_bundle_integrity_tampered_fails(tmp_path: Path):
+    """Verify tampering any file in bundle fails bundle verification."""
+    mod = get_run_gate_3_module()
+    spec_path = REPO_ROOT / mod.DEFAULT_AUTH_SPEC_PATH
+    spec, _ = mod.load_authorization_spec(spec_path)
+
+    # Copy files to temp
+    for item in spec["target_bundle"]:
+        src = REPO_ROOT / item["path"]
+        dst = tmp_path / item["path"]
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        dst.write_bytes(src.read_bytes())
+
+    # Tamper one file
+    tampered_file = tmp_path / "legacy/core-banking-system/BANK-MAIN.CBL"
+    tampered_file.write_text("TAMPERED", encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="SHA mismatch for bundle file"):
+        mod.verify_bundle_integrity(tmp_path, spec)
+
+
+def test_verify_schema_and_prompt_hashes_passes():
+    """Verify prompt and wire schema hashes strictly match authorization spec."""
+    mod = get_run_gate_3_module()
+    spec_path = REPO_ROOT / mod.DEFAULT_AUTH_SPEC_PATH
+    spec, _ = mod.load_authorization_spec(spec_path)
+
+    mod.verify_schema_and_prompt_hashes(REPO_ROOT, spec)
+
+
+def test_live_execution_refused_when_unfrozen(tmp_path: Path):
+    """Verify live execution is strictly refused when candidate expected_git_sha is empty."""
+    mod = get_run_gate_3_module()
+    spec_path = REPO_ROOT / mod.DEFAULT_AUTH_SPEC_PATH
+    spec, _ = mod.load_authorization_spec(spec_path)
+    assert spec["expected_git_sha"] == ""
+
+    out_dir = tmp_path / "live_refused"
+    with pytest.raises(RuntimeError, match="Candidate commit is not frozen"):
+        mod.execute_gate_3(
+            repo_root=REPO_ROOT,
+            auth_spec_path=spec_path,
+            output_dir=out_dir,
+            run_label="baseline-v1",
+            synthetic=False,
+            dry_run=False,
+            allow_dirty=True,
+        )
+
+
+def test_dry_run_preflight_passes(tmp_path: Path):
+    """Verify dry-run preflight completes without requiring live credentials or calling models."""
+    mod = get_run_gate_3_module()
+    spec_path = REPO_ROOT / mod.DEFAULT_AUTH_SPEC_PATH
+    out_dir = tmp_path / "dry_run_out"
 
     exit_code = mod.execute_gate_3(
         repo_root=REPO_ROOT,
-        auth_spec_path=auth_spec,
+        auth_spec_path=spec_path,
         output_dir=out_dir,
-        run_label="test-synthetic-v1",
+        run_label="baseline-v1",
+        synthetic=False,
+        dry_run=True,
+        allow_dirty=True,
+    )
+    assert exit_code == 0
+    state_file = out_dir / "run-state.json"
+    assert state_file.is_file()
+    state = json.loads(state_file.read_text(encoding="utf-8"))
+    assert state["status"] == "DRY_RUN_PASSED"
+
+
+def test_synthetic_execution_end_to_end(tmp_path: Path):
+    """Verify offline synthetic evaluation runs end-to-end and produces all required artifacts."""
+    mod = get_run_gate_3_module()
+    spec_path = REPO_ROOT / mod.DEFAULT_AUTH_SPEC_PATH
+    out_dir = tmp_path / "synthetic_out"
+
+    exit_code = mod.execute_gate_3(
+        repo_root=REPO_ROOT,
+        auth_spec_path=spec_path,
+        output_dir=out_dir,
+        run_label="baseline-v1",
         synthetic=True,
+        dry_run=False,
         allow_dirty=True,
     )
     assert exit_code == 0
@@ -99,11 +208,12 @@ def test_runner_synthetic_execution_passes(tmp_path: Path):
     assert (out_dir / "evaluation-result.json").is_file()
     assert (out_dir / "run-metadata.json").is_file()
     assert (out_dir / "manifest.json").is_file()
+    assert (out_dir / "run-state.json").is_file()
 
     eval_data = json.loads((out_dir / "evaluation-result.json").read_text(encoding="utf-8"))
     assert eval_data["gate_3_pass"] is True
-    assert eval_data["matched_expected_count"] == 54
-    assert eval_data["expected_fact_count"] == 54
+    assert eval_data["matched_expected_count"] == 59
+    assert eval_data["expected_fact_count"] == 59
     assert eval_data["precision"] == 1.0
     assert eval_data["recall"] == 1.0
 
@@ -112,23 +222,4 @@ def test_runner_synthetic_execution_passes(tmp_path: Path):
     assert "assessment.json" in manifest["artifacts"]
     assert "evaluation-result.json" in manifest["artifacts"]
     assert "run-metadata.json" in manifest["artifacts"]
-
-
-def test_runner_live_fails_without_key(tmp_path: Path, monkeypatch):
-    """Verify runner fails closed when live evaluation is requested without credentials."""
-    monkeypatch.delenv("AZURE_AI_FOUNDRY_KEY", raising=False)
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-
-    mod = get_run_gate_3_module()
-    out_dir = tmp_path / "live_fail_out"
-    auth_spec = REPO_ROOT / mod.DEFAULT_AUTH_SPEC_PATH
-
-    exit_code = mod.execute_gate_3(
-        repo_root=REPO_ROOT,
-        auth_spec_path=auth_spec,
-        output_dir=out_dir,
-        run_label="test-live-fail",
-        synthetic=False,
-        allow_dirty=True,
-    )
-    assert exit_code == 1
+    assert "run-state.json" in manifest["artifacts"]
