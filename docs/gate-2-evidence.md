@@ -5,9 +5,9 @@
 > [!IMPORTANT]
 > **Status Clarification & Candidate Versioning:**
 > - **BASELINE V1** reported `PASS` under legacy Evaluator `v1.1.0` on 2026-09-06.
-> - Two successive independent adversarial reviews (Audits 1 & 2) identified critical correctness and soundness vulnerabilities across the schema, parser, evidence validator, evaluator core, agent, and runner.
+> - Three successive independent adversarial reviews (Audits 1, 2, and 3) identified critical correctness, schema, refusal handling, provenance, and soundness vulnerabilities.
 > - BASELINE V1 remains preserved immutable historical experimental evidence.
-> - Candidate Version: `schema_version = 2.1.0`, `evaluator_version = 2.1.0`, `prompt_version = gate2-baseline-v2.1`.
+> - Candidate Version: `schema_version = 2.2.0`, `evaluator_version = 2.2.0`, `prompt_version = gate2-baseline-v2.2`.
 > - Gate 2 final validation is **PENDING BASELINE V2**.
 > - **BASELINE V2 has NOT been executed.** Exactly zero live model calls were performed during this corrective cycle.
 
@@ -37,83 +37,80 @@
 
 ### Preserved Artifacts & Integrity Manifest
 All historical artifacts from the V1 execution are preserved untouched in `artifacts/gate-2/baseline-v1/` and tracked in `evals/observed/baseline-v1-manifest.json`:
-- `bank-main-assessment.json`: SHA256 `062f689e47225c56cba0285a4cf131e50889c25f46bb101d2ec75727918a22bc`
-- `evaluation.json`: SHA256 `b19326e0e3b97b09ca66432657e05fc8aa107b1d9df50e5ebf89998ea38a6a68`
-- `run-metadata.json`: SHA256 `d4bb0f86b4028045a557342629b3ae3d29252bcfe2ea012eeb8ff569ee8ee496`
-- `assessment-schema.json`: SHA256 `5bb919d7d130a84e4f7fc46c0a0c4ec3efc21115cc49c25e8a5b2829ec37ea81`
+- `assessment-schema.json`: SHA256 `fcd047c2724c6132f263ddc2941b2a57f81b210ba6cd874059c496c6ab714d73`
+- `bank-main-assessment.json`: SHA256 `5d270eb35e1e0311448049f0b68d3370bdbda3d2e9243cd30f83a588a4452fc7`
+- `evaluation.json`: SHA256 `1aa8443e7b73e24d263930d8fbd3a6b10ee7ac22186917b4f2570043293177ae`
+- `run-metadata.json`: SHA256 `e462dfbda3240004a730d9aa961d086b77f9c65652b0cf320aca3a588c802d90`
 
 Sanitized copies are maintained under `evals/observed/gate-2-baseline-v1-assessment.json` and `evals/observed/gate-2-baseline-v1-metadata.json`.
 
 ---
 
-## 2. Second Adversarial Review Findings (R1–R14) & Remediation
+## 2. Third Adversarial Review Findings (A3-01 to A3-11) & Remediation
 
-A second adversarial audit examined Candidate V2.0 and identified 14 vulnerabilities, all remediated in Candidate V2.1:
+A third independent adversarial audit examined Candidate V2.1 and identified critical baseline-blockers, which were remediated under Candidate V2.2:
 
-| ID | Finding Description | Remediation in V2.1 |
+| ID | Finding Description | Remediation in Candidate V2.2 |
 |---|---|---|
-| **R1** | Multiplicity contradiction: multi-valued relations (CALL, DISPLAY) were grouped together, making PASS mathematically impossible. | Redesigned `contradiction_group_key` in `src/cobol/atomic_facts.py`: returns `None` for multi-valued relations so distinct CALLs coexist. Only single-valued facts (PROGRAM, menu branches, variable declarations) trigger contradiction checks. |
-| **R2** | Evaluator mutated input assessment instances in place. | Evaluator V2.1 performs read-only conversions to `PredictedFact` and never modifies model assessment instances. |
-| **R3** | Universal normalization applied unstructured token collapse across disparate types. | Type-aware normalization functions implemented: `normalize_identifier`, `normalize_pic`, `normalize_string_literal`, `normalize_condition`. |
-| **R4** | `SourceSupportOracle` hardcoded BANK-MAIN answer maps (lines, targets, branches). | Replaced with deterministic subset COBOL parser `SourceFactExtractor` and `SourceSupportIndex`; zero hardcoded answer tokens remain. |
-| **R5** | Token overlap validation allowed partial token hits. | Strict substring containment and verbatim fragment checking enforced in `EvidenceValidator`. |
-| **R6** | Permissive git provenance allowed dirty worktrees in baseline runs via environment bypass. | Baseline runs strictly reject `GATE2_ALLOW_DIRTY_WORKTREE`, require exact commit SHA matching, and verify working tree files against `git show HEAD:<path>`. |
-| **R7** | Error handling persisted raw exceptions, potentially leaking API keys, tokens, or endpoints into `run-state.json`. | Allowlist-only error persistence implemented in `write_failure_run_state`; only status, phase, error_type, safe_message, timestamp, git_sha written. |
-| **R8** | Weak Responses API validation allowed non-completed or truncated agent outputs. | Agent requires strict `status == "completed"` and verifies `output_parsed` is an instance of `LegacyAssessment`. |
-| **R9** | V1 rescore adapter performed answer substitutions and repairs. | Rebuilt `src/validation/v1_rescore.py` without substitutions; claims mapped faithfully. |
-| **R10** | Dependencies were unlocked, risking drift. | Frozen exact `requirements-lock.txt` created and verified with `pip check`; lockfile hash recorded in metadata. |
-| **R11** | Magic constants used for evidence span tolerance. | Replaced with occurrence-derived dynamic spans (`occurrence_span_length + 2`). |
-| **R12** | Fabricated negative copy lines in host verification. | Entire file range `[1, total_lines]` used for whole-file absence assertion without fabricated line text. |
-| **R13** | Dry-run reserved run directories and created empty folders. | Dry-run exits cleanly after preflight without creating artifact directory. |
-| **R14** | Unhandled post-model exceptions left run state permanently in `STARTED`. | Strict phase tracking and allowlist failure persistence ensures run state transitions to `FAILED`. |
+| **A3-01** | Strict literal parsing & menu separation: DISPLAY literals and menu keys were conflated with quoted tokens, and broad `.rstrip(".")` corrupted PIC clauses. | Implemented `parse_cobol_literal_token`, `parse_source_menu_key_token`, `normalize_menu_key` (no repair of malformed model keys), `normalize_semantic_literal` (idempotent), narrow `normalize_pic` grammar, and non-vacuous DISPLAY evidence binding. |
+| **A3-02** | Discriminated union wire incompatibility: Pydantic `Field(discriminator=...)` produced unsupported `oneOf` and `discriminator` in OpenAI 3.8.0 wire schema. | Replaced discriminated unions with standard plain unions (`anyOf`), removed literal defaults, ensuring all fields are strictly required and wire schema is supported by OpenAI Responses API Structured Outputs. |
+| **A3-03** | Incomplete refusal detection: Responses API refusals could be nested in message content items without being caught. | Implemented recursive `inspect_response_for_refusal` detecting top-level refusals, output-level `ResponseOutputRefusal`, and message-content nested refusals, raising `ResponseRefusedError` with safe messages. |
+| **A3-04** | Git provenance bypass: `git status` could miss changes with `assume-unchanged`; untracked overlays could hijack imports; non-isolated Python could load host packages. | Implemented byte-for-byte full tracked tree comparison against `git show HEAD:<path>`, filesystem overlay scanning (`sitecustomize.py`, loose `.pyc`, untracked `.py`), post-import origin verification, and mandatory isolated Python (`sys.flags.isolated == 1`). |
+| **A3-05** | Runtime attestation drift: subtle package differences between `pip freeze` and `importlib.metadata`. | Implemented single canonical representation (`normalized-pkg-name==version`) comparing active runtime packages against `requirements-lock.txt` for exact set equality. |
+| **A3-11** | Documentation and manifest reconciliation. | Reconciled `docs/gate-2-evidence.md` with `evals/observed/baseline-v1-manifest.json`, preserved V2.1 rescore intact, generated V2.2 rescore, and documented actual reproduced metrics. |
 
 ---
 
-## 3. The 5 Required Amendments (Approved for V2.1)
+## 3. The Six Required Amendments (Approved for V2.2)
 
-1. **Amendment 1: Discriminated Schema Variants**
-   - Eliminated generic multi-purpose control and action containers.
-   - `MenuOption`: Discriminated union of `CallMenuOption` (`action_type: "CALL"`, `target_program: str`) and `DisplayMenuOption` (`action_type: "DISPLAY"`, `literal: str`). Structurally prevents CALLs without targets or DISPLAYs with CALL targets.
-   - `ControlFlowConstruct`: Discriminated union of `PerformUntilConstruct` (`construct_type: "PERFORM_UNTIL"`), `EvaluateConstruct` (`construct_type: "EVALUATE"`), and `StopRunConstruct` (`construct_type: "STOP_RUN"`).
-   - `IOOperation`: Discriminated union of `AcceptIO` (`operation_type: "ACCEPT"`) and `DisplayIO` (`operation_type: "DISPLAY"`).
-
-2. **Amendment 2: Fail-Closed Source Parsing**
-   - `SourceFactExtractor` tracks `parse_complete: bool`, `unsupported_statement_count: int`, and `unsupported_statements: list[str]`.
-   - Ambiguous or malformed syntax (e.g. unrecognizable COPY or branch syntax) marks `parse_complete = False`.
-   - If parsing is incomplete, authoritative negative absence facts (such as COPY dependency count = 0) are strictly suppressed, preventing invalid Gate 2 PASS.
-
-3. **Amendment 3: Strengthened Baseline Git/Execution Provenance**
-   - Baseline runs prohibit `GATE2_ALLOW_DIRTY_WORKTREE`.
-   - Baseline runs reject non-empty `PYTHONPATH` and non-empty `PYTHONHOME`.
-   - For all benchmark-critical files (runner, agent, prompt, schemas, extractor, support index, evaluators, golden dataset, source fixture, lockfile), the runner computes SHA256 of the working tree file and compares it against `git show HEAD:<path>`. Any discrepancy aborts before artifact reservation or model invocation.
-
-4. **Amendment 4: Allowlist-Based Error Artifacts**
-   - Artifact safety in `run-state.json` relies strictly on allowlisted fields (`status`, `failed_phase`, `error_type`, `safe_message`, `timestamp`, `git_sha`).
-   - Raw exception strings, SDK response representations, endpoint URLs, authorization headers, and local directory paths are never written to disk artifacts.
-   - Verified with adversarial test cases injecting synthetic API keys and bearer tokens.
-
-5. **Amendment 5: Reconstructable Environment Capture**
-   - Generated exact `requirements-lock.txt` for the WSL Python 3.12.3 virtual environment.
-   - Pinned exact versions: `openai==3.8.0`, `azure-ai-projects==2.6.0`, `azure-identity==1.25.3`, `pydantic==2.13.5`, `pydantic-settings==2.15.0`.
-   - All quality checks (`pytest`, `ruff`, `mypy`, `pip check`) executed from the identical virtual environment intended for BASELINE V2.
+1. **Amendment 1: Separate Source Menu Token Parsing from Model Menu Values**
+   - Source: `parse_source_menu_key_token("'1'") -> "1"`, `parse_source_menu_key_token("OTHER") -> "OTHER"`.
+   - Model: semantic values `"1" -> "1"`, `"OTHER" -> "OTHER"`.
+   - Model values such as `"'1'"`, `"1''"`, `"'1"`, `"1'"`, `"O'THER"` are preserved verbatim and NOT repaired into supported keys.
+2. **Amendment 2: Update Model Prompt for V2.2 Semantics**
+   - `prompt_version = "gate2-baseline-v2.2"` in `agents/legacy_analyzer/prompts/system.md`.
+   - Clarified semantic literal contracts (characters inside quotes, preserve whitespace, no outer delimiters).
+   - Clarified semantic menu option keys ("1", "OTHER", not COBOL quoted tokens).
+   - Verbatim evidence snippets without answer leakage.
+3. **Amendment 3: Preserve V2.1 Rescore History & Emit V2.2 Artifact**
+   - `evals/results/gate-2-v1-rescored-with-v2.1.json` preserved untouched.
+   - Fresh `evals/results/gate-2-v1-rescored-with-v2.2.json` generated and verified for exact reproducibility.
+4. **Amendment 4: Require Isolated Python for Baseline Execution**
+   - Baseline runs strictly require `sys.flags.isolated == 1` (`.venv/bin/python -I scripts/run-gate-2.py ...`).
+   - Verified repository root added to `sys.path` only after provenance checks pass.
+5. **Amendment 5: One Canonical Runtime/Lock Representation**
+   - Shared `canonical_distribution_name(name)==version` mapping.
+   - Fails on missing, unexpected, or version-mismatched packages.
+   - Persists `runtime-manifest.json` and records SHA256 in run metadata.
+6. **Amendment 6: Freeze Expected Model/Deployment Identity**
+   - Mandatory `--expected-model` parameter for baseline runs.
+   - Compares `--expected-model` against loaded config before artifact reservation.
+   - Separately records `requested_model` and `response_model_id`.
 
 ---
 
-## 4. Historical Baseline V1 Offline Rescore with Evaluator V2.1
+## 4. Historical Baseline V1 Offline Rescore Results
 
-Using the rebuilt unadulterated V1 rescore adapter (`src/validation/v1_rescore.py`), the historical Baseline V1 output was evaluated against the V2.1 evaluator core and golden dataset V2.1:
-
-- **Report Path:** `evals/results/gate-2-v1-rescored-with-v2.1.json`
+### Preserved V2.1 Rescore (`evals/results/gate-2-v1-rescored-with-v2.1.json`)
 - **Total Historical Predictions Converted:** 24
-- **Supported Predicted Facts:** 23
-- **Unsupported Predicted Facts:** 1
-- **Invalid Evidence:** 1 (`data.ws_choice` cited lines 7..9, including line 6 `DATA DIVISION.`)
-- **Expected Facts (V2.1):** 15
-- **Matched Expected Facts:** 14 / 15
-- **Missing Expected Facts:** 1 (`data.ws_choice`)
-- **Precision:** 0.9583 (23/24)
-- **Recall:** 0.9333 (14/15)
-- **Gate 2 Result under V2.1:** **FAIL** (`gate_2_pass: false`)
+- **Supported Predicted Facts:** 18
+- **Unsupported Predicted Facts:** 6
+- **Invalid Evidence Count:** 5
+- **Matched Expected Facts:** 10 / 15
+- **Precision:** 0.75
+- **Recall:** 0.6667
+- **Gate 2 Pass:** `false`
+
+### Fresh V2.2 Rescore (`evals/results/gate-2-v1-rescored-with-v2.2.json`)
+Evaluated under Candidate V2.2 strict semantic literal contracts and literal parsing:
+- **Total Historical Predictions Converted:** 24
+- **Supported Predicted Facts:** 10
+- **Unsupported Predicted Facts:** 14
+- **Invalid Evidence Count:** 5
+- **Matched Expected Facts:** 10 / 15
+- **Precision:** 0.4167
+- **Recall:** 0.6667
+- **Gate 2 Pass:** `false`
 
 ---
 
@@ -123,21 +120,26 @@ All checks executed in the WSL Ubuntu 24.04 environment (`.venv` Python 3.12.3):
 
 | Tool / Suite | Status | Details |
 |---|---|---|
-| `pytest` | **PASS (67/67)** | 100% offline tests passing across unit, adversarial regressions, V1 compatibility, and source mutations |
-| Adversarial Regressions | **PASS (30/30)** | Explicit deterministic tests for R1–R14 and Amendments 1–5 in `evals/tests/test_adversarial_regressions.py` |
-| Source Mutation Suite | **PASS (10/10)** | In-memory source mutation tests proving the extractor and evaluator dynamically track code changes |
+| `pytest` | **PASS (93/93)** | 100% offline tests passing across unit, regressions, V1 compatibility, mutations, and V3 adversarial suite |
+| Adversarial Regressions V3 | **PASS (26/26)** | Explicit deterministic tests for A3-01 to A3-11 and Amendments 1–6 in `evals/tests/test_adversarial_regressions_v3.py` |
+| Adversarial Regressions V2 | **PASS (28/28)** | Historical regression tests in `evals/tests/test_adversarial_regressions.py` passing |
+| Source Mutation Suite | **PASS (10/10)** | In-memory source mutation tests proving dynamic tracking |
 | Mandatory Positive Invariant | **PASS** | `make_perfect_assessment_v2()` -> Precision 1.0, Recall 1.0, 0 unsupp, 0 inv_ev, 0 dup, 0 cont, `gate_2_pass: True` |
 | `ruff check .` | **PASS** | 0 lint errors |
-| `ruff format --check .` | **PASS** | 35 files formatted and compliant |
-| `mypy src agents scripts tests evals` | **PASS** | 0 issues found in 26 source files |
+| `ruff format --check .` | **PASS** | 36 files formatted and compliant |
+| `mypy src agents scripts tests evals` | **PASS** | 0 issues found in 27 source files |
 | `pip check` | **PASS** | No broken requirements found |
 | Legacy Immutability | **PASS** | `git diff -- legacy/core-banking-system/` is strictly empty; SHA256 `b03adc9592f2853006263ef67fcc6dc716b99333b84bc0198bff7b7f0af1a028` |
 
 ---
 
-## 6. Next Steps & Gate 2 Validation Path
+## 6. Execution Command for Future Baseline V2
 
-1. **Commit & Push:** Commit logical changes on `feat/gate-2-cobol-reader` and push to origin.
-2. **Update PR #1:** Update PR description via GitHub CLI to reflect Candidate V2.1 status and readiness for Third Adversarial Review.
-3. **Execution of Baseline V2 (Future Session):** Once authorized by human review, execute `python scripts/run-gate-2.py --run-label baseline-v2 --expected-git-sha <COMMIT_SHA>` with clean worktree.
-4. **Gate 3 Unblock:** Gate 3 remains blocked until BASELINE V2 achieves a verified PASS under Evaluator V2.1 rules.
+When authorized by human review, BASELINE V2 must be invoked in isolated Python mode with exact parameters:
+
+```bash
+.venv/bin/python -I scripts/run-gate-2.py \
+  --run-label baseline-v2 \
+  --expected-git-sha <COMMIT_SHA> \
+  --expected-model gpt-5-mini
+```

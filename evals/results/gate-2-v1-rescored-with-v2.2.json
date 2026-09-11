@@ -1,0 +1,788 @@
+{
+  "rescore_evaluator_version": "2.2.0",
+  "golden_dataset_version": "2.2.0",
+  "v1_source_file": "evals/observed/gate-2-baseline-v1-assessment.json",
+  "claim_accounting": {
+    "historical_claim_count": 35,
+    "converted_claim_count": 24,
+    "unevaluated_claim_count": 12,
+    "unevaluated_claims": [
+      {
+        "category": "call_type",
+        "target": "INIT-DB",
+        "claimed_value": "DYNAMIC",
+        "reason": "Compiler/linker binding (DYNAMIC vs STATIC) is not provable from single COBOL source syntax."
+      },
+      {
+        "category": "call_type",
+        "target": "TRANS-PROC",
+        "claimed_value": "DYNAMIC",
+        "reason": "Compiler/linker binding (DYNAMIC vs STATIC) is not provable from single COBOL source syntax."
+      },
+      {
+        "category": "call_type",
+        "target": "REPORT-GEN",
+        "claimed_value": "DYNAMIC",
+        "reason": "Compiler/linker binding (DYNAMIC vs STATIC) is not provable from single COBOL source syntax."
+      },
+      {
+        "category": "observation",
+        "observation_category": "CONTROL_FLOW",
+        "text": "Program implements a simple interactive menu loop driven by WS-CHOICE and a PERFORM UNTIL that exits when WS-CHOICE = '4'.",
+        "reason": "Free-form observations removed from scorable schema in V2."
+      },
+      {
+        "category": "observation",
+        "observation_category": "COUPLING",
+        "text": "Functionality is delegated to external subprograms via CALL statements (INIT-DB, TRANS-PROC, REPORT-GEN), indicating runtime coupling to separate modules whose implementations are not present in this file.",
+        "reason": "Free-form observations removed from scorable schema in V2."
+      },
+      {
+        "category": "observation",
+        "observation_category": "PORTABILITY",
+        "text": "Terminal-oriented I/O (DISPLAY/ACCEPT and WITH NO ADVANCING) suggests dependence on character-terminal behavior and may require adaptation for non-interactive or web-based front ends.",
+        "reason": "Free-form observations removed from scorable schema in V2."
+      },
+      {
+        "category": "observation",
+        "observation_category": "ARCHITECTURE",
+        "text": "No COPY statements or file declarations are present in this file; the file acts as a menu/dispatcher rather than performing file or database operations directly.",
+        "reason": "Free-form observations removed from scorable schema in V2."
+      },
+      {
+        "category": "unsupported_assumption",
+        "text": "The internal implementation, side effects, parameters, and return behavior of called subprogram INIT-DB are unknown (source not provided).",
+        "reason": "Free-form assumption escape hatch removed in V2."
+      },
+      {
+        "category": "unsupported_assumption",
+        "text": "The internal implementation, side effects, parameters, and return behavior of called subprogram TRANS-PROC are unknown (source not provided).",
+        "reason": "Free-form assumption escape hatch removed in V2."
+      },
+      {
+        "category": "unsupported_assumption",
+        "text": "The internal implementation, side effects, parameters, and return behavior of called subprogram REPORT-GEN are unknown (source not provided).",
+        "reason": "Free-form assumption escape hatch removed in V2."
+      },
+      {
+        "category": "unsupported_assumption",
+        "text": "Whether the CALLs expect linkage parameters, use shared files, or rely on specific runtime environment settings cannot be determined from this single file.",
+        "reason": "Free-form assumption escape hatch removed in V2."
+      },
+      {
+        "category": "unsupported_assumption",
+        "text": "Any persistence layer, database schema, or file I/O performed by external subprograms is not visible in this file and cannot be inferred.",
+        "reason": "Free-form assumption escape hatch removed in V2."
+      }
+    ]
+  },
+  "evaluation_metrics": {
+    "evaluator_version": "2.2.0",
+    "golden_dataset_version": "2.2.0",
+    "schema_valid": true,
+    "source_sha256_match": true,
+    "parse_complete": true,
+    "evidence_valid": false,
+    "invalid_evidence_count": 5,
+    "raw_predicted_count": 24,
+    "unique_predicted_count": 24,
+    "duplicate_prediction_count": 0,
+    "supported_predicted_count": 10,
+    "unsupported_predicted_count": 14,
+    "contradiction_count": 0,
+    "expected_fact_count": 15,
+    "matched_expected_count": 10,
+    "missing_expected_count": 5,
+    "precision": 0.4167,
+    "recall": 0.6667,
+    "gate_2_pass": false,
+    "duplicates": [],
+    "contradictions": [],
+    "unsupported_predictions": [
+      {
+        "fact": {
+          "kind": "DATA_FIELD",
+          "subject": "WS-CHOICE",
+          "predicate": "DECLARES",
+          "object": "VARIABLE",
+          "attributes": {
+            "LEVEL": "01",
+            "PICTURE": "X(1)",
+            "SECTION": "WORKING-STORAGE"
+          }
+        },
+        "canonical_id": "DATA_FIELD:WS-CHOICE:DECLARES:VARIABLE[LEVEL=01,PICTURE=X(1),SECTION=WORKING-STORAGE]",
+        "reason": "Invalid evidence citation: Evidence snippet 'DATA DIVISION.\nWORKING-STORAGE SECTION.\n01 WS-CHOICE  PIC X.' does not match actual source text in lines [7..9]",
+        "citation": {
+          "line_start": 7,
+          "line_end": 9,
+          "snippet": "DATA DIVISION.\nWORKING-STORAGE SECTION.\n01 WS-CHOICE  PIC X."
+        }
+      },
+      {
+        "fact": {
+          "kind": "MENU_OPTION",
+          "subject": "1",
+          "predicate": "CALLS",
+          "object": "INIT-DB",
+          "attributes": {}
+        },
+        "canonical_id": "MENU_OPTION:1:CALLS:INIT-DB",
+        "reason": "Invalid evidence citation: Cited line span [15, 24] (length 10) exceeds allowed span bound (4) for statement span [23..24]",
+        "citation": {
+          "line_start": 15,
+          "line_end": 24,
+          "snippet": "DISPLAY '1. Init Database'\n...\nWHEN '1'\n     CALL 'INIT-DB'"
+        }
+      },
+      {
+        "fact": {
+          "kind": "MENU_OPTION",
+          "subject": "2",
+          "predicate": "CALLS",
+          "object": "TRANS-PROC",
+          "attributes": {}
+        },
+        "canonical_id": "MENU_OPTION:2:CALLS:TRANS-PROC",
+        "reason": "Invalid evidence citation: Cited line span [16, 26] (length 11) exceeds allowed span bound (4) for statement span [25..26]",
+        "citation": {
+          "line_start": 16,
+          "line_end": 26,
+          "snippet": "DISPLAY '2. Transaction'\n...\nWHEN '2'\n     CALL 'TRANS-PROC'"
+        }
+      },
+      {
+        "fact": {
+          "kind": "MENU_OPTION",
+          "subject": "3",
+          "predicate": "CALLS",
+          "object": "REPORT-GEN",
+          "attributes": {}
+        },
+        "canonical_id": "MENU_OPTION:3:CALLS:REPORT-GEN",
+        "reason": "Invalid evidence citation: Cited line span [17, 28] (length 12) exceeds allowed span bound (4) for statement span [27..28]",
+        "citation": {
+          "line_start": 17,
+          "line_end": 28,
+          "snippet": "DISPLAY '3. Report'\n...\nWHEN '3'\n     CALL 'REPORT-GEN'"
+        }
+      },
+      {
+        "fact": {
+          "kind": "MENU_OPTION",
+          "subject": "4",
+          "predicate": "DISPLAYS",
+          "object": "Bye.",
+          "attributes": {}
+        },
+        "canonical_id": "MENU_OPTION:4:DISPLAYS:Bye.",
+        "reason": "Invalid evidence citation: Cited line span [18, 30] (length 13) exceeds allowed span bound (4) for statement span [29..30]",
+        "citation": {
+          "line_start": 18,
+          "line_end": 30,
+          "snippet": "DISPLAY '4. Exit'\n...\nWHEN '4'\n     DISPLAY 'Bye.'"
+        }
+      },
+      {
+        "fact": {
+          "kind": "IO_OPERATION",
+          "subject": "DISPLAY",
+          "predicate": "WRITES",
+          "object": "' '",
+          "attributes": {}
+        },
+        "canonical_id": "IO_OPERATION:DISPLAY:WRITES:' '",
+        "reason": "Not supported by source code statements",
+        "citation": {
+          "line_start": 13,
+          "line_end": 13,
+          "snippet": "DISPLAY ' '"
+        }
+      },
+      {
+        "fact": {
+          "kind": "IO_OPERATION",
+          "subject": "DISPLAY",
+          "predicate": "WRITES",
+          "object": "'=== CORE BANKING SYSTEM ==='",
+          "attributes": {}
+        },
+        "canonical_id": "IO_OPERATION:DISPLAY:WRITES:'=== CORE BANKING SYSTEM ==='",
+        "reason": "Not supported by source code statements",
+        "citation": {
+          "line_start": 14,
+          "line_end": 14,
+          "snippet": "DISPLAY '=== CORE BANKING SYSTEM ==='"
+        }
+      },
+      {
+        "fact": {
+          "kind": "IO_OPERATION",
+          "subject": "DISPLAY",
+          "predicate": "WRITES",
+          "object": "'1. Init Database'",
+          "attributes": {}
+        },
+        "canonical_id": "IO_OPERATION:DISPLAY:WRITES:'1. Init Database'",
+        "reason": "Not supported by source code statements",
+        "citation": {
+          "line_start": 15,
+          "line_end": 15,
+          "snippet": "DISPLAY '1. Init Database'"
+        }
+      },
+      {
+        "fact": {
+          "kind": "IO_OPERATION",
+          "subject": "DISPLAY",
+          "predicate": "WRITES",
+          "object": "'2. Transaction'",
+          "attributes": {}
+        },
+        "canonical_id": "IO_OPERATION:DISPLAY:WRITES:'2. Transaction'",
+        "reason": "Not supported by source code statements",
+        "citation": {
+          "line_start": 16,
+          "line_end": 16,
+          "snippet": "DISPLAY '2. Transaction'"
+        }
+      },
+      {
+        "fact": {
+          "kind": "IO_OPERATION",
+          "subject": "DISPLAY",
+          "predicate": "WRITES",
+          "object": "'3. Report'",
+          "attributes": {}
+        },
+        "canonical_id": "IO_OPERATION:DISPLAY:WRITES:'3. Report'",
+        "reason": "Not supported by source code statements",
+        "citation": {
+          "line_start": 17,
+          "line_end": 17,
+          "snippet": "DISPLAY '3. Report'"
+        }
+      },
+      {
+        "fact": {
+          "kind": "IO_OPERATION",
+          "subject": "DISPLAY",
+          "predicate": "WRITES",
+          "object": "'4. Exit'",
+          "attributes": {}
+        },
+        "canonical_id": "IO_OPERATION:DISPLAY:WRITES:'4. Exit'",
+        "reason": "Not supported by source code statements",
+        "citation": {
+          "line_start": 18,
+          "line_end": 18,
+          "snippet": "DISPLAY '4. Exit'"
+        }
+      },
+      {
+        "fact": {
+          "kind": "IO_OPERATION",
+          "subject": "DISPLAY",
+          "predicate": "WRITES",
+          "object": "'Option: ' WITH NO ADVANCING",
+          "attributes": {}
+        },
+        "canonical_id": "IO_OPERATION:DISPLAY:WRITES:'Option: ' WITH NO ADVANCING",
+        "reason": "Not supported by source code statements",
+        "citation": {
+          "line_start": 19,
+          "line_end": 19,
+          "snippet": "DISPLAY 'Option: ' WITH NO ADVANCING"
+        }
+      },
+      {
+        "fact": {
+          "kind": "IO_OPERATION",
+          "subject": "DISPLAY",
+          "predicate": "WRITES",
+          "object": "'Bye.'",
+          "attributes": {}
+        },
+        "canonical_id": "IO_OPERATION:DISPLAY:WRITES:'Bye.'",
+        "reason": "Not supported by source code statements",
+        "citation": {
+          "line_start": 30,
+          "line_end": 30,
+          "snippet": "DISPLAY 'Bye.'"
+        }
+      },
+      {
+        "fact": {
+          "kind": "IO_OPERATION",
+          "subject": "DISPLAY",
+          "predicate": "WRITES",
+          "object": "'Invalid.'",
+          "attributes": {}
+        },
+        "canonical_id": "IO_OPERATION:DISPLAY:WRITES:'Invalid.'",
+        "reason": "Not supported by source code statements",
+        "citation": {
+          "line_start": 32,
+          "line_end": 32,
+          "snippet": "DISPLAY 'Invalid.'"
+        }
+      }
+    ],
+    "invalid_evidences": [
+      {
+        "fact": {
+          "kind": "DATA_FIELD",
+          "subject": "WS-CHOICE",
+          "predicate": "DECLARES",
+          "object": "VARIABLE",
+          "attributes": {
+            "LEVEL": "01",
+            "PICTURE": "X(1)",
+            "SECTION": "WORKING-STORAGE"
+          }
+        },
+        "canonical_id": "DATA_FIELD:WS-CHOICE:DECLARES:VARIABLE[LEVEL=01,PICTURE=X(1),SECTION=WORKING-STORAGE]",
+        "error": "Evidence snippet 'DATA DIVISION.\nWORKING-STORAGE SECTION.\n01 WS-CHOICE  PIC X.' does not match actual source text in lines [7..9]",
+        "citation": {
+          "line_start": 7,
+          "line_end": 9,
+          "snippet": "DATA DIVISION.\nWORKING-STORAGE SECTION.\n01 WS-CHOICE  PIC X."
+        }
+      },
+      {
+        "fact": {
+          "kind": "MENU_OPTION",
+          "subject": "1",
+          "predicate": "CALLS",
+          "object": "INIT-DB",
+          "attributes": {}
+        },
+        "canonical_id": "MENU_OPTION:1:CALLS:INIT-DB",
+        "error": "Cited line span [15, 24] (length 10) exceeds allowed span bound (4) for statement span [23..24]",
+        "citation": {
+          "line_start": 15,
+          "line_end": 24,
+          "snippet": "DISPLAY '1. Init Database'\n...\nWHEN '1'\n     CALL 'INIT-DB'"
+        }
+      },
+      {
+        "fact": {
+          "kind": "MENU_OPTION",
+          "subject": "2",
+          "predicate": "CALLS",
+          "object": "TRANS-PROC",
+          "attributes": {}
+        },
+        "canonical_id": "MENU_OPTION:2:CALLS:TRANS-PROC",
+        "error": "Cited line span [16, 26] (length 11) exceeds allowed span bound (4) for statement span [25..26]",
+        "citation": {
+          "line_start": 16,
+          "line_end": 26,
+          "snippet": "DISPLAY '2. Transaction'\n...\nWHEN '2'\n     CALL 'TRANS-PROC'"
+        }
+      },
+      {
+        "fact": {
+          "kind": "MENU_OPTION",
+          "subject": "3",
+          "predicate": "CALLS",
+          "object": "REPORT-GEN",
+          "attributes": {}
+        },
+        "canonical_id": "MENU_OPTION:3:CALLS:REPORT-GEN",
+        "error": "Cited line span [17, 28] (length 12) exceeds allowed span bound (4) for statement span [27..28]",
+        "citation": {
+          "line_start": 17,
+          "line_end": 28,
+          "snippet": "DISPLAY '3. Report'\n...\nWHEN '3'\n     CALL 'REPORT-GEN'"
+        }
+      },
+      {
+        "fact": {
+          "kind": "MENU_OPTION",
+          "subject": "4",
+          "predicate": "DISPLAYS",
+          "object": "Bye.",
+          "attributes": {}
+        },
+        "canonical_id": "MENU_OPTION:4:DISPLAYS:Bye.",
+        "error": "Cited line span [18, 30] (length 13) exceeds allowed span bound (4) for statement span [29..30]",
+        "citation": {
+          "line_start": 18,
+          "line_end": 30,
+          "snippet": "DISPLAY '4. Exit'\n...\nWHEN '4'\n     DISPLAY 'Bye.'"
+        }
+      }
+    ],
+    "matched_expected_facts": [
+      {
+        "fact_id": "program.id",
+        "description": "PROGRAM-ID declaration identifying program as BANK-MAIN.",
+        "expected_fact": {
+          "kind": "PROGRAM",
+          "subject": "BANK-MAIN",
+          "predicate": "DECLARES",
+          "object": "PROGRAM-ID",
+          "attributes": {}
+        },
+        "matched": true,
+        "matched_prediction": {
+          "fact": {
+            "kind": "PROGRAM",
+            "subject": "BANK-MAIN",
+            "predicate": "DECLARES",
+            "object": "PROGRAM-ID",
+            "attributes": {}
+          },
+          "citation": {
+            "line_start": 1,
+            "line_end": 2,
+            "snippet": "IDENTIFICATION DIVISION.\nPROGRAM-ID. BANK-MAIN."
+          }
+        },
+        "evidence_valid": true,
+        "notes": null
+      },
+      {
+        "fact_id": "call.init_db",
+        "description": "External invocation to subprogram INIT-DB.",
+        "expected_fact": {
+          "kind": "CALL",
+          "subject": "BANK-MAIN",
+          "predicate": "INVOKES",
+          "object": "INIT-DB",
+          "attributes": {}
+        },
+        "matched": true,
+        "matched_prediction": {
+          "fact": {
+            "kind": "CALL",
+            "subject": "BANK-MAIN",
+            "predicate": "INVOKES",
+            "object": "INIT-DB",
+            "attributes": {}
+          },
+          "citation": {
+            "line_start": 24,
+            "line_end": 24,
+            "snippet": "CALL 'INIT-DB'"
+          }
+        },
+        "evidence_valid": true,
+        "notes": null
+      },
+      {
+        "fact_id": "call.trans_proc",
+        "description": "External invocation to subprogram TRANS-PROC.",
+        "expected_fact": {
+          "kind": "CALL",
+          "subject": "BANK-MAIN",
+          "predicate": "INVOKES",
+          "object": "TRANS-PROC",
+          "attributes": {}
+        },
+        "matched": true,
+        "matched_prediction": {
+          "fact": {
+            "kind": "CALL",
+            "subject": "BANK-MAIN",
+            "predicate": "INVOKES",
+            "object": "TRANS-PROC",
+            "attributes": {}
+          },
+          "citation": {
+            "line_start": 26,
+            "line_end": 26,
+            "snippet": "CALL 'TRANS-PROC'"
+          }
+        },
+        "evidence_valid": true,
+        "notes": null
+      },
+      {
+        "fact_id": "call.report_gen",
+        "description": "External invocation to subprogram REPORT-GEN.",
+        "expected_fact": {
+          "kind": "CALL",
+          "subject": "BANK-MAIN",
+          "predicate": "INVOKES",
+          "object": "REPORT-GEN",
+          "attributes": {}
+        },
+        "matched": true,
+        "matched_prediction": {
+          "fact": {
+            "kind": "CALL",
+            "subject": "BANK-MAIN",
+            "predicate": "INVOKES",
+            "object": "REPORT-GEN",
+            "attributes": {}
+          },
+          "citation": {
+            "line_start": 28,
+            "line_end": 28,
+            "snippet": "CALL 'REPORT-GEN'"
+          }
+        },
+        "evidence_valid": true,
+        "notes": null
+      },
+      {
+        "fact_id": "menu.option_other",
+        "description": "Option OTHER triggers error display message 'Invalid.'.",
+        "expected_fact": {
+          "kind": "MENU_OPTION",
+          "subject": "OTHER",
+          "predicate": "DISPLAYS",
+          "object": "Invalid.",
+          "attributes": {}
+        },
+        "matched": true,
+        "matched_prediction": {
+          "fact": {
+            "kind": "MENU_OPTION",
+            "subject": "OTHER",
+            "predicate": "DISPLAYS",
+            "object": "Invalid.",
+            "attributes": {}
+          },
+          "citation": {
+            "line_start": 31,
+            "line_end": 32,
+            "snippet": "WHEN OTHER\n     DISPLAY 'Invalid.'"
+          }
+        },
+        "evidence_valid": true,
+        "notes": null
+      },
+      {
+        "fact_id": "control.perform_loop",
+        "description": "Top-level PERFORM loop until WS-CHOICE = '4'.",
+        "expected_fact": {
+          "kind": "CONTROL_FLOW",
+          "subject": "PERFORM_UNTIL",
+          "predicate": "CONDITION",
+          "object": "WS-CHOICE = '4'",
+          "attributes": {}
+        },
+        "matched": true,
+        "matched_prediction": {
+          "fact": {
+            "kind": "CONTROL_FLOW",
+            "subject": "PERFORM_UNTIL",
+            "predicate": "CONDITION",
+            "object": "WS-CHOICE = '4'",
+            "attributes": {}
+          },
+          "citation": {
+            "line_start": 12,
+            "line_end": 34,
+            "snippet": "PERFORM UNTIL WS-CHOICE = '4'\n    ...\nEND-PERFORM."
+          }
+        },
+        "evidence_valid": true,
+        "notes": null
+      },
+      {
+        "fact_id": "control.evaluate_choice",
+        "description": "EVALUATE decision dispatch construct on WS-CHOICE.",
+        "expected_fact": {
+          "kind": "CONTROL_FLOW",
+          "subject": "EVALUATE",
+          "predicate": "DISPATCHES",
+          "object": "WS-CHOICE",
+          "attributes": {}
+        },
+        "matched": true,
+        "matched_prediction": {
+          "fact": {
+            "kind": "CONTROL_FLOW",
+            "subject": "EVALUATE",
+            "predicate": "DISPATCHES",
+            "object": "WS-CHOICE",
+            "attributes": {}
+          },
+          "citation": {
+            "line_start": 22,
+            "line_end": 33,
+            "snippet": "EVALUATE WS-CHOICE\nWHEN '1' ...\nWHEN '2' ...\nWHEN '3' ...\nWHEN '4' ...\nWHEN OTHER ...\nEND-EVALUATE"
+          }
+        },
+        "evidence_valid": true,
+        "notes": null
+      },
+      {
+        "fact_id": "control.stop_run",
+        "description": "Program exit statement STOP RUN.",
+        "expected_fact": {
+          "kind": "CONTROL_FLOW",
+          "subject": "STOP_RUN",
+          "predicate": "TERMINATES",
+          "object": "STOP RUN",
+          "attributes": {}
+        },
+        "matched": true,
+        "matched_prediction": {
+          "fact": {
+            "kind": "CONTROL_FLOW",
+            "subject": "STOP_RUN",
+            "predicate": "TERMINATES",
+            "object": "STOP RUN",
+            "attributes": {}
+          },
+          "citation": {
+            "line_start": 36,
+            "line_end": 36,
+            "snippet": "STOP RUN."
+          }
+        },
+        "evidence_valid": true,
+        "notes": null
+      },
+      {
+        "fact_id": "io.accept_choice",
+        "description": "Interactive console input reading choice into WS-CHOICE.",
+        "expected_fact": {
+          "kind": "IO_OPERATION",
+          "subject": "ACCEPT",
+          "predicate": "READS",
+          "object": "WS-CHOICE",
+          "attributes": {}
+        },
+        "matched": true,
+        "matched_prediction": {
+          "fact": {
+            "kind": "IO_OPERATION",
+            "subject": "ACCEPT",
+            "predicate": "READS",
+            "object": "WS-CHOICE",
+            "attributes": {}
+          },
+          "citation": {
+            "line_start": 20,
+            "line_end": 20,
+            "snippet": "ACCEPT WS-CHOICE"
+          }
+        },
+        "evidence_valid": true,
+        "notes": null
+      },
+      {
+        "fact_id": "dependency.no_copybooks",
+        "description": "Confirmed explicit absence of COPY statements.",
+        "expected_fact": {
+          "kind": "DEPENDENCY_SCAN",
+          "subject": "COPY",
+          "predicate": "DEPENDENCY_COUNT",
+          "object": "0",
+          "attributes": {}
+        },
+        "matched": true,
+        "matched_prediction": {
+          "fact": {
+            "kind": "DEPENDENCY_SCAN",
+            "subject": "COPY",
+            "predicate": "DEPENDENCY_COUNT",
+            "object": "0",
+            "attributes": {}
+          },
+          "citation": {
+            "line_start": 1,
+            "line_end": 36,
+            "snippet": ""
+          }
+        },
+        "evidence_valid": true,
+        "notes": null
+      }
+    ],
+    "missing_expected_facts": [
+      {
+        "fact_id": "data.ws_choice",
+        "description": "Working-Storage menu selection variable WS-CHOICE of type PIC X(1).",
+        "expected_fact": {
+          "kind": "DATA_FIELD",
+          "subject": "WS-CHOICE",
+          "predicate": "DECLARES",
+          "object": "VARIABLE",
+          "attributes": {
+            "LEVEL": "01",
+            "PICTURE": "X(1)",
+            "SECTION": "WORKING-STORAGE"
+          }
+        },
+        "matched": false,
+        "matched_prediction": null,
+        "evidence_valid": true,
+        "notes": "Expected fact not found among supported predictions with valid evidence"
+      },
+      {
+        "fact_id": "menu.option_1",
+        "description": "Menu option 1 triggers CALL 'INIT-DB'.",
+        "expected_fact": {
+          "kind": "MENU_OPTION",
+          "subject": "1",
+          "predicate": "CALLS",
+          "object": "INIT-DB",
+          "attributes": {}
+        },
+        "matched": false,
+        "matched_prediction": null,
+        "evidence_valid": true,
+        "notes": "Expected fact not found among supported predictions with valid evidence"
+      },
+      {
+        "fact_id": "menu.option_2",
+        "description": "Menu option 2 triggers CALL 'TRANS-PROC'.",
+        "expected_fact": {
+          "kind": "MENU_OPTION",
+          "subject": "2",
+          "predicate": "CALLS",
+          "object": "TRANS-PROC",
+          "attributes": {}
+        },
+        "matched": false,
+        "matched_prediction": null,
+        "evidence_valid": true,
+        "notes": "Expected fact not found among supported predictions with valid evidence"
+      },
+      {
+        "fact_id": "menu.option_3",
+        "description": "Menu option 3 triggers CALL 'REPORT-GEN'.",
+        "expected_fact": {
+          "kind": "MENU_OPTION",
+          "subject": "3",
+          "predicate": "CALLS",
+          "object": "REPORT-GEN",
+          "attributes": {}
+        },
+        "matched": false,
+        "matched_prediction": null,
+        "evidence_valid": true,
+        "notes": "Expected fact not found among supported predictions with valid evidence"
+      },
+      {
+        "fact_id": "menu.option_4",
+        "description": "Menu option 4 triggers exit display message 'Bye.'.",
+        "expected_fact": {
+          "kind": "MENU_OPTION",
+          "subject": "4",
+          "predicate": "DISPLAYS",
+          "object": "Bye.",
+          "attributes": {}
+        },
+        "matched": false,
+        "matched_prediction": null,
+        "evidence_valid": true,
+        "notes": "Expected fact not found among supported predictions with valid evidence"
+      }
+    ],
+    "host_verifications": {
+      "copy_statements_found_count": 0,
+      "scanned_line_count": 36,
+      "source_sha256": "",
+      "verification_method": "WHOLE_FILE_SCAN"
+    }
+  },
+  "notes": "Historical Baseline V1 offline rescore under Evaluator V2.2 rules. Original V1 JSON preserved intact. Evaluates structural claims losslessly."
+}
