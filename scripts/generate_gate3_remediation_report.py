@@ -196,7 +196,7 @@ def generate_report() -> str:
     report = "\n".join(lines) + "\n"
 
     # Save report
-    out_file = REPO_ROOT / "artifacts" / "gate-3" / "remediation_round_2_report.md"
+    out_file = REPO_ROOT / "docs" / "gate-3-remediation-report.md"
     out_file.parent.mkdir(parents=True, exist_ok=True)
     out_file.write_text(report, encoding="utf-8")
     return report
