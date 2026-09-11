@@ -321,6 +321,7 @@ def rescore_v1_assessment(
         golden_data=golden,
         source_lines=source_lines,
         host_verifications=host_verif,
+        evaluator_version="2.2.0",
     )
 
     effective_repo_root = repo_root or REPO_ROOT

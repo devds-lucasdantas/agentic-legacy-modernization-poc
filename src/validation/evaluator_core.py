@@ -42,7 +42,7 @@ class ExpectedFactMatch:
 class CoreEvaluationReport:
     """Detailed evaluation report produced by the unified evaluation core."""
 
-    evaluator_version: str = "2.2.0"
+    evaluator_version: str = "2.3.0"
     golden_dataset_version: str = "2.2.0"
 
     schema_valid: bool = True
@@ -67,11 +67,14 @@ class CoreEvaluationReport:
     # High-level scores
     precision: float = 0.0
     recall: float = 0.0
+
+    # Gate Decision
     gate_2_pass: bool = False
 
     # Detailed listings
     duplicates: list[dict[str, Any]] = field(default_factory=list)
     contradictions: list[dict[str, Any]] = field(default_factory=list)
+    supported_predictions: list[dict[str, Any]] = field(default_factory=list)
     unsupported_predictions: list[dict[str, Any]] = field(default_factory=list)
     invalid_evidences: list[dict[str, Any]] = field(default_factory=list)
     matched_expected_facts: list[ExpectedFactMatch] = field(default_factory=list)
@@ -92,6 +95,7 @@ def evaluate_predicted_facts(
     source_sha256_actual: str | None = None,
     expected_sha256: str = "b03adc9592f2853006263ef67fcc6dc716b99333b84bc0198bff7b7f0af1a028",
     schema_valid: bool = True,
+    evaluator_version: str | None = None,
 ) -> CoreEvaluationReport:
     """Evaluate a collection of PredictedFacts deterministically.
 
@@ -103,12 +107,15 @@ def evaluate_predicted_facts(
         host_verifications: Host-owned verification report (e.g. whole-file COPY scan).
         source_sha256_actual: Actual SHA256 of the analyzed source file.
         expected_sha256: Expected SHA256 hash.
-        schema_valid: Whether schema validation succeeded prior to evaluation.
+        evaluator_version: Optional evaluator version override
+            (defaults to CoreEvaluationReport default).
 
     Returns:
         CoreEvaluationReport with precision, recall, and PASS decision.
     """
     report = CoreEvaluationReport()
+    if evaluator_version is not None:
+        report.evaluator_version = evaluator_version
     report.schema_valid = schema_valid
 
     if source_sha256_actual is not None:

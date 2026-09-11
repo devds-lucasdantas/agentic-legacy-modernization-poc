@@ -68,15 +68,18 @@ def normalize_menu_key(key: str) -> str:
     """Normalize a model-produced semantic menu key.
 
     Model fields already contain semantic values (e.g. '1', '2', '3', '4', 'OTHER').
-    Preserves semantic values as-is.
-    Does NOT strip quotes heuristically.
-    Malformed values such as \"'1'\", \"1''\", \"'1\", \"1'\", \"O'THER\" are NEVER
-    repaired into supported keys.
+    Preserves semantic values as-is verbatim without trimming, quote-stripping, or repairs.
+    Keyword case normalization is permitted ONLY when the complete original semantic
+    value is exactly the keyword 'OTHER' (case-insensitive) without leading/trailing characters.
+    Malformed or whitespace-padded values such as " 1 ", "1 ", "\\t1", "\\n1", "\\u00a01",
+    "'1'", "O'THER", " other " are NEVER repaired into supported keys.
     """
-    s = key.strip()
-    if s.upper() == "OTHER":
+    if key.upper() == "OTHER" and len(key) == 5:
         return "OTHER"
-    return s
+    return key
+
+
+normalize_model_menu_key = normalize_menu_key
 
 
 def normalize_semantic_literal(text: str) -> str:

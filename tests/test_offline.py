@@ -27,7 +27,9 @@ def test_schema_v2_field_presence():
     meta = ExecutionMetadata()
     assert meta.schema_version == "2.2.0"
     assert meta.prompt_version == "gate2-baseline-v2.2"
-    assert meta.evaluator_version == "2.2.0"
+    assert meta.evaluator_version == "2.3.0"
+    assert hasattr(meta, "foundry_project_fingerprint")
+    assert not hasattr(meta, "endpoint") or "endpoint" not in meta.__dict__
 
     assessment = make_perfect_assessment_v2()
     assert assessment.program.program_id == "BANK-MAIN"

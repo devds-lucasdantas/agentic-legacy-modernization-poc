@@ -58,14 +58,14 @@ class ExecutionMetadata:
     git_commit_sha: str = ""
     schema_version: str = "2.2.0"
     prompt_version: str = "gate2-baseline-v2.2"
-    evaluator_version: str = "2.2.0"
+    evaluator_version: str = "2.3.0"
     response_id: str | None = None
     elapsed_seconds: float = 0.0
     input_tokens: int | None = None
     output_tokens: int | None = None
     total_tokens: int | None = None
     schema_valid: bool = False
-    endpoint: str = ""
+    foundry_project_fingerprint: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         """Convert metadata to dictionary."""
@@ -176,7 +176,7 @@ class LegacyAnalyzerAgent:
             source_file=prep.relative_path,
             source_sha256=prep.sha256,
             git_commit_sha=git_commit_sha,
-            endpoint=self.config.foundry_project_endpoint,
+            foundry_project_fingerprint=self.config.project_fingerprint,
         )
 
         openai_client = self._get_openai_client()
