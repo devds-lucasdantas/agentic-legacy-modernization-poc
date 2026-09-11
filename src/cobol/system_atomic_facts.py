@@ -450,10 +450,7 @@ class OperationSequenceFact(SystemAtomicFact):
         object.__setattr__(self, "sequence_rationale", canonicalize_token(self.sequence_rationale))
 
     def get_semantic_key(self) -> str:
-        return (
-            f"OP_SEQUENCE:{self.program_id}:{self.first_operation}->"
-            f"{self.second_operation}:{self.sequence_rationale}"
-        )
+        return f"OP_SEQUENCE:{self.program_id}:{self.first_operation}->{self.second_operation}"
 
 
 # ---------------------------------------------------------------------------
@@ -494,13 +491,16 @@ class PlatformDependencyFact(SystemAtomicFact):
     """Operating system or platform execution constraint."""
 
     program_id: str
-    platform_family: str  # WINDOWS_CMD
+    platform_family: str  # WINDOWS, POSIX, etc.
     command_literal: str
     fact_category: str = field(default="PLATFORM_DEPENDENCY", init=False)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "program_id", normalize_identifier(self.program_id))
-        object.__setattr__(self, "platform_family", canonicalize_token(self.platform_family))
+        plat = canonicalize_token(self.platform_family)
+        if plat in ("WINDOWS_CMD", "WIN_CMD", "WINDOWS_CMD_SHELL"):
+            plat = "WINDOWS"
+        object.__setattr__(self, "platform_family", plat)
         clean_cmd = self.command_literal.strip("'\"")
         object.__setattr__(self, "command_literal", clean_cmd)
 
@@ -518,9 +518,7 @@ class BehavioralRiskFact(SystemAtomicFact):
     """System-level behavioral risk or operational fragility."""
 
     program_id: str
-    risk_category: (
-        str  # MISSING_FILE_STATUS_CHECK, NON_ATOMIC_FILE_UPDATE, CALLEE_PROCESS_TERMINATION
-    )
+    risk_category: str  # IO_ERROR_HANDLING, DATA_INTEGRITY, CONTROL_FLOW, etc.
     precondition: str
     possible_consequence: str
     severity: str  # HIGH, MEDIUM, LOW
@@ -528,8 +526,14 @@ class BehavioralRiskFact(SystemAtomicFact):
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "program_id", normalize_identifier(self.program_id))
-        object.__setattr__(self, "risk_category", canonicalize_token(self.risk_category))
-        object.__setattr__(self, "precondition", canonicalize_token(self.precondition))
+        rc = canonicalize_token(self.risk_category)
+        if rc in ("MISSING_FILE_STATUS_CHECK", "FILE_STATUS_CHECK_MISSING"):
+            rc = "IO_ERROR_HANDLING"
+        elif rc in ("NON_ATOMIC_FILE_UPDATE", "NON_ATOMIC_UPDATE"):
+            rc = "DATA_INTEGRITY"
+        elif rc in ("CALLEE_PROCESS_TERMINATION", "UNCONTROLLED_TERMINATION"):
+            rc = "CONTROL_FLOW"
+        object.__setattr__(self, "risk_category", rc)
         object.__setattr__(
             self, "possible_consequence", canonicalize_token(self.possible_consequence)
         )
@@ -537,7 +541,7 @@ class BehavioralRiskFact(SystemAtomicFact):
 
     def get_semantic_key(self) -> str:
         return (
-            f"RISK:{self.program_id}:{self.risk_category}:{self.precondition}:"
+            f"RISK:{self.program_id}:{self.risk_category}:"
             f"{self.possible_consequence}:{self.severity}"
         )
 

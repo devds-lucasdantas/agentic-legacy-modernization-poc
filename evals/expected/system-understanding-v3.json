@@ -1,25 +1,46 @@
 {
-  "version": "3.1.0",
+  "version": "3.2.0",
   "benchmark_design": "GATE_3_SYSTEM_UNDERSTANDING_APPROVED_CONTRACT",
+  "golden_authoring_method": "INDEPENDENT_STATIC_SOURCE_AUDIT",
+  "provenance_notes": "Authored directly from independent static source audit of the six legacy repository artifacts without runtime parser dependencies.",
   "total_expected_facts": 59,
+  "category_policies": {
+    "PROGRAM_DECLARATION": "REQUIRED_EXHAUSTIVE",
+    "CALL_OCCURRENCE": "REQUIRED_EXHAUSTIVE",
+    "CALL_EDGE": "REQUIRED_EXHAUSTIVE",
+    "INTERNAL_CALL_RESOLUTION": "REQUIRED_EXHAUSTIVE",
+    "FILE_BINDING": "REQUIRED_EXHAUSTIVE",
+    "RECORD_LAYOUT": "REQUIRED_EXHAUSTIVE",
+    "RECORD_LAYOUT_RELATION": "REQUIRED_PREREGISTERED_CORE",
+    "TERMINATION_SITE": "REQUIRED_EXHAUSTIVE",
+    "CALLER_CONTINUATION_CONSTRAINT": "REQUIRED_EXHAUSTIVE",
+    "COMMAND_INVOCATION": "REQUIRED_EXHAUSTIVE",
+    "DATA_TRANSFER_RELATION": "REQUIRED_PREREGISTERED_CORE",
+    "RESOURCE_LIFECYCLE": "REQUIRED_EXHAUSTIVE",
+    "OPERATION_SEQUENCE": "REQUIRED_EXHAUSTIVE",
+    "COMPUTATION_DATAFLOW": "REQUIRED_PREREGISTERED_CORE",
+    "PLATFORM_DEPENDENCY": "REQUIRED_EXHAUSTIVE",
+    "BEHAVIORAL_RISK": "REQUIRED_PREREGISTERED_CORE",
+    "DATA_STATE_COMPARISON": "REQUIRED_EXHAUSTIVE"
+  },
   "group_counts": {
-    "PROGRAM_DECLARATION": 4,
-    "CALL_OCCURRENCE": 6,
+    "BEHAVIORAL_RISK": 4,
+    "CALLER_CONTINUATION_CONSTRAINT": 3,
     "CALL_EDGE": 4,
-    "INTERNAL_CALL_RESOLUTION": 3,
+    "CALL_OCCURRENCE": 6,
+    "COMMAND_INVOCATION": 3,
+    "COMPUTATION_DATAFLOW": 2,
+    "DATA_STATE_COMPARISON": 1,
+    "DATA_TRANSFER_RELATION": 1,
     "FILE_BINDING": 4,
+    "INTERNAL_CALL_RESOLUTION": 3,
+    "OPERATION_SEQUENCE": 1,
+    "PLATFORM_DEPENDENCY": 3,
+    "PROGRAM_DECLARATION": 4,
     "RECORD_LAYOUT": 5,
     "RECORD_LAYOUT_RELATION": 7,
-    "TERMINATION_SITE": 4,
-    "CALLER_CONTINUATION_CONSTRAINT": 3,
-    "COMMAND_INVOCATION": 3,
-    "DATA_TRANSFER_RELATION": 1,
     "RESOURCE_LIFECYCLE": 4,
-    "OPERATION_SEQUENCE": 1,
-    "COMPUTATION_DATAFLOW": 2,
-    "PLATFORM_DEPENDENCY": 3,
-    "BEHAVIORAL_RISK": 4,
-    "DATA_STATE_COMPARISON": 1
+    "TERMINATION_SITE": 4
   },
   "propositions": [
     {
@@ -32,7 +53,8 @@
           "line_start": 2,
           "line_end": 2
         }
-      }
+      },
+      "auditor_rationale": "Static source audit: BANK-MAIN.CBL line 2 defines PROGRAM-ID. BANK-MAIN."
     },
     {
       "id": "prop.program.init_db",
@@ -44,7 +66,8 @@
           "line_start": 2,
           "line_end": 2
         }
-      }
+      },
+      "auditor_rationale": "Static source audit: INIT-DB.CBL line 2 defines PROGRAM-ID. INIT-DB."
     },
     {
       "id": "prop.program.report_gen",
@@ -56,7 +79,8 @@
           "line_start": 2,
           "line_end": 2
         }
-      }
+      },
+      "auditor_rationale": "Static source audit: REPORT-GEN.CBL line 2 defines PROGRAM-ID. REPORT-GEN."
     },
     {
       "id": "prop.program.trans_proc",
@@ -68,10 +92,11 @@
           "line_start": 2,
           "line_end": 2
         }
-      }
+      },
+      "auditor_rationale": "Static source audit: TRANS-PROC.CBL line 2 defines PROGRAM-ID. TRANS-PROC."
     },
     {
-      "id": "prop.call_occ.bank-main_init-db_1",
+      "id": "prop.call.bank_main_init_db",
       "category": "CALL_OCCURRENCE",
       "semantic_key": "CALL_OCCURRENCE:BANK-MAIN->INIT-DB:LITERAL_TARGET",
       "evidence_spans": {
@@ -80,10 +105,11 @@
           "line_start": 24,
           "line_end": 24
         }
-      }
+      },
+      "auditor_rationale": "Static source audit: BANK-MAIN.CBL line 24 invokes CALL 'INIT-DB'."
     },
     {
-      "id": "prop.call_occ.bank-main_trans-proc_2",
+      "id": "prop.call.bank_main_trans_proc",
       "category": "CALL_OCCURRENCE",
       "semantic_key": "CALL_OCCURRENCE:BANK-MAIN->TRANS-PROC:LITERAL_TARGET",
       "evidence_spans": {
@@ -92,10 +118,11 @@
           "line_start": 26,
           "line_end": 26
         }
-      }
+      },
+      "auditor_rationale": "Static source audit: BANK-MAIN.CBL line 26 invokes CALL 'TRANS-PROC'."
     },
     {
-      "id": "prop.call_occ.bank-main_report-gen_3",
+      "id": "prop.call.bank_main_report_gen",
       "category": "CALL_OCCURRENCE",
       "semantic_key": "CALL_OCCURRENCE:BANK-MAIN->REPORT-GEN:LITERAL_TARGET",
       "evidence_spans": {
@@ -104,10 +131,11 @@
           "line_start": 28,
           "line_end": 28
         }
-      }
+      },
+      "auditor_rationale": "Static source audit: BANK-MAIN.CBL line 28 invokes CALL 'REPORT-GEN'."
     },
     {
-      "id": "prop.call_occ.trans-proc_system_4",
+      "id": "prop.call.trans_proc_system_1",
       "category": "CALL_OCCURRENCE",
       "semantic_key": "CALL_OCCURRENCE:TRANS-PROC->SYSTEM:LITERAL_TARGET:WS-CMD",
       "evidence_spans": {
@@ -116,10 +144,11 @@
           "line_start": 87,
           "line_end": 87
         }
-      }
+      },
+      "auditor_rationale": "Static source audit: TRANS-PROC.CBL line 87 invokes CALL 'SYSTEM' USING WS-CMD (delete canonical file)."
     },
     {
-      "id": "prop.call_occ.trans-proc_system_5",
+      "id": "prop.call.trans_proc_system_2",
       "category": "CALL_OCCURRENCE",
       "semantic_key": "CALL_OCCURRENCE:TRANS-PROC->SYSTEM:LITERAL_TARGET:WS-CMD",
       "evidence_spans": {
@@ -128,10 +157,11 @@
           "line_start": 89,
           "line_end": 89
         }
-      }
+      },
+      "auditor_rationale": "Static source audit: TRANS-PROC.CBL line 89 invokes CALL 'SYSTEM' USING WS-CMD (rename temporary file)."
     },
     {
-      "id": "prop.call_occ.trans-proc_system_6",
+      "id": "prop.call.trans_proc_system_3",
       "category": "CALL_OCCURRENCE",
       "semantic_key": "CALL_OCCURRENCE:TRANS-PROC->SYSTEM:LITERAL_TARGET:WS-CMD",
       "evidence_spans": {
@@ -140,10 +170,11 @@
           "line_start": 93,
           "line_end": 93
         }
-      }
+      },
+      "auditor_rationale": "Static source audit: TRANS-PROC.CBL line 93 invokes CALL 'SYSTEM' USING WS-CMD (delete temporary file on abort)."
     },
     {
-      "id": "prop.call_edge.bank-main_init-db",
+      "id": "prop.edge.bank_main_init_db",
       "category": "CALL_EDGE",
       "semantic_key": "CALL_EDGE:BANK-MAIN->INIT-DB:LITERAL_TARGET",
       "evidence_spans": {
@@ -152,10 +183,11 @@
           "line_start": 24,
           "line_end": 24
         }
-      }
+      },
+      "auditor_rationale": "Static source audit: Unique directed call edge from BANK-MAIN to INIT-DB at line 24."
     },
     {
-      "id": "prop.call_edge.bank-main_trans-proc",
+      "id": "prop.edge.bank_main_trans_proc",
       "category": "CALL_EDGE",
       "semantic_key": "CALL_EDGE:BANK-MAIN->TRANS-PROC:LITERAL_TARGET",
       "evidence_spans": {
@@ -164,10 +196,11 @@
           "line_start": 26,
           "line_end": 26
         }
-      }
+      },
+      "auditor_rationale": "Static source audit: Unique directed call edge from BANK-MAIN to TRANS-PROC at line 26."
     },
     {
-      "id": "prop.call_edge.bank-main_report-gen",
+      "id": "prop.edge.bank_main_report_gen",
       "category": "CALL_EDGE",
       "semantic_key": "CALL_EDGE:BANK-MAIN->REPORT-GEN:LITERAL_TARGET",
       "evidence_spans": {
@@ -176,10 +209,11 @@
           "line_start": 28,
           "line_end": 28
         }
-      }
+      },
+      "auditor_rationale": "Static source audit: Unique directed call edge from BANK-MAIN to REPORT-GEN at line 28."
     },
     {
-      "id": "prop.call_edge.trans-proc_system",
+      "id": "prop.edge.trans_proc_system",
       "category": "CALL_EDGE",
       "semantic_key": "CALL_EDGE:TRANS-PROC->SYSTEM:LITERAL_TARGET",
       "evidence_spans": {
@@ -188,10 +222,11 @@
           "line_start": 87,
           "line_end": 87
         }
-      }
+      },
+      "auditor_rationale": "Static source audit: Unique directed call edge from TRANS-PROC to external runtime routine SYSTEM at line 87."
     },
     {
-      "id": "prop.internal_call.bank-main_init-db",
+      "id": "prop.resolution.bank_main_init_db",
       "category": "INTERNAL_CALL_RESOLUTION",
       "semantic_key": "INTERNAL_CALL:BANK-MAIN->INIT-DB",
       "evidence_spans": {
@@ -205,10 +240,11 @@
           "line_start": 2,
           "line_end": 2
         }
-      }
+      },
+      "auditor_rationale": "Static source audit: CALL 'INIT-DB' in BANK-MAIN.CBL line 24 resolves to PROGRAM-ID. INIT-DB in INIT-DB.CBL line 2."
     },
     {
-      "id": "prop.internal_call.bank-main_trans-proc",
+      "id": "prop.resolution.bank_main_trans_proc",
       "category": "INTERNAL_CALL_RESOLUTION",
       "semantic_key": "INTERNAL_CALL:BANK-MAIN->TRANS-PROC",
       "evidence_spans": {
@@ -222,10 +258,11 @@
           "line_start": 2,
           "line_end": 2
         }
-      }
+      },
+      "auditor_rationale": "Static source audit: CALL 'TRANS-PROC' in BANK-MAIN.CBL line 26 resolves to PROGRAM-ID. TRANS-PROC in TRANS-PROC.CBL line 2."
     },
     {
-      "id": "prop.internal_call.bank-main_report-gen",
+      "id": "prop.resolution.bank_main_report_gen",
       "category": "INTERNAL_CALL_RESOLUTION",
       "semantic_key": "INTERNAL_CALL:BANK-MAIN->REPORT-GEN",
       "evidence_spans": {
@@ -239,10 +276,11 @@
           "line_start": 2,
           "line_end": 2
         }
-      }
+      },
+      "auditor_rationale": "Static source audit: CALL 'REPORT-GEN' in BANK-MAIN.CBL line 28 resolves to PROGRAM-ID. REPORT-GEN in REPORT-GEN.CBL line 2."
     },
     {
-      "id": "prop.binding.init-db_account-file",
+      "id": "prop.binding.init_db_account_file",
       "category": "FILE_BINDING",
       "semantic_key": "FILE_BINDING:INIT-DB:ACCOUNT-FILE:ACCOUNTS:LINE_SEQUENTIAL",
       "evidence_spans": {
@@ -251,10 +289,11 @@
           "line_start": 7,
           "line_end": 8
         }
-      }
+      },
+      "auditor_rationale": "Static source audit: INIT-DB.CBL lines 7-8 binds ACCOUNT-FILE to 'ACCOUNTS.DAT' with LINE SEQUENTIAL."
     },
     {
-      "id": "prop.binding.report-gen_account-file",
+      "id": "prop.binding.report_gen_account_file",
       "category": "FILE_BINDING",
       "semantic_key": "FILE_BINDING:REPORT-GEN:ACCOUNT-FILE:ACCOUNTS:LINE_SEQUENTIAL",
       "evidence_spans": {
@@ -263,10 +302,11 @@
           "line_start": 7,
           "line_end": 8
         }
-      }
+      },
+      "auditor_rationale": "Static source audit: REPORT-GEN.CBL lines 7-8 binds ACCOUNT-FILE to 'ACCOUNTS.DAT' with LINE SEQUENTIAL."
     },
     {
-      "id": "prop.binding.trans-proc_account-file",
+      "id": "prop.binding.trans_proc_account_file",
       "category": "FILE_BINDING",
       "semantic_key": "FILE_BINDING:TRANS-PROC:ACCOUNT-FILE:ACCOUNTS:LINE_SEQUENTIAL",
       "evidence_spans": {
@@ -275,10 +315,11 @@
           "line_start": 7,
           "line_end": 8
         }
-      }
+      },
+      "auditor_rationale": "Static source audit: TRANS-PROC.CBL lines 7-8 binds ACCOUNT-FILE to 'ACCOUNTS.DAT' with LINE SEQUENTIAL."
     },
     {
-      "id": "prop.binding.trans-proc_temp-file",
+      "id": "prop.binding.trans_proc_temp_file",
       "category": "FILE_BINDING",
       "semantic_key": "FILE_BINDING:TRANS-PROC:TEMP-FILE:ACCOUNTS:LINE_SEQUENTIAL",
       "evidence_spans": {
@@ -287,10 +328,11 @@
           "line_start": 9,
           "line_end": 10
         }
-      }
+      },
+      "auditor_rationale": "Static source audit: TRANS-PROC.CBL lines 9-10 binds TEMP-FILE to 'ACCOUNTS.TMP' with LINE SEQUENTIAL."
     },
     {
-      "id": "prop.layout.accounts_account-record",
+      "id": "prop.layout.accounts_account_record",
       "category": "RECORD_LAYOUT",
       "semantic_key": "RECORD_LAYOUT:ACCOUNTS:ACCOUNT-RECORD:4:COMP_3",
       "evidence_spans": {
@@ -299,10 +341,11 @@
           "line_start": 2,
           "line_end": 6
         }
-      }
+      },
+      "auditor_rationale": "Static source audit: ACCOUNTS.CPY lines 2-6 declares ACCOUNT-RECORD with 4 fields using COMP-3 packed decimal."
     },
     {
-      "id": "prop.layout.init-db_account-rec",
+      "id": "prop.layout.init_db_account_rec",
       "category": "RECORD_LAYOUT",
       "semantic_key": "RECORD_LAYOUT:INIT-DB:ACCOUNT-REC:4:DISPLAY",
       "evidence_spans": {
@@ -311,10 +354,11 @@
           "line_start": 13,
           "line_end": 17
         }
-      }
+      },
+      "auditor_rationale": "Static source audit: INIT-DB.CBL lines 13-17 declares ACCOUNT-REC with 4 fields in DISPLAY format."
     },
     {
-      "id": "prop.layout.report-gen_account-rec",
+      "id": "prop.layout.report_gen_account_rec",
       "category": "RECORD_LAYOUT",
       "semantic_key": "RECORD_LAYOUT:REPORT-GEN:ACCOUNT-REC:4:DISPLAY",
       "evidence_spans": {
@@ -323,10 +367,11 @@
           "line_start": 13,
           "line_end": 17
         }
-      }
+      },
+      "auditor_rationale": "Static source audit: REPORT-GEN.CBL lines 13-17 declares ACCOUNT-REC with 4 fields in DISPLAY format."
     },
     {
-      "id": "prop.layout.trans-proc_account-rec",
+      "id": "prop.layout.trans_proc_account_rec",
       "category": "RECORD_LAYOUT",
       "semantic_key": "RECORD_LAYOUT:TRANS-PROC:ACCOUNT-REC:4:DISPLAY",
       "evidence_spans": {
@@ -335,10 +380,11 @@
           "line_start": 15,
           "line_end": 19
         }
-      }
+      },
+      "auditor_rationale": "Static source audit: TRANS-PROC.CBL lines 15-19 declares ACCOUNT-REC with 4 fields in DISPLAY format."
     },
     {
-      "id": "prop.layout.trans-proc_temp-rec",
+      "id": "prop.layout.trans_proc_temp_rec",
       "category": "RECORD_LAYOUT",
       "semantic_key": "RECORD_LAYOUT:TRANS-PROC:TEMP-REC:4:DISPLAY",
       "evidence_spans": {
@@ -347,10 +393,11 @@
           "line_start": 22,
           "line_end": 26
         }
-      }
+      },
+      "auditor_rationale": "Static source audit: TRANS-PROC.CBL lines 22-26 declares TEMP-REC with 4 fields in DISPLAY format."
     },
     {
-      "id": "prop.relation.account-record_account-rec_0_1",
+      "id": "prop.relation.accounts_init_db",
       "category": "RECORD_LAYOUT_RELATION",
       "semantic_key": "LAYOUT_RELATION:ACCOUNTS:ACCOUNT-RECORD:INIT-DB:ACCOUNT-REC:REPRESENTATION_MISMATCH",
       "evidence_spans": {
@@ -364,10 +411,11 @@
           "line_start": 13,
           "line_end": 17
         }
-      }
+      },
+      "auditor_rationale": "Static source audit: ACCOUNTS.CPY uses COMP-3 packed decimal while INIT-DB.CBL uses DISPLAY layout, causing representation mismatch."
     },
     {
-      "id": "prop.relation.account-record_account-rec_0_2",
+      "id": "prop.relation.accounts_report_gen",
       "category": "RECORD_LAYOUT_RELATION",
       "semantic_key": "LAYOUT_RELATION:ACCOUNTS:ACCOUNT-RECORD:REPORT-GEN:ACCOUNT-REC:REPRESENTATION_MISMATCH",
       "evidence_spans": {
@@ -381,10 +429,11 @@
           "line_start": 13,
           "line_end": 17
         }
-      }
+      },
+      "auditor_rationale": "Static source audit: ACCOUNTS.CPY uses COMP-3 packed decimal while REPORT-GEN.CBL uses DISPLAY layout, causing representation mismatch."
     },
     {
-      "id": "prop.relation.account-record_account-rec_0_3",
+      "id": "prop.relation.accounts_trans_proc_acc",
       "category": "RECORD_LAYOUT_RELATION",
       "semantic_key": "LAYOUT_RELATION:ACCOUNTS:ACCOUNT-RECORD:TRANS-PROC:ACCOUNT-REC:REPRESENTATION_MISMATCH",
       "evidence_spans": {
@@ -398,10 +447,11 @@
           "line_start": 15,
           "line_end": 19
         }
-      }
+      },
+      "auditor_rationale": "Static source audit: ACCOUNTS.CPY uses COMP-3 packed decimal while TRANS-PROC.CBL ACCOUNT-REC uses DISPLAY layout."
     },
     {
-      "id": "prop.relation.account-record_temp-rec_0_4",
+      "id": "prop.relation.accounts_trans_proc_temp",
       "category": "RECORD_LAYOUT_RELATION",
       "semantic_key": "LAYOUT_RELATION:ACCOUNTS:ACCOUNT-RECORD:TRANS-PROC:TEMP-REC:REPRESENTATION_MISMATCH",
       "evidence_spans": {
@@ -415,10 +465,11 @@
           "line_start": 22,
           "line_end": 26
         }
-      }
+      },
+      "auditor_rationale": "Static source audit: ACCOUNTS.CPY uses COMP-3 packed decimal while TRANS-PROC.CBL TEMP-REC uses DISPLAY layout."
     },
     {
-      "id": "prop.relation.account-rec_account-rec_1_2",
+      "id": "prop.relation.init_db_report_gen",
       "category": "RECORD_LAYOUT_RELATION",
       "semantic_key": "LAYOUT_RELATION:INIT-DB:ACCOUNT-REC:REPORT-GEN:ACCOUNT-REC:IDENTICAL",
       "evidence_spans": {
@@ -432,10 +483,11 @@
           "line_start": 13,
           "line_end": 17
         }
-      }
+      },
+      "auditor_rationale": "Static source audit: INIT-DB.CBL and REPORT-GEN.CBL share identical field names, types, and offsets."
     },
     {
-      "id": "prop.relation.account-rec_account-rec_1_3",
+      "id": "prop.relation.init_db_trans_proc_acc",
       "category": "RECORD_LAYOUT_RELATION",
       "semantic_key": "LAYOUT_RELATION:INIT-DB:ACCOUNT-REC:TRANS-PROC:ACCOUNT-REC:IDENTICAL",
       "evidence_spans": {
@@ -449,10 +501,11 @@
           "line_start": 15,
           "line_end": 19
         }
-      }
+      },
+      "auditor_rationale": "Static source audit: INIT-DB.CBL and TRANS-PROC.CBL share identical field names, types, and offsets."
     },
     {
-      "id": "prop.relation.account-rec_temp-rec_3_4",
+      "id": "prop.relation.trans_proc_acc_temp",
       "category": "RECORD_LAYOUT_RELATION",
       "semantic_key": "LAYOUT_RELATION:TRANS-PROC:ACCOUNT-REC:TRANS-PROC:TEMP-REC:EQUIVALENT",
       "evidence_spans": {
@@ -466,10 +519,11 @@
           "line_start": 22,
           "line_end": 26
         }
-      }
+      },
+      "auditor_rationale": "Static source audit: TRANS-PROC ACCOUNT-REC and TEMP-REC have equivalent types/lengths despite prefix difference (REC- vs TEMP-)."
     },
     {
-      "id": "prop.term.bank-main_stop_run",
+      "id": "prop.term.bank_main",
       "category": "TERMINATION_SITE",
       "semantic_key": "TERMINATION:BANK-MAIN:STOP_RUN",
       "evidence_spans": {
@@ -478,10 +532,11 @@
           "line_start": 36,
           "line_end": 36
         }
-      }
+      },
+      "auditor_rationale": "Static source audit: BANK-MAIN.CBL line 36 executes STOP RUN to terminate process."
     },
     {
-      "id": "prop.term.init-db_stop_run",
+      "id": "prop.term.init_db",
       "category": "TERMINATION_SITE",
       "semantic_key": "TERMINATION:INIT-DB:STOP_RUN",
       "evidence_spans": {
@@ -490,10 +545,11 @@
           "line_start": 46,
           "line_end": 46
         }
-      }
+      },
+      "auditor_rationale": "Static source audit: INIT-DB.CBL line 46 executes STOP RUN instead of GOBACK."
     },
     {
-      "id": "prop.term.report-gen_stop_run",
+      "id": "prop.term.report_gen",
       "category": "TERMINATION_SITE",
       "semantic_key": "TERMINATION:REPORT-GEN:STOP_RUN",
       "evidence_spans": {
@@ -502,10 +558,11 @@
           "line_start": 57,
           "line_end": 57
         }
-      }
+      },
+      "auditor_rationale": "Static source audit: REPORT-GEN.CBL line 57 executes STOP RUN instead of GOBACK."
     },
     {
-      "id": "prop.term.trans-proc_stop_run",
+      "id": "prop.term.trans_proc",
       "category": "TERMINATION_SITE",
       "semantic_key": "TERMINATION:TRANS-PROC:STOP_RUN",
       "evidence_spans": {
@@ -514,10 +571,11 @@
           "line_start": 96,
           "line_end": 96
         }
-      }
+      },
+      "auditor_rationale": "Static source audit: TRANS-PROC.CBL line 96 executes STOP RUN instead of GOBACK."
     },
     {
-      "id": "prop.continuation.bank-main_init-db",
+      "id": "prop.constraint.bank_main_init_db",
       "category": "CALLER_CONTINUATION_CONSTRAINT",
       "semantic_key": "CONTINUATION_CONSTRAINT:BANK-MAIN->INIT-DB:PROCESS_TERMINATION_ON_CALL",
       "evidence_spans": {
@@ -531,10 +589,11 @@
           "line_start": 46,
           "line_end": 46
         }
-      }
+      },
+      "auditor_rationale": "Static source audit: Callee INIT-DB terminates run-unit via STOP RUN at line 46, aborting BANK-MAIN caller loop continuation."
     },
     {
-      "id": "prop.continuation.bank-main_trans-proc",
+      "id": "prop.constraint.bank_main_trans_proc",
       "category": "CALLER_CONTINUATION_CONSTRAINT",
       "semantic_key": "CONTINUATION_CONSTRAINT:BANK-MAIN->TRANS-PROC:PROCESS_TERMINATION_ON_CALL",
       "evidence_spans": {
@@ -548,10 +607,11 @@
           "line_start": 96,
           "line_end": 96
         }
-      }
+      },
+      "auditor_rationale": "Static source audit: Callee TRANS-PROC terminates run-unit via STOP RUN at line 96, aborting BANK-MAIN caller loop continuation."
     },
     {
-      "id": "prop.continuation.bank-main_report-gen",
+      "id": "prop.constraint.bank_main_report_gen",
       "category": "CALLER_CONTINUATION_CONSTRAINT",
       "semantic_key": "CONTINUATION_CONSTRAINT:BANK-MAIN->REPORT-GEN:PROCESS_TERMINATION_ON_CALL",
       "evidence_spans": {
@@ -565,10 +625,11 @@
           "line_start": 57,
           "line_end": 57
         }
-      }
+      },
+      "auditor_rationale": "Static source audit: Callee REPORT-GEN terminates run-unit via STOP RUN at line 57, aborting BANK-MAIN caller loop continuation."
     },
     {
-      "id": "prop.command.trans-proc_1",
+      "id": "prop.command.trans_proc_del_dat",
       "category": "COMMAND_INVOCATION",
       "semantic_key": "COMMAND_INVOCATION:TRANS-PROC:cmd /c del ACCOUNTS.DAT:WS-CMD",
       "evidence_spans": {
@@ -582,10 +643,11 @@
           "line_start": 87,
           "line_end": 87
         }
-      }
+      },
+      "auditor_rationale": "Static source audit: TRANS-PROC assigns 'cmd /c del ACCOUNTS.DAT' at line 86 and executes CALL 'SYSTEM' at line 87."
     },
     {
-      "id": "prop.command.trans-proc_2",
+      "id": "prop.command.trans_proc_ren_tmp",
       "category": "COMMAND_INVOCATION",
       "semantic_key": "COMMAND_INVOCATION:TRANS-PROC:cmd /c ren ACCOUNTS.TMP ACCOUNTS.DAT:WS-CMD",
       "evidence_spans": {
@@ -599,10 +661,11 @@
           "line_start": 89,
           "line_end": 89
         }
-      }
+      },
+      "auditor_rationale": "Static source audit: TRANS-PROC assigns 'cmd /c ren ACCOUNTS.TMP ACCOUNTS.DAT' at line 88 and executes CALL 'SYSTEM' at line 89."
     },
     {
-      "id": "prop.command.trans-proc_3",
+      "id": "prop.command.trans_proc_del_tmp",
       "category": "COMMAND_INVOCATION",
       "semantic_key": "COMMAND_INVOCATION:TRANS-PROC:cmd /c del ACCOUNTS.TMP:WS-CMD",
       "evidence_spans": {
@@ -616,10 +679,11 @@
           "line_start": 93,
           "line_end": 93
         }
-      }
+      },
+      "auditor_rationale": "Static source audit: TRANS-PROC assigns 'cmd /c del ACCOUNTS.TMP' at line 92 and executes CALL 'SYSTEM' at line 93."
     },
     {
-      "id": "prop.transfer.trans-proc_account-rec_temp-rec",
+      "id": "prop.transfer.trans_proc_acc_temp",
       "category": "DATA_TRANSFER_RELATION",
       "semantic_key": "DATA_TRANSFER:TRANS-PROC:ACCOUNT-REC->TEMP-REC:MOVE",
       "evidence_spans": {
@@ -628,10 +692,11 @@
           "line_start": 76,
           "line_end": 76
         }
-      }
+      },
+      "auditor_rationale": "Static source audit: TRANS-PROC.CBL line 76 copies input record to output staging buffer via MOVE ACCOUNT-REC TO TEMP-REC."
     },
     {
-      "id": "prop.lifecycle.init-db_account-file",
+      "id": "prop.lifecycle.init_db_account_file",
       "category": "RESOURCE_LIFECYCLE",
       "semantic_key": "RESOURCE_LIFECYCLE:INIT-DB:ACCOUNT-FILE:OUTPUT:(OPEN->CLOSE)",
       "evidence_spans": {
@@ -640,10 +705,11 @@
           "line_start": 24,
           "line_end": 44
         }
-      }
+      },
+      "auditor_rationale": "Static source audit: INIT-DB.CBL opens ACCOUNT-FILE for OUTPUT at line 24 and closes it at line 44."
     },
     {
-      "id": "prop.lifecycle.report-gen_account-file",
+      "id": "prop.lifecycle.report_gen_account_file",
       "category": "RESOURCE_LIFECYCLE",
       "semantic_key": "RESOURCE_LIFECYCLE:REPORT-GEN:ACCOUNT-FILE:INPUT:(OPEN->READ->CLOSE)",
       "evidence_spans": {
@@ -652,10 +718,11 @@
           "line_start": 28,
           "line_end": 50
         }
-      }
+      },
+      "auditor_rationale": "Static source audit: REPORT-GEN.CBL opens ACCOUNT-FILE for INPUT at line 28, reads records, and closes it at line 50."
     },
     {
-      "id": "prop.lifecycle.trans-proc_account-file",
+      "id": "prop.lifecycle.trans_proc_account_file",
       "category": "RESOURCE_LIFECYCLE",
       "semantic_key": "RESOURCE_LIFECYCLE:TRANS-PROC:ACCOUNT-FILE:INPUT:(OPEN->READ->CLOSE)",
       "evidence_spans": {
@@ -664,10 +731,11 @@
           "line_start": 46,
           "line_end": 81
         }
-      }
+      },
+      "auditor_rationale": "Static source audit: TRANS-PROC.CBL opens ACCOUNT-FILE for INPUT at line 46, reads records, and closes it at line 81."
     },
     {
-      "id": "prop.lifecycle.trans-proc_temp-file",
+      "id": "prop.lifecycle.trans_proc_temp_file",
       "category": "RESOURCE_LIFECYCLE",
       "semantic_key": "RESOURCE_LIFECYCLE:TRANS-PROC:TEMP-FILE:OUTPUT:(OPEN->CLOSE)",
       "evidence_spans": {
@@ -676,12 +744,13 @@
           "line_start": 47,
           "line_end": 82
         }
-      }
+      },
+      "auditor_rationale": "Static source audit: TRANS-PROC.CBL opens TEMP-FILE for OUTPUT at line 47 and closes it at line 82."
     },
     {
-      "id": "prop.op_seq.trans-proc_del_ren",
+      "id": "prop.op_seq.trans_proc_del_ren",
       "category": "OPERATION_SEQUENCE",
-      "semantic_key": "OP_SEQUENCE:TRANS-PROC:DELETE_DATASET->RENAME_TEMPORARY_DATASET:NON_ATOMIC_REPLACEMENT_SEQUENCE",
+      "semantic_key": "OP_SEQUENCE:TRANS-PROC:DELETE_DATASET->RENAME_TEMPORARY_DATASET",
       "evidence_spans": {
         "first_evidence": {
           "file_path": "legacy/core-banking-system/TRANS-PROC.CBL",
@@ -693,10 +762,12 @@
           "line_start": 89,
           "line_end": 89
         }
-      }
+      },
+      "sequence_rationale": "NON_ATOMIC_REPLACEMENT_SEQUENCE",
+      "auditor_rationale": "Static source audit: TRANS-PROC deletes canonical file at line 87 before renaming temporary file at line 89, establishing non-atomic replacement order."
     },
     {
-      "id": "prop.dataflow.report-gen_rec-acc-balance_ws-total-bal",
+      "id": "prop.dataflow.report_gen_balance",
       "category": "COMPUTATION_DATAFLOW",
       "semantic_key": "DATAFLOW:REPORT-GEN:REC-ACC-BALANCE->WS-TOTAL-BAL:ADD",
       "evidence_spans": {
@@ -705,10 +776,11 @@
           "line_start": 45,
           "line_end": 45
         }
-      }
+      },
+      "auditor_rationale": "Static source audit: REPORT-GEN.CBL line 45 accumulates account balance: ADD REC-ACC-BALANCE TO WS-TOTAL-BAL."
     },
     {
-      "id": "prop.dataflow.report-gen_1_ws-count",
+      "id": "prop.dataflow.report_gen_count",
       "category": "COMPUTATION_DATAFLOW",
       "semantic_key": "DATAFLOW:REPORT-GEN:1->WS-COUNT:ADD",
       "evidence_spans": {
@@ -717,114 +789,53 @@
           "line_start": 46,
           "line_end": 46
         }
-      }
+      },
+      "auditor_rationale": "Static source audit: REPORT-GEN.CBL line 46 increments record counter: ADD 1 TO WS-COUNT."
     },
     {
-      "id": "prop.platform.trans-proc_1",
+      "id": "prop.platform.trans_proc_del_dat",
       "category": "PLATFORM_DEPENDENCY",
-      "semantic_key": "PLATFORM:TRANS-PROC:WINDOWS_CMD:cmd /c del ACCOUNTS.DAT",
+      "semantic_key": "PLATFORM:TRANS-PROC:WINDOWS:cmd /c del ACCOUNTS.DAT",
       "evidence_spans": {
         "evidence": {
           "file_path": "legacy/core-banking-system/TRANS-PROC.CBL",
           "line_start": 86,
           "line_end": 86
         }
-      }
+      },
+      "auditor_rationale": "Static source audit: TRANS-PROC line 86 embeds Windows command shell syntax: 'cmd /c del ACCOUNTS.DAT'."
     },
     {
-      "id": "prop.platform.trans-proc_2",
+      "id": "prop.platform.trans_proc_ren_tmp",
       "category": "PLATFORM_DEPENDENCY",
-      "semantic_key": "PLATFORM:TRANS-PROC:WINDOWS_CMD:cmd /c ren ACCOUNTS.TMP ACCOUNTS.DAT",
+      "semantic_key": "PLATFORM:TRANS-PROC:WINDOWS:cmd /c ren ACCOUNTS.TMP ACCOUNTS.DAT",
       "evidence_spans": {
         "evidence": {
           "file_path": "legacy/core-banking-system/TRANS-PROC.CBL",
           "line_start": 88,
           "line_end": 88
         }
-      }
+      },
+      "auditor_rationale": "Static source audit: TRANS-PROC line 88 embeds Windows command shell syntax: 'cmd /c ren ACCOUNTS.TMP ACCOUNTS.DAT'."
     },
     {
-      "id": "prop.platform.trans-proc_3",
+      "id": "prop.platform.trans_proc_del_tmp",
       "category": "PLATFORM_DEPENDENCY",
-      "semantic_key": "PLATFORM:TRANS-PROC:WINDOWS_CMD:cmd /c del ACCOUNTS.TMP",
+      "semantic_key": "PLATFORM:TRANS-PROC:WINDOWS:cmd /c del ACCOUNTS.TMP",
       "evidence_spans": {
         "evidence": {
           "file_path": "legacy/core-banking-system/TRANS-PROC.CBL",
           "line_start": 92,
           "line_end": 92
         }
-      }
+      },
+      "auditor_rationale": "Static source audit: TRANS-PROC line 92 embeds Windows command shell syntax: 'cmd /c del ACCOUNTS.TMP'."
     },
     {
-      "id": "prop.risk.init-db_account-file_missing_status",
+      "id": "prop.risk.trans_proc_non_atomic_update",
       "category": "BEHAVIORAL_RISK",
-      "semantic_key": "RISK:INIT-DB:MISSING_FILE_STATUS_CHECK:UNCHECKED_FILE_STATUS:SILENT_IO_FAILURE:HIGH",
-      "evidence_spans": {
-        "precondition_evidence": {
-          "file_path": "legacy/core-banking-system/INIT-DB.CBL",
-          "line_start": 7,
-          "line_end": 8
-        },
-        "operation_evidence": {
-          "file_path": "legacy/core-banking-system/INIT-DB.CBL",
-          "line_start": 24,
-          "line_end": 44
-        },
-        "affected_resource_evidence": {
-          "file_path": "legacy/core-banking-system/INIT-DB.CBL",
-          "line_start": 7,
-          "line_end": 8
-        }
-      }
-    },
-    {
-      "id": "prop.risk.report-gen_account-file_missing_status",
-      "category": "BEHAVIORAL_RISK",
-      "semantic_key": "RISK:REPORT-GEN:MISSING_FILE_STATUS_CHECK:UNCHECKED_FILE_STATUS:SILENT_IO_FAILURE:HIGH",
-      "evidence_spans": {
-        "precondition_evidence": {
-          "file_path": "legacy/core-banking-system/REPORT-GEN.CBL",
-          "line_start": 7,
-          "line_end": 8
-        },
-        "operation_evidence": {
-          "file_path": "legacy/core-banking-system/REPORT-GEN.CBL",
-          "line_start": 28,
-          "line_end": 50
-        },
-        "affected_resource_evidence": {
-          "file_path": "legacy/core-banking-system/REPORT-GEN.CBL",
-          "line_start": 7,
-          "line_end": 8
-        }
-      }
-    },
-    {
-      "id": "prop.risk.trans-proc_account-file_missing_status",
-      "category": "BEHAVIORAL_RISK",
-      "semantic_key": "RISK:TRANS-PROC:MISSING_FILE_STATUS_CHECK:UNCHECKED_FILE_STATUS:SILENT_IO_FAILURE:HIGH",
-      "evidence_spans": {
-        "precondition_evidence": {
-          "file_path": "legacy/core-banking-system/TRANS-PROC.CBL",
-          "line_start": 7,
-          "line_end": 8
-        },
-        "operation_evidence": {
-          "file_path": "legacy/core-banking-system/TRANS-PROC.CBL",
-          "line_start": 46,
-          "line_end": 81
-        },
-        "affected_resource_evidence": {
-          "file_path": "legacy/core-banking-system/TRANS-PROC.CBL",
-          "line_start": 7,
-          "line_end": 8
-        }
-      }
-    },
-    {
-      "id": "prop.risk.trans-proc_non_atomic_update",
-      "category": "BEHAVIORAL_RISK",
-      "semantic_key": "RISK:TRANS-PROC:NON_ATOMIC_FILE_UPDATE:PROCESS_FAILURE_BETWEEN_COMMANDS:PERMANENT_DATA_LOSS:HIGH",
+      "semantic_key": "RISK:TRANS-PROC:DATA_INTEGRITY:CANONICAL_DATASET_UNAVAILABLE:HIGH",
+      "precondition": "CRASH_BETWEEN_FILE_OPERATIONS",
       "evidence_spans": {
         "precondition_evidence": {
           "file_path": "legacy/core-banking-system/TRANS-PROC.CBL",
@@ -841,7 +852,80 @@
           "line_start": 88,
           "line_end": 88
         }
-      }
+      },
+      "auditor_rationale": "Static source audit: Process termination or power loss between del (line 87) and ren (line 89) leaves canonical dataset unavailable while temp file remains."
+    },
+    {
+      "id": "prop.risk.init_db_missing_status",
+      "category": "BEHAVIORAL_RISK",
+      "semantic_key": "RISK:INIT-DB:IO_ERROR_HANDLING:UNCHECKED_IO_ERROR:HIGH",
+      "precondition": "MISSING_FILE_STATUS_CLAUSE",
+      "evidence_spans": {
+        "precondition_evidence": {
+          "file_path": "legacy/core-banking-system/INIT-DB.CBL",
+          "line_start": 7,
+          "line_end": 8
+        },
+        "operation_evidence": {
+          "file_path": "legacy/core-banking-system/INIT-DB.CBL",
+          "line_start": 24,
+          "line_end": 44
+        },
+        "affected_resource_evidence": {
+          "file_path": "legacy/core-banking-system/INIT-DB.CBL",
+          "line_start": 7,
+          "line_end": 8
+        }
+      },
+      "auditor_rationale": "Static source audit: INIT-DB SELECT ACCOUNT-FILE lacks FILE STATUS clause, leaving file open/write errors unhandled."
+    },
+    {
+      "id": "prop.risk.report_gen_missing_status",
+      "category": "BEHAVIORAL_RISK",
+      "semantic_key": "RISK:REPORT-GEN:IO_ERROR_HANDLING:UNCHECKED_IO_ERROR:HIGH",
+      "precondition": "MISSING_FILE_STATUS_CLAUSE",
+      "evidence_spans": {
+        "precondition_evidence": {
+          "file_path": "legacy/core-banking-system/REPORT-GEN.CBL",
+          "line_start": 7,
+          "line_end": 8
+        },
+        "operation_evidence": {
+          "file_path": "legacy/core-banking-system/REPORT-GEN.CBL",
+          "line_start": 28,
+          "line_end": 50
+        },
+        "affected_resource_evidence": {
+          "file_path": "legacy/core-banking-system/REPORT-GEN.CBL",
+          "line_start": 7,
+          "line_end": 8
+        }
+      },
+      "auditor_rationale": "Static source audit: REPORT-GEN SELECT ACCOUNT-FILE lacks FILE STATUS clause, leaving file open/read errors unhandled."
+    },
+    {
+      "id": "prop.risk.trans_proc_missing_status",
+      "category": "BEHAVIORAL_RISK",
+      "semantic_key": "RISK:TRANS-PROC:IO_ERROR_HANDLING:UNCHECKED_IO_ERROR:HIGH",
+      "precondition": "MISSING_FILE_STATUS_CLAUSE",
+      "evidence_spans": {
+        "precondition_evidence": {
+          "file_path": "legacy/core-banking-system/TRANS-PROC.CBL",
+          "line_start": 7,
+          "line_end": 8
+        },
+        "operation_evidence": {
+          "file_path": "legacy/core-banking-system/TRANS-PROC.CBL",
+          "line_start": 46,
+          "line_end": 81
+        },
+        "affected_resource_evidence": {
+          "file_path": "legacy/core-banking-system/TRANS-PROC.CBL",
+          "line_start": 7,
+          "line_end": 8
+        }
+      },
+      "auditor_rationale": "Static source audit: TRANS-PROC SELECT ACCOUNT-FILE lacks FILE STATUS clause, leaving file open/read errors unhandled."
     },
     {
       "id": "prop.state_cmp.1000000003",
@@ -858,7 +942,8 @@
           "line_start": 40,
           "line_end": 40
         }
-      }
+      },
+      "auditor_rationale": "Static source audit: ACCOUNTS.DAT line 3 holds balance 200.00 for account 1000000003, whereas INIT-DB.CBL line 40 initializes it to 100.00."
     }
   ]
 }

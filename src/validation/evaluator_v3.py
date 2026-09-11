@@ -83,6 +83,21 @@ class EvaluatedPrediction:
     rejection_reason: str | None
     matched_proposition_id: str | None
 
+    def to_dict(self) -> dict[str, Any]:
+        """Convert prediction evaluation to dictionary."""
+        return {
+            "fact_category": self.fact_category,
+            "semantic_key": self.semantic_key,
+            "file_path": self.file_path,
+            "line_start": self.line_start,
+            "line_end": self.line_end,
+            "is_supported": self.is_supported,
+            "is_duplicate": self.is_duplicate,
+            "is_contradiction": self.is_contradiction,
+            "rejection_reason": self.rejection_reason,
+            "matched_proposition_id": self.matched_proposition_id,
+        }
+
 
 class SystemEvaluatorV3:
     """Deterministic system evaluator for Gate 3."""
@@ -110,6 +125,17 @@ class SystemEvaluatorV3:
         self.expected_fact_count = len(self.golden_propositions)
         self.golden_by_id = {p["id"]: p for p in self.golden_propositions}
         self.golden_by_semantic_key = {p["semantic_key"]: p for p in self.golden_propositions}
+        self.golden_by_key_and_spans: dict[
+            tuple[str, tuple[tuple[str, str, int, int], ...]], str
+        ] = {}
+        for p in self.golden_propositions:
+            sig = tuple(
+                sorted(
+                    (r, sp["file_path"].replace("\\", "/"), sp["line_start"], sp["line_end"])
+                    for r, sp in p["evidence_spans"].items()
+                )
+            )
+            self.golden_by_key_and_spans[(p["semantic_key"], sig)] = p["id"]
 
     def evaluate_assessment(
         self,
@@ -124,8 +150,7 @@ class SystemEvaluatorV3:
         candidate_items: list[tuple[SystemAtomicFact, dict[str, EvidenceSpan]]] = []
 
         # 1. Program Declarations
-        program_decls = assessment_obj.program_declarations or assessment_obj.programs
-        for d in program_decls:
+        for d in assessment_obj.program_declarations:
             f = ProgramDeclarationFact(program_id=d.program_id)
             candidate_items.append((f, _single_span(d.evidence)))
 
@@ -419,7 +444,19 @@ class SystemEvaluatorV3:
             if is_supp and matched_sf:
                 supported_count += 1
                 matched_id = matched_sf.proposition_id
-                if matched_id in self.golden_by_id:
+                cand_sig = tuple(
+                    sorted(
+                        (r, s.file_path.replace("\\", "/"), s.line_start, s.line_end)
+                        for r, s in spans.items()
+                    )
+                )
+                if (key, cand_sig) in self.golden_by_key_and_spans:
+                    matched_id = self.golden_by_key_and_spans[(key, cand_sig)]
+                    matched_golden_ids.add(matched_id)
+                elif key in self.golden_by_semantic_key:
+                    matched_id = self.golden_by_semantic_key[key]["id"]
+                    matched_golden_ids.add(matched_id)
+                elif matched_id in self.golden_by_id:
                     matched_golden_ids.add(matched_id)
 
                 evaluated_predictions.append(
@@ -681,7 +718,7 @@ def load_golden_assessment(golden_dataset_path: Path | None = None) -> SystemAss
             parts = key.split(":")
             prog = parts[1]
             op1, op2 = parts[2].split("->")
-            rationale = parts[3]
+            rationale = p.get("sequence_rationale", "NON_ATOMIC_REPLACEMENT_SEQUENCE")
             assessment.operation_sequences.append(
                 OperationSequence(
                     program_id=prog,
@@ -723,9 +760,9 @@ def load_golden_assessment(golden_dataset_path: Path | None = None) -> SystemAss
             parts = key.split(":")
             prog = parts[1]
             cat_risk = parts[2]
-            precon = parts[3]
-            conseq = parts[4]
-            sev = parts[5]
+            conseq = parts[3]
+            sev = parts[4]
+            precon = p.get("precondition", "UNHANDLED_CONDITION")
             assessment.behavioral_risks.append(
                 BehavioralRisk(
                     program_id=prog,

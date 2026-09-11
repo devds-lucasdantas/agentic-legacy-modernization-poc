@@ -14,6 +14,7 @@ import json
 import re
 from dataclasses import asdict, dataclass, field
 from enum import StrEnum
+from pathlib import Path
 from typing import Any
 
 from src.cobol.multi_source_reader import MultiSourceBundle, TargetFile
@@ -210,6 +211,37 @@ def tokenize_cobol_line(line: str) -> list[str]:
                 i += 1
             tokens.append(line[start:i])
     return tokens
+
+
+def parse_cobol_picture(pic: str | None) -> tuple[int, int]:
+    """Parse a COBOL PICTURE clause into (total_character_width, decimal_places)."""
+    if not pic:
+        return (0, 0)
+    p = pic.upper().strip().rstrip(".")
+    parts = p.split("V")
+    int_part = parts[0]
+    dec_part = parts[1] if len(parts) > 1 else ""
+
+    def _calc_part_len(part_str: str) -> int:
+        length = 0
+        i = 0
+        while i < len(part_str):
+            char = part_str[i]
+            if char in ("9", "X", "A", "Z", "*"):
+                if i + 1 < len(part_str) and part_str[i + 1] == "(":
+                    close_idx = part_str.find(")", i + 2)
+                    if close_idx != -1:
+                        rep = int(part_str[i + 2 : close_idx])
+                        length += rep
+                        i = close_idx + 1
+                        continue
+                length += 1
+            i += 1
+        return length
+
+    int_len = _calc_part_len(int_part)
+    dec_len = _calc_part_len(dec_part)
+    return (int_len + dec_len, dec_len)
 
 
 # ---------------------------------------------------------------------------
@@ -1046,7 +1078,7 @@ class SystemCobolParser:
         # 5. Record Layouts (distinct multi-field record layouts)
         all_records: list[tuple[ASTCompilationUnit, ASTRecordDeclaration]] = []
         for unit in self.compilation_units:
-            prog_name = unit.program_id or "ACCOUNTS"
+            prog_name = unit.program_id or Path(unit.file_path).stem
             for rec in unit.record_declarations:
                 if not rec.fields:
                     continue
@@ -1084,8 +1116,12 @@ class SystemCobolParser:
                 # Compare layout equivalence generically
                 rel = self._compare_records_generically(rec_a, rec_b)
                 if rel:
-                    name_a = f"{unit_a.program_id or 'ACCOUNTS'}:{rec_a.container_name}"
-                    name_b = f"{unit_b.program_id or 'ACCOUNTS'}:{rec_b.container_name}"
+                    name_a = (
+                        f"{unit_a.program_id or Path(unit_a.file_path).stem}:{rec_a.container_name}"
+                    )
+                    name_b = (
+                        f"{unit_b.program_id or Path(unit_b.file_path).stem}:{rec_b.container_name}"
+                    )
                     pair_key = (name_a, name_b)
                     if pair_key not in seen_pairs:
                         seen_pairs.add(pair_key)
@@ -1153,7 +1189,7 @@ class SystemCobolParser:
                                 SupportedSystemFact(
                                     fact=PlatformDependencyFact(
                                         program_id=caller,
-                                        platform_family="WINDOWS_CMD",
+                                        platform_family="WINDOWS",
                                         command_literal=cmd_clean,
                                     ),
                                     proposition_id=f"prop.platform.{caller.lower()}_{len(commands_in_unit)}",
@@ -1198,9 +1234,9 @@ class SystemCobolParser:
                             SupportedSystemFact(
                                 fact=BehavioralRiskFact(
                                     program_id=caller,
-                                    risk_category="NON_ATOMIC_FILE_UPDATE",
+                                    risk_category="DATA_INTEGRITY",
                                     precondition="PROCESS_FAILURE_BETWEEN_COMMANDS",
-                                    possible_consequence="PERMANENT_DATA_LOSS",
+                                    possible_consequence="CANONICAL_DATASET_UNAVAILABLE",
                                     severity="HIGH",
                                 ),
                                 proposition_id=f"prop.risk.{caller.lower()}_non_atomic_update",
@@ -1283,9 +1319,9 @@ class SystemCobolParser:
                             SupportedSystemFact(
                                 fact=BehavioralRiskFact(
                                     program_id=caller,
-                                    risk_category="MISSING_FILE_STATUS_CHECK",
+                                    risk_category="IO_ERROR_HANDLING",
                                     precondition="UNCHECKED_FILE_STATUS",
-                                    possible_consequence="SILENT_IO_FAILURE",
+                                    possible_consequence="UNCHECKED_IO_ERROR",
                                     severity="HIGH",
                                 ),
                                 proposition_id=f"prop.risk.{caller.lower()}_{f_name.lower()}_missing_status",
@@ -1351,76 +1387,104 @@ class SystemCobolParser:
 
     def _extract_data_state_comparison(self, programs_by_id: dict[str, ASTCompilationUnit]) -> None:
         """Extract discrepancies between DAT files and initialization code generically."""
-        # Find DAT file
         dat_file = next((f for p, f in self.bundle.files.items() if f.file_type == "DATA"), None)
         if not dat_file:
             return
 
         dat_lines = dat_file.get_lines()
+        dat_stem = Path(dat_file.relative_path).stem.upper()
 
-        dat_base = dat_file.relative_path.split("/")[-1].upper().split(".")[0]
-        # Find unit that writes initial output to that DAT file
         for prog_id, unit in programs_by_id.items():
-            writes_to_dat = any(
-                fb.external_file_name.upper().split(".")[0] == dat_base
-                and any(isinstance(s, ASTFileOp) and s.verb == "WRITE" for s in unit.statements)
-                for fb in unit.file_bindings
+            # Find file binding targeting this DAT dataset
+            matching_fb = next(
+                (
+                    fb
+                    for fb in unit.file_bindings
+                    if Path(fb.external_file_name.strip("'\"")).stem.upper() == dat_stem
+                ),
+                None,
             )
-            if not writes_to_dat:
+            if not matching_fb:
                 continue
 
-            # Compare literal moves in unit with DAT file records
-            for line_idx, d_line in enumerate(dat_lines):
-                if not d_line.strip():
-                    continue
-                acc_id = d_line[:10].strip()
-                dat_balance_raw = d_line[40:55].strip()
-                if not dat_balance_raw or not dat_balance_raw.isdigit():
-                    continue
-                dat_balance_val = f"{int(dat_balance_raw[:-2])}.{dat_balance_raw[-2:]}"
+            # Verify that program performs WRITE operations
+            if not any(isinstance(s, ASTFileOp) and s.verb == "WRITE" for s in unit.statements):
+                continue
 
-                # Find moves associated with this acc_id in the initialization unit
-                matching_moves = [
-                    s
-                    for s in unit.statements
-                    if isinstance(s, ASTMove) and s.source_operand == acc_id
-                ]
-                if matching_moves:
-                    m_idx = unit.statements.index(matching_moves[0])
-                    # Look for balance assignment in subsequent statements
-                    for sub_idx in range(m_idx + 1, min(m_idx + 6, len(unit.statements))):
-                        sub_stmt = unit.statements[sub_idx]
-                        if isinstance(sub_stmt, ASTFileOp) and sub_stmt.verb == "WRITE":
-                            break
-                        if isinstance(sub_stmt, ASTMove) and (
-                            "BAL" in sub_stmt.target_operand.upper()
-                            or "." in sub_stmt.source_operand
-                        ):
-                            init_val = sub_stmt.source_operand
-                            try:
-                                if float(init_val) != float(dat_balance_val):
-                                    self.supported_facts.append(
-                                        SupportedSystemFact(
-                                            fact=DataStateComparisonFact(
-                                                entity_id=acc_id,
-                                                dat_record_value=dat_balance_val,
-                                                initializer_code_value=init_val,
-                                                causal_provenance="UNKNOWN",
-                                            ),
-                                            proposition_id=f"prop.state_cmp.{acc_id}",
-                                            evidence_spans={
-                                                "dat_evidence": EvidenceSpan(
-                                                    dat_file.relative_path,
-                                                    line_idx + 1,
-                                                    line_idx + 1,
-                                                ),
-                                                "initializer_evidence": EvidenceSpan(
-                                                    unit.file_path,
-                                                    sub_stmt.line_start,
-                                                    sub_stmt.line_end,
-                                                ),
-                                            },
-                                        )
-                                    )
-                            except ValueError:
-                                pass
+            # Identify record layout declared for this program
+            if not unit.record_declarations:
+                continue
+            rec_decl = unit.record_declarations[0]
+            if not rec_decl.fields:
+                continue
+
+            # Dynamically derive field character offsets and decimal places from layout
+            field_offsets: dict[str, tuple[int, int, int]] = {}
+            curr_offset = 0
+            for f in rec_decl.fields:
+                f_width, f_decs = parse_cobol_picture(f.picture)
+                field_offsets[f.name.upper()] = (curr_offset, curr_offset + f_width, f_decs)
+                curr_offset += f_width
+
+            if not field_offsets:
+                continue
+
+            key_field_name = rec_decl.fields[0].name.upper()
+            key_start, key_end, _ = field_offsets[key_field_name]
+
+            # Track procedural field moves leading up to each WRITE
+            staged_moves: dict[str, tuple[str, ASTMove]] = {}
+            for stmt in unit.statements:
+                if isinstance(stmt, ASTMove):
+                    t_name = stmt.target_operand.upper()
+                    if t_name in field_offsets:
+                        staged_moves[t_name] = (stmt.source_operand.strip("'\""), stmt)
+                elif isinstance(stmt, ASTFileOp) and stmt.verb == "WRITE":
+                    if key_field_name in staged_moves:
+                        staged_id, _ = staged_moves[key_field_name]
+                        # Locate corresponding line in DAT file by key field value
+                        for line_idx, d_line in enumerate(dat_lines):
+                            if not d_line.strip() or len(d_line) < key_end:
+                                continue
+                            dat_id = d_line[key_start:key_end].strip()
+                            if dat_id == staged_id:
+                                # Compare all other staged fields against DAT record
+                                for f_name, (f_start, f_end, f_decs) in field_offsets.items():
+                                    if f_name == key_field_name or f_name not in staged_moves:
+                                        continue
+                                    staged_val, move_stmt = staged_moves[f_name]
+                                    if len(d_line) < f_end:
+                                        continue
+                                    dat_raw = d_line[f_start:f_end].strip()
+                                    if f_decs > 0 and dat_raw.isdigit():
+                                        int_p = dat_raw[:-f_decs] if len(dat_raw) > f_decs else "0"
+                                        dec_p = dat_raw[-f_decs:]
+                                        dat_fmt = f"{int(int_p)}.{dec_p}"
+                                        try:
+                                            if float(staged_val) != float(dat_fmt):
+                                                self.supported_facts.append(
+                                                    SupportedSystemFact(
+                                                        fact=DataStateComparisonFact(
+                                                            entity_id=staged_id,
+                                                            dat_record_value=dat_fmt,
+                                                            initializer_code_value=staged_val,
+                                                            causal_provenance="UNKNOWN",
+                                                        ),
+                                                        proposition_id=f"prop.state_cmp.{staged_id.lower()}",
+                                                        evidence_spans={
+                                                            "dat_evidence": EvidenceSpan(
+                                                                dat_file.relative_path,
+                                                                line_idx + 1,
+                                                                line_idx + 1,
+                                                            ),
+                                                            "initializer_evidence": EvidenceSpan(
+                                                                unit.file_path,
+                                                                move_stmt.line_start,
+                                                                move_stmt.line_end,
+                                                            ),
+                                                        },
+                                                    )
+                                                )
+                                        except ValueError:
+                                            pass
+                    staged_moves.clear()

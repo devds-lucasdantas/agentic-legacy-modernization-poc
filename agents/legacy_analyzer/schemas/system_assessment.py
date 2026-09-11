@@ -215,7 +215,9 @@ class PlatformDependency(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     program_id: str = Field(description="Program containing dependency")
-    platform_family: str = Field(description="Platform family identifier: WINDOWS_CMD")
+    platform_family: str = Field(
+        description="Platform family identifier (e.g. WINDOWS, POSIX, MAINFRAME_OS)"
+    )
     command_literal: str = Field(description="Platform-specific command syntax invoked")
     evidence: SourceEvidence
 
@@ -228,12 +230,17 @@ class BehavioralRisk(BaseModel):
     program_id: str = Field(description="Affected program identifier")
     risk_category: str = Field(
         description=(
-            "Risk category: MISSING_FILE_STATUS_CHECK, "
-            "NON_ATOMIC_FILE_UPDATE, CALLEE_PROCESS_TERMINATION"
+            "Risk category classification: IO_ERROR_HANDLING, "
+            "DATA_INTEGRITY, CONTROL_FLOW, PORTABILITY, RESOURCE_LIFECYCLE"
         )
     )
     precondition: str = Field(description="Canonical condition triggering the risk")
-    possible_consequence: str = Field(description="Canonical consequence token")
+    possible_consequence: str = Field(
+        description=(
+            "Canonical consequence token "
+            "(e.g. CANONICAL_DATASET_UNAVAILABLE, UNCHECKED_IO_ERROR, RUN_UNIT_ABORT)"
+        )
+    )
     severity: str = Field(description="Severity assessment: HIGH, MEDIUM, LOW")
     precondition_evidence: SourceEvidence = Field(description="Evidence for precondition")
     operation_evidence: SourceEvidence = Field(description="Evidence for unhandled operation")
@@ -250,7 +257,12 @@ class DataStateComparison(BaseModel):
     entity_id: str = Field(description="Target entity/account identifier compared")
     dat_record_value: str = Field(description="Value observed in persistent DAT record")
     initializer_code_value: str = Field(description="Value written by initialization program")
-    causal_provenance: str = Field(description="Provenance classification: UNKNOWN")
+    causal_provenance: str = Field(
+        description=(
+            "Causal provenance classification (e.g. UNKNOWN, INITIALIZER_DISCREPANCY, "
+            "CONCURRENT_MUTATION, UNTRACKED_TRANSACTION_BATCH, CORRUPTED_RECORD)"
+        )
+    )
     dat_evidence: SourceEvidence = Field(description="Evidence from data file")
     initializer_evidence: SourceEvidence = Field(description="Evidence from initializer program")
 
@@ -263,9 +275,6 @@ class SystemAssessment(BaseModel):
     system_name: str = Field(description="Formal name of the analyzed legacy system")
     program_declarations: list[ProgramDeclaration] = Field(
         default_factory=list, description="All declared programs in the system"
-    )
-    programs: list[ProgramDeclaration] = Field(
-        default_factory=list, description="Alias for program_declarations"
     )
     call_occurrences: list[CallOccurrence] = Field(
         default_factory=list, description="All individual CALL occurrences"
