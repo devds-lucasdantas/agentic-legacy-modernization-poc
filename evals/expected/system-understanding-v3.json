@@ -1,457 +1,864 @@
 {
-  "version": "3.0.0",
-  "total_expected_facts": 54,
+  "version": "3.1.0",
+  "benchmark_design": "GATE_3_SYSTEM_UNDERSTANDING_APPROVED_CONTRACT",
+  "total_expected_facts": 59,
   "group_counts": {
-    "ARCHITECTURE": 4,
-    "CROSS_PROGRAM_CALL": 3,
-    "MENU_DISPATCH": 3,
-    "COPYBOOK_INCLUSION": 2,
-    "FIELD_LAYOUT": 1,
-    "DATA_TRANSFER": 4,
+    "PROGRAM_DECLARATION": 4,
+    "CALL_OCCURRENCE": 6,
+    "CALL_EDGE": 4,
+    "INTERNAL_CALL_RESOLUTION": 3,
+    "FILE_BINDING": 4,
+    "RECORD_LAYOUT": 5,
+    "RECORD_LAYOUT_RELATION": 7,
+    "TERMINATION_SITE": 4,
+    "CALLER_CONTINUATION_CONSTRAINT": 3,
+    "COMMAND_INVOCATION": 3,
+    "DATA_TRANSFER_RELATION": 1,
     "RESOURCE_LIFECYCLE": 4,
-    "CONTROL_FLOW_LOOP": 3,
-    "EVALUATE_BRANCHING": 2,
-    "ARITHMETIC_OPERATION": 7,
-    "CONDITIONAL_BRANCH": 4,
-    "INTERACTIVE_IO": 3,
-    "TERMINATION": 3,
+    "OPERATION_SEQUENCE": 1,
+    "COMPUTATION_DATAFLOW": 2,
+    "PLATFORM_DEPENDENCY": 3,
     "BEHAVIORAL_RISK": 4,
-    "ARCHITECTURAL_RISK": 3,
-    "WORKING_STORAGE_STATE": 3,
-    "TRANSACTION_PROTOCOL": 1
+    "DATA_STATE_COMPARISON": 1
   },
   "propositions": [
     {
-      "id": "prop.arch.bank_main",
-      "category": "ARCHITECTURE",
-      "semantic_key": "TOPOLOGY:BANK-MAIN:ROOT_ORCHESTRATOR",
-      "file_path": "legacy/core-banking-system/BANK-MAIN.CBL",
-      "line_start": 1,
-      "line_end": 2
+      "id": "prop.program.bank_main",
+      "category": "PROGRAM_DECLARATION",
+      "semantic_key": "PROGRAM:BANK-MAIN",
+      "evidence_spans": {
+        "evidence": {
+          "file_path": "legacy/core-banking-system/BANK-MAIN.CBL",
+          "line_start": 2,
+          "line_end": 2
+        }
+      }
     },
     {
-      "id": "prop.arch.init_db",
-      "category": "ARCHITECTURE",
-      "semantic_key": "TOPOLOGY:INIT-DB:DATABASE_INITIALIZER",
-      "file_path": "legacy/core-banking-system/INIT-DB.CBL",
-      "line_start": 1,
-      "line_end": 2
+      "id": "prop.program.init_db",
+      "category": "PROGRAM_DECLARATION",
+      "semantic_key": "PROGRAM:INIT-DB",
+      "evidence_spans": {
+        "evidence": {
+          "file_path": "legacy/core-banking-system/INIT-DB.CBL",
+          "line_start": 2,
+          "line_end": 2
+        }
+      }
     },
     {
-      "id": "prop.arch.trans_proc",
-      "category": "ARCHITECTURE",
-      "semantic_key": "TOPOLOGY:TRANS-PROC:TRANSACTION_PROCESSOR",
-      "file_path": "legacy/core-banking-system/TRANS-PROC.CBL",
-      "line_start": 1,
-      "line_end": 2
+      "id": "prop.program.report_gen",
+      "category": "PROGRAM_DECLARATION",
+      "semantic_key": "PROGRAM:REPORT-GEN",
+      "evidence_spans": {
+        "evidence": {
+          "file_path": "legacy/core-banking-system/REPORT-GEN.CBL",
+          "line_start": 2,
+          "line_end": 2
+        }
+      }
     },
     {
-      "id": "prop.arch.report_gen",
-      "category": "ARCHITECTURE",
-      "semantic_key": "TOPOLOGY:REPORT-GEN:REPORT_GENERATOR",
-      "file_path": "legacy/core-banking-system/REPORT-GEN.CBL",
-      "line_start": 1,
-      "line_end": 2
+      "id": "prop.program.trans_proc",
+      "category": "PROGRAM_DECLARATION",
+      "semantic_key": "PROGRAM:TRANS-PROC",
+      "evidence_spans": {
+        "evidence": {
+          "file_path": "legacy/core-banking-system/TRANS-PROC.CBL",
+          "line_start": 2,
+          "line_end": 2
+        }
+      }
     },
     {
-      "id": "prop.call.main_calls_init",
-      "category": "CROSS_PROGRAM_CALL",
-      "semantic_key": "CALL:BANK-MAIN->INIT-DB:DYNAMIC_CALL_LITERAL:()",
-      "file_path": "legacy/core-banking-system/BANK-MAIN.CBL",
-      "line_start": 24,
-      "line_end": 24
+      "id": "prop.call_occ.bank-main_init-db_1",
+      "category": "CALL_OCCURRENCE",
+      "semantic_key": "CALL_OCCURRENCE:BANK-MAIN->INIT-DB:LITERAL_TARGET",
+      "evidence_spans": {
+        "evidence": {
+          "file_path": "legacy/core-banking-system/BANK-MAIN.CBL",
+          "line_start": 24,
+          "line_end": 24
+        }
+      }
     },
     {
-      "id": "prop.call.main_calls_trans",
-      "category": "CROSS_PROGRAM_CALL",
-      "semantic_key": "CALL:BANK-MAIN->TRANS-PROC:DYNAMIC_CALL_LITERAL:()",
-      "file_path": "legacy/core-banking-system/BANK-MAIN.CBL",
-      "line_start": 26,
-      "line_end": 26
+      "id": "prop.call_occ.bank-main_trans-proc_2",
+      "category": "CALL_OCCURRENCE",
+      "semantic_key": "CALL_OCCURRENCE:BANK-MAIN->TRANS-PROC:LITERAL_TARGET",
+      "evidence_spans": {
+        "evidence": {
+          "file_path": "legacy/core-banking-system/BANK-MAIN.CBL",
+          "line_start": 26,
+          "line_end": 26
+        }
+      }
     },
     {
-      "id": "prop.call.main_calls_report",
-      "category": "CROSS_PROGRAM_CALL",
-      "semantic_key": "CALL:BANK-MAIN->REPORT-GEN:DYNAMIC_CALL_LITERAL:()",
-      "file_path": "legacy/core-banking-system/BANK-MAIN.CBL",
-      "line_start": 28,
-      "line_end": 28
+      "id": "prop.call_occ.bank-main_report-gen_3",
+      "category": "CALL_OCCURRENCE",
+      "semantic_key": "CALL_OCCURRENCE:BANK-MAIN->REPORT-GEN:LITERAL_TARGET",
+      "evidence_spans": {
+        "evidence": {
+          "file_path": "legacy/core-banking-system/BANK-MAIN.CBL",
+          "line_start": 28,
+          "line_end": 28
+        }
+      }
     },
     {
-      "id": "prop.dispatch.menu_opt_1",
-      "category": "MENU_DISPATCH",
-      "semantic_key": "DISPATCH:BANK-MAIN:1->INIT-DB",
-      "file_path": "legacy/core-banking-system/BANK-MAIN.CBL",
-      "line_start": 23,
-      "line_end": 24
+      "id": "prop.call_occ.trans-proc_system_4",
+      "category": "CALL_OCCURRENCE",
+      "semantic_key": "CALL_OCCURRENCE:TRANS-PROC->SYSTEM:LITERAL_TARGET:WS-CMD",
+      "evidence_spans": {
+        "evidence": {
+          "file_path": "legacy/core-banking-system/TRANS-PROC.CBL",
+          "line_start": 87,
+          "line_end": 87
+        }
+      }
     },
     {
-      "id": "prop.dispatch.menu_opt_2",
-      "category": "MENU_DISPATCH",
-      "semantic_key": "DISPATCH:BANK-MAIN:2->TRANS-PROC",
-      "file_path": "legacy/core-banking-system/BANK-MAIN.CBL",
-      "line_start": 25,
-      "line_end": 26
+      "id": "prop.call_occ.trans-proc_system_5",
+      "category": "CALL_OCCURRENCE",
+      "semantic_key": "CALL_OCCURRENCE:TRANS-PROC->SYSTEM:LITERAL_TARGET:WS-CMD",
+      "evidence_spans": {
+        "evidence": {
+          "file_path": "legacy/core-banking-system/TRANS-PROC.CBL",
+          "line_start": 89,
+          "line_end": 89
+        }
+      }
     },
     {
-      "id": "prop.dispatch.menu_opt_3",
-      "category": "MENU_DISPATCH",
-      "semantic_key": "DISPATCH:BANK-MAIN:3->REPORT-GEN",
-      "file_path": "legacy/core-banking-system/BANK-MAIN.CBL",
-      "line_start": 27,
-      "line_end": 28
+      "id": "prop.call_occ.trans-proc_system_6",
+      "category": "CALL_OCCURRENCE",
+      "semantic_key": "CALL_OCCURRENCE:TRANS-PROC->SYSTEM:LITERAL_TARGET:WS-CMD",
+      "evidence_spans": {
+        "evidence": {
+          "file_path": "legacy/core-banking-system/TRANS-PROC.CBL",
+          "line_start": 93,
+          "line_end": 93
+        }
+      }
     },
     {
-      "id": "prop.copy.trans_proc_includes_cpy",
-      "category": "COPYBOOK_INCLUSION",
-      "semantic_key": "COPYBOOK_INCLUSION:TRANS-PROC:ACCOUNTS.CPY",
-      "file_path": "legacy/core-banking-system/TRANS-PROC.CBL",
-      "line_start": 14,
-      "line_end": 19
+      "id": "prop.call_edge.bank-main_init-db",
+      "category": "CALL_EDGE",
+      "semantic_key": "CALL_EDGE:BANK-MAIN->INIT-DB:LITERAL_TARGET",
+      "evidence_spans": {
+        "evidence": {
+          "file_path": "legacy/core-banking-system/BANK-MAIN.CBL",
+          "line_start": 24,
+          "line_end": 24
+        }
+      }
     },
     {
-      "id": "prop.copy.report_gen_includes_cpy",
-      "category": "COPYBOOK_INCLUSION",
-      "semantic_key": "COPYBOOK_INCLUSION:REPORT-GEN:ACCOUNTS.CPY",
-      "file_path": "legacy/core-banking-system/REPORT-GEN.CBL",
-      "line_start": 12,
-      "line_end": 17
+      "id": "prop.call_edge.bank-main_trans-proc",
+      "category": "CALL_EDGE",
+      "semantic_key": "CALL_EDGE:BANK-MAIN->TRANS-PROC:LITERAL_TARGET",
+      "evidence_spans": {
+        "evidence": {
+          "file_path": "legacy/core-banking-system/BANK-MAIN.CBL",
+          "line_start": 26,
+          "line_end": 26
+        }
+      }
     },
     {
-      "id": "prop.copy.layout_acc_balance_comp3",
-      "category": "FIELD_LAYOUT",
-      "semantic_key": "FIELD_LAYOUT:ACCOUNT-RECORD:ACC-BALANCE:S9(13)V99:COMP_3",
-      "file_path": "legacy/core-banking-system/ACCOUNTS.CPY",
-      "line_start": 2,
-      "line_end": 6
+      "id": "prop.call_edge.bank-main_report-gen",
+      "category": "CALL_EDGE",
+      "semantic_key": "CALL_EDGE:BANK-MAIN->REPORT-GEN:LITERAL_TARGET",
+      "evidence_spans": {
+        "evidence": {
+          "file_path": "legacy/core-banking-system/BANK-MAIN.CBL",
+          "line_start": 28,
+          "line_end": 28
+        }
+      }
     },
     {
-      "id": "prop.transfer.init_rec_write",
-      "category": "DATA_TRANSFER",
-      "semantic_key": "DATA_TRANSFER:INIT-DB:WRITE:INIT-ACCOUNT-RECORD->ACCOUNT-FILE",
-      "file_path": "legacy/core-banking-system/INIT-DB.CBL",
-      "line_start": 26,
-      "line_end": 30
+      "id": "prop.call_edge.trans-proc_system",
+      "category": "CALL_EDGE",
+      "semantic_key": "CALL_EDGE:TRANS-PROC->SYSTEM:LITERAL_TARGET",
+      "evidence_spans": {
+        "evidence": {
+          "file_path": "legacy/core-banking-system/TRANS-PROC.CBL",
+          "line_start": 87,
+          "line_end": 87
+        }
+      }
     },
     {
-      "id": "prop.transfer.rec_to_tmp",
-      "category": "DATA_TRANSFER",
-      "semantic_key": "DATA_TRANSFER:TRANS-PROC:MOVE:ACCOUNT-REC->TEMP-REC",
-      "file_path": "legacy/core-banking-system/TRANS-PROC.CBL",
-      "line_start": 76,
-      "line_end": 76
+      "id": "prop.internal_call.bank-main_init-db",
+      "category": "INTERNAL_CALL_RESOLUTION",
+      "semantic_key": "INTERNAL_CALL:BANK-MAIN->INIT-DB",
+      "evidence_spans": {
+        "call_evidence": {
+          "file_path": "legacy/core-banking-system/BANK-MAIN.CBL",
+          "line_start": 24,
+          "line_end": 24
+        },
+        "target_declaration_evidence": {
+          "file_path": "legacy/core-banking-system/INIT-DB.CBL",
+          "line_start": 2,
+          "line_end": 2
+        }
+      }
     },
     {
-      "id": "prop.transfer.tmp_to_rec",
-      "category": "DATA_TRANSFER",
-      "semantic_key": "DATA_TRANSFER:TRANS-PROC:MOVE:ACCOUNTS.TMP->ACCOUNTS.DAT",
-      "file_path": "legacy/core-banking-system/TRANS-PROC.CBL",
-      "line_start": 86,
-      "line_end": 89
+      "id": "prop.internal_call.bank-main_trans-proc",
+      "category": "INTERNAL_CALL_RESOLUTION",
+      "semantic_key": "INTERNAL_CALL:BANK-MAIN->TRANS-PROC",
+      "evidence_spans": {
+        "call_evidence": {
+          "file_path": "legacy/core-banking-system/BANK-MAIN.CBL",
+          "line_start": 26,
+          "line_end": 26
+        },
+        "target_declaration_evidence": {
+          "file_path": "legacy/core-banking-system/TRANS-PROC.CBL",
+          "line_start": 2,
+          "line_end": 2
+        }
+      }
     },
     {
-      "id": "prop.transfer.rep_rec_read",
-      "category": "DATA_TRANSFER",
-      "semantic_key": "DATA_TRANSFER:REPORT-GEN:MOVE:REC-ACC-BALANCE->WS-FORMATTED-BAL",
-      "file_path": "legacy/core-banking-system/REPORT-GEN.CBL",
-      "line_start": 40,
-      "line_end": 40
+      "id": "prop.internal_call.bank-main_report-gen",
+      "category": "INTERNAL_CALL_RESOLUTION",
+      "semantic_key": "INTERNAL_CALL:BANK-MAIN->REPORT-GEN",
+      "evidence_spans": {
+        "call_evidence": {
+          "file_path": "legacy/core-banking-system/BANK-MAIN.CBL",
+          "line_start": 28,
+          "line_end": 28
+        },
+        "target_declaration_evidence": {
+          "file_path": "legacy/core-banking-system/REPORT-GEN.CBL",
+          "line_start": 2,
+          "line_end": 2
+        }
+      }
     },
     {
-      "id": "prop.lifecycle.init_output",
+      "id": "prop.binding.init-db_account-file",
+      "category": "FILE_BINDING",
+      "semantic_key": "FILE_BINDING:INIT-DB:ACCOUNT-FILE:ACCOUNTS:LINE_SEQUENTIAL",
+      "evidence_spans": {
+        "evidence": {
+          "file_path": "legacy/core-banking-system/INIT-DB.CBL",
+          "line_start": 7,
+          "line_end": 8
+        }
+      }
+    },
+    {
+      "id": "prop.binding.report-gen_account-file",
+      "category": "FILE_BINDING",
+      "semantic_key": "FILE_BINDING:REPORT-GEN:ACCOUNT-FILE:ACCOUNTS:LINE_SEQUENTIAL",
+      "evidence_spans": {
+        "evidence": {
+          "file_path": "legacy/core-banking-system/REPORT-GEN.CBL",
+          "line_start": 7,
+          "line_end": 8
+        }
+      }
+    },
+    {
+      "id": "prop.binding.trans-proc_account-file",
+      "category": "FILE_BINDING",
+      "semantic_key": "FILE_BINDING:TRANS-PROC:ACCOUNT-FILE:ACCOUNTS:LINE_SEQUENTIAL",
+      "evidence_spans": {
+        "evidence": {
+          "file_path": "legacy/core-banking-system/TRANS-PROC.CBL",
+          "line_start": 7,
+          "line_end": 8
+        }
+      }
+    },
+    {
+      "id": "prop.binding.trans-proc_temp-file",
+      "category": "FILE_BINDING",
+      "semantic_key": "FILE_BINDING:TRANS-PROC:TEMP-FILE:ACCOUNTS:LINE_SEQUENTIAL",
+      "evidence_spans": {
+        "evidence": {
+          "file_path": "legacy/core-banking-system/TRANS-PROC.CBL",
+          "line_start": 9,
+          "line_end": 10
+        }
+      }
+    },
+    {
+      "id": "prop.layout.accounts_account-record",
+      "category": "RECORD_LAYOUT",
+      "semantic_key": "RECORD_LAYOUT:ACCOUNTS:ACCOUNT-RECORD:4:COMP_3",
+      "evidence_spans": {
+        "evidence": {
+          "file_path": "legacy/core-banking-system/ACCOUNTS.CPY",
+          "line_start": 2,
+          "line_end": 6
+        }
+      }
+    },
+    {
+      "id": "prop.layout.init-db_account-rec",
+      "category": "RECORD_LAYOUT",
+      "semantic_key": "RECORD_LAYOUT:INIT-DB:ACCOUNT-REC:4:DISPLAY",
+      "evidence_spans": {
+        "evidence": {
+          "file_path": "legacy/core-banking-system/INIT-DB.CBL",
+          "line_start": 13,
+          "line_end": 17
+        }
+      }
+    },
+    {
+      "id": "prop.layout.report-gen_account-rec",
+      "category": "RECORD_LAYOUT",
+      "semantic_key": "RECORD_LAYOUT:REPORT-GEN:ACCOUNT-REC:4:DISPLAY",
+      "evidence_spans": {
+        "evidence": {
+          "file_path": "legacy/core-banking-system/REPORT-GEN.CBL",
+          "line_start": 13,
+          "line_end": 17
+        }
+      }
+    },
+    {
+      "id": "prop.layout.trans-proc_account-rec",
+      "category": "RECORD_LAYOUT",
+      "semantic_key": "RECORD_LAYOUT:TRANS-PROC:ACCOUNT-REC:4:DISPLAY",
+      "evidence_spans": {
+        "evidence": {
+          "file_path": "legacy/core-banking-system/TRANS-PROC.CBL",
+          "line_start": 15,
+          "line_end": 19
+        }
+      }
+    },
+    {
+      "id": "prop.layout.trans-proc_temp-rec",
+      "category": "RECORD_LAYOUT",
+      "semantic_key": "RECORD_LAYOUT:TRANS-PROC:TEMP-REC:4:DISPLAY",
+      "evidence_spans": {
+        "evidence": {
+          "file_path": "legacy/core-banking-system/TRANS-PROC.CBL",
+          "line_start": 22,
+          "line_end": 26
+        }
+      }
+    },
+    {
+      "id": "prop.relation.account-record_account-rec_0_1",
+      "category": "RECORD_LAYOUT_RELATION",
+      "semantic_key": "LAYOUT_RELATION:ACCOUNTS:ACCOUNT-RECORD:INIT-DB:ACCOUNT-REC:REPRESENTATION_MISMATCH",
+      "evidence_spans": {
+        "evidence_a": {
+          "file_path": "legacy/core-banking-system/ACCOUNTS.CPY",
+          "line_start": 2,
+          "line_end": 6
+        },
+        "evidence_b": {
+          "file_path": "legacy/core-banking-system/INIT-DB.CBL",
+          "line_start": 13,
+          "line_end": 17
+        }
+      }
+    },
+    {
+      "id": "prop.relation.account-record_account-rec_0_2",
+      "category": "RECORD_LAYOUT_RELATION",
+      "semantic_key": "LAYOUT_RELATION:ACCOUNTS:ACCOUNT-RECORD:REPORT-GEN:ACCOUNT-REC:REPRESENTATION_MISMATCH",
+      "evidence_spans": {
+        "evidence_a": {
+          "file_path": "legacy/core-banking-system/ACCOUNTS.CPY",
+          "line_start": 2,
+          "line_end": 6
+        },
+        "evidence_b": {
+          "file_path": "legacy/core-banking-system/REPORT-GEN.CBL",
+          "line_start": 13,
+          "line_end": 17
+        }
+      }
+    },
+    {
+      "id": "prop.relation.account-record_account-rec_0_3",
+      "category": "RECORD_LAYOUT_RELATION",
+      "semantic_key": "LAYOUT_RELATION:ACCOUNTS:ACCOUNT-RECORD:TRANS-PROC:ACCOUNT-REC:REPRESENTATION_MISMATCH",
+      "evidence_spans": {
+        "evidence_a": {
+          "file_path": "legacy/core-banking-system/ACCOUNTS.CPY",
+          "line_start": 2,
+          "line_end": 6
+        },
+        "evidence_b": {
+          "file_path": "legacy/core-banking-system/TRANS-PROC.CBL",
+          "line_start": 15,
+          "line_end": 19
+        }
+      }
+    },
+    {
+      "id": "prop.relation.account-record_temp-rec_0_4",
+      "category": "RECORD_LAYOUT_RELATION",
+      "semantic_key": "LAYOUT_RELATION:ACCOUNTS:ACCOUNT-RECORD:TRANS-PROC:TEMP-REC:REPRESENTATION_MISMATCH",
+      "evidence_spans": {
+        "evidence_a": {
+          "file_path": "legacy/core-banking-system/ACCOUNTS.CPY",
+          "line_start": 2,
+          "line_end": 6
+        },
+        "evidence_b": {
+          "file_path": "legacy/core-banking-system/TRANS-PROC.CBL",
+          "line_start": 22,
+          "line_end": 26
+        }
+      }
+    },
+    {
+      "id": "prop.relation.account-rec_account-rec_1_2",
+      "category": "RECORD_LAYOUT_RELATION",
+      "semantic_key": "LAYOUT_RELATION:INIT-DB:ACCOUNT-REC:REPORT-GEN:ACCOUNT-REC:IDENTICAL",
+      "evidence_spans": {
+        "evidence_a": {
+          "file_path": "legacy/core-banking-system/INIT-DB.CBL",
+          "line_start": 13,
+          "line_end": 17
+        },
+        "evidence_b": {
+          "file_path": "legacy/core-banking-system/REPORT-GEN.CBL",
+          "line_start": 13,
+          "line_end": 17
+        }
+      }
+    },
+    {
+      "id": "prop.relation.account-rec_account-rec_1_3",
+      "category": "RECORD_LAYOUT_RELATION",
+      "semantic_key": "LAYOUT_RELATION:INIT-DB:ACCOUNT-REC:TRANS-PROC:ACCOUNT-REC:IDENTICAL",
+      "evidence_spans": {
+        "evidence_a": {
+          "file_path": "legacy/core-banking-system/INIT-DB.CBL",
+          "line_start": 13,
+          "line_end": 17
+        },
+        "evidence_b": {
+          "file_path": "legacy/core-banking-system/TRANS-PROC.CBL",
+          "line_start": 15,
+          "line_end": 19
+        }
+      }
+    },
+    {
+      "id": "prop.relation.account-rec_temp-rec_3_4",
+      "category": "RECORD_LAYOUT_RELATION",
+      "semantic_key": "LAYOUT_RELATION:TRANS-PROC:ACCOUNT-REC:TRANS-PROC:TEMP-REC:EQUIVALENT",
+      "evidence_spans": {
+        "evidence_a": {
+          "file_path": "legacy/core-banking-system/TRANS-PROC.CBL",
+          "line_start": 15,
+          "line_end": 19
+        },
+        "evidence_b": {
+          "file_path": "legacy/core-banking-system/TRANS-PROC.CBL",
+          "line_start": 22,
+          "line_end": 26
+        }
+      }
+    },
+    {
+      "id": "prop.term.bank-main_stop_run",
+      "category": "TERMINATION_SITE",
+      "semantic_key": "TERMINATION:BANK-MAIN:STOP_RUN",
+      "evidence_spans": {
+        "evidence": {
+          "file_path": "legacy/core-banking-system/BANK-MAIN.CBL",
+          "line_start": 36,
+          "line_end": 36
+        }
+      }
+    },
+    {
+      "id": "prop.term.init-db_stop_run",
+      "category": "TERMINATION_SITE",
+      "semantic_key": "TERMINATION:INIT-DB:STOP_RUN",
+      "evidence_spans": {
+        "evidence": {
+          "file_path": "legacy/core-banking-system/INIT-DB.CBL",
+          "line_start": 46,
+          "line_end": 46
+        }
+      }
+    },
+    {
+      "id": "prop.term.report-gen_stop_run",
+      "category": "TERMINATION_SITE",
+      "semantic_key": "TERMINATION:REPORT-GEN:STOP_RUN",
+      "evidence_spans": {
+        "evidence": {
+          "file_path": "legacy/core-banking-system/REPORT-GEN.CBL",
+          "line_start": 57,
+          "line_end": 57
+        }
+      }
+    },
+    {
+      "id": "prop.term.trans-proc_stop_run",
+      "category": "TERMINATION_SITE",
+      "semantic_key": "TERMINATION:TRANS-PROC:STOP_RUN",
+      "evidence_spans": {
+        "evidence": {
+          "file_path": "legacy/core-banking-system/TRANS-PROC.CBL",
+          "line_start": 96,
+          "line_end": 96
+        }
+      }
+    },
+    {
+      "id": "prop.continuation.bank-main_init-db",
+      "category": "CALLER_CONTINUATION_CONSTRAINT",
+      "semantic_key": "CONTINUATION_CONSTRAINT:BANK-MAIN->INIT-DB:PROCESS_TERMINATION_ON_CALL",
+      "evidence_spans": {
+        "call_evidence": {
+          "file_path": "legacy/core-banking-system/BANK-MAIN.CBL",
+          "line_start": 24,
+          "line_end": 24
+        },
+        "callee_termination_evidence": {
+          "file_path": "legacy/core-banking-system/INIT-DB.CBL",
+          "line_start": 46,
+          "line_end": 46
+        }
+      }
+    },
+    {
+      "id": "prop.continuation.bank-main_trans-proc",
+      "category": "CALLER_CONTINUATION_CONSTRAINT",
+      "semantic_key": "CONTINUATION_CONSTRAINT:BANK-MAIN->TRANS-PROC:PROCESS_TERMINATION_ON_CALL",
+      "evidence_spans": {
+        "call_evidence": {
+          "file_path": "legacy/core-banking-system/BANK-MAIN.CBL",
+          "line_start": 26,
+          "line_end": 26
+        },
+        "callee_termination_evidence": {
+          "file_path": "legacy/core-banking-system/TRANS-PROC.CBL",
+          "line_start": 96,
+          "line_end": 96
+        }
+      }
+    },
+    {
+      "id": "prop.continuation.bank-main_report-gen",
+      "category": "CALLER_CONTINUATION_CONSTRAINT",
+      "semantic_key": "CONTINUATION_CONSTRAINT:BANK-MAIN->REPORT-GEN:PROCESS_TERMINATION_ON_CALL",
+      "evidence_spans": {
+        "call_evidence": {
+          "file_path": "legacy/core-banking-system/BANK-MAIN.CBL",
+          "line_start": 28,
+          "line_end": 28
+        },
+        "callee_termination_evidence": {
+          "file_path": "legacy/core-banking-system/REPORT-GEN.CBL",
+          "line_start": 57,
+          "line_end": 57
+        }
+      }
+    },
+    {
+      "id": "prop.command.trans-proc_1",
+      "category": "COMMAND_INVOCATION",
+      "semantic_key": "COMMAND_INVOCATION:TRANS-PROC:cmd /c del ACCOUNTS.DAT:WS-CMD",
+      "evidence_spans": {
+        "assignment_evidence": {
+          "file_path": "legacy/core-banking-system/TRANS-PROC.CBL",
+          "line_start": 86,
+          "line_end": 86
+        },
+        "call_evidence": {
+          "file_path": "legacy/core-banking-system/TRANS-PROC.CBL",
+          "line_start": 87,
+          "line_end": 87
+        }
+      }
+    },
+    {
+      "id": "prop.command.trans-proc_2",
+      "category": "COMMAND_INVOCATION",
+      "semantic_key": "COMMAND_INVOCATION:TRANS-PROC:cmd /c ren ACCOUNTS.TMP ACCOUNTS.DAT:WS-CMD",
+      "evidence_spans": {
+        "assignment_evidence": {
+          "file_path": "legacy/core-banking-system/TRANS-PROC.CBL",
+          "line_start": 88,
+          "line_end": 88
+        },
+        "call_evidence": {
+          "file_path": "legacy/core-banking-system/TRANS-PROC.CBL",
+          "line_start": 89,
+          "line_end": 89
+        }
+      }
+    },
+    {
+      "id": "prop.command.trans-proc_3",
+      "category": "COMMAND_INVOCATION",
+      "semantic_key": "COMMAND_INVOCATION:TRANS-PROC:cmd /c del ACCOUNTS.TMP:WS-CMD",
+      "evidence_spans": {
+        "assignment_evidence": {
+          "file_path": "legacy/core-banking-system/TRANS-PROC.CBL",
+          "line_start": 92,
+          "line_end": 92
+        },
+        "call_evidence": {
+          "file_path": "legacy/core-banking-system/TRANS-PROC.CBL",
+          "line_start": 93,
+          "line_end": 93
+        }
+      }
+    },
+    {
+      "id": "prop.transfer.trans-proc_account-rec_temp-rec",
+      "category": "DATA_TRANSFER_RELATION",
+      "semantic_key": "DATA_TRANSFER:TRANS-PROC:ACCOUNT-REC->TEMP-REC:MOVE",
+      "evidence_spans": {
+        "evidence": {
+          "file_path": "legacy/core-banking-system/TRANS-PROC.CBL",
+          "line_start": 76,
+          "line_end": 76
+        }
+      }
+    },
+    {
+      "id": "prop.lifecycle.init-db_account-file",
       "category": "RESOURCE_LIFECYCLE",
-      "semantic_key": "LIFECYCLE:INIT-DB:ACCOUNT-FILE:OUTPUT:(OPEN,WRITE,CLOSE)",
-      "file_path": "legacy/core-banking-system/INIT-DB.CBL",
-      "line_start": 24,
-      "line_end": 44
+      "semantic_key": "RESOURCE_LIFECYCLE:INIT-DB:ACCOUNT-FILE:OUTPUT:(OPEN->CLOSE)",
+      "evidence_spans": {
+        "evidence": {
+          "file_path": "legacy/core-banking-system/INIT-DB.CBL",
+          "line_start": 24,
+          "line_end": 44
+        }
+      }
     },
     {
-      "id": "prop.lifecycle.trans_account_read",
+      "id": "prop.lifecycle.report-gen_account-file",
       "category": "RESOURCE_LIFECYCLE",
-      "semantic_key": "LIFECYCLE:TRANS-PROC:ACCOUNT-FILE:INPUT:(OPEN,READ,CLOSE)",
-      "file_path": "legacy/core-banking-system/TRANS-PROC.CBL",
-      "line_start": 46,
-      "line_end": 81
+      "semantic_key": "RESOURCE_LIFECYCLE:REPORT-GEN:ACCOUNT-FILE:INPUT:(OPEN->READ->CLOSE)",
+      "evidence_spans": {
+        "evidence": {
+          "file_path": "legacy/core-banking-system/REPORT-GEN.CBL",
+          "line_start": 28,
+          "line_end": 50
+        }
+      }
     },
     {
-      "id": "prop.lifecycle.trans_temp_output",
+      "id": "prop.lifecycle.trans-proc_account-file",
       "category": "RESOURCE_LIFECYCLE",
-      "semantic_key": "LIFECYCLE:TRANS-PROC:TEMP-FILE:OUTPUT:(OPEN,WRITE,CLOSE)",
-      "file_path": "legacy/core-banking-system/TRANS-PROC.CBL",
-      "line_start": 47,
-      "line_end": 82
+      "semantic_key": "RESOURCE_LIFECYCLE:TRANS-PROC:ACCOUNT-FILE:INPUT:(OPEN->READ->CLOSE)",
+      "evidence_spans": {
+        "evidence": {
+          "file_path": "legacy/core-banking-system/TRANS-PROC.CBL",
+          "line_start": 46,
+          "line_end": 81
+        }
+      }
     },
     {
-      "id": "prop.lifecycle.report_input",
+      "id": "prop.lifecycle.trans-proc_temp-file",
       "category": "RESOURCE_LIFECYCLE",
-      "semantic_key": "LIFECYCLE:REPORT-GEN:ACCOUNT-FILE:INPUT:(OPEN,READ,CLOSE)",
-      "file_path": "legacy/core-banking-system/REPORT-GEN.CBL",
-      "line_start": 28,
-      "line_end": 50
+      "semantic_key": "RESOURCE_LIFECYCLE:TRANS-PROC:TEMP-FILE:OUTPUT:(OPEN->CLOSE)",
+      "evidence_spans": {
+        "evidence": {
+          "file_path": "legacy/core-banking-system/TRANS-PROC.CBL",
+          "line_start": 47,
+          "line_end": 82
+        }
+      }
     },
     {
-      "id": "prop.flow.main_loop",
-      "category": "CONTROL_FLOW_LOOP",
-      "semantic_key": "LOOP:BANK-MAIN:WS-CHOICE = '4'",
-      "file_path": "legacy/core-banking-system/BANK-MAIN.CBL",
-      "line_start": 12,
-      "line_end": 34
+      "id": "prop.op_seq.trans-proc_del_ren",
+      "category": "OPERATION_SEQUENCE",
+      "semantic_key": "OP_SEQUENCE:TRANS-PROC:DELETE_DATASET->RENAME_TEMPORARY_DATASET:NON_ATOMIC_REPLACEMENT_SEQUENCE",
+      "evidence_spans": {
+        "first_evidence": {
+          "file_path": "legacy/core-banking-system/TRANS-PROC.CBL",
+          "line_start": 87,
+          "line_end": 87
+        },
+        "second_evidence": {
+          "file_path": "legacy/core-banking-system/TRANS-PROC.CBL",
+          "line_start": 89,
+          "line_end": 89
+        }
+      }
     },
     {
-      "id": "prop.flow.trans_loop",
-      "category": "CONTROL_FLOW_LOOP",
-      "semantic_key": "LOOP:TRANS-PROC:WS-EOF-FLAG = 'Y'",
-      "file_path": "legacy/core-banking-system/TRANS-PROC.CBL",
-      "line_start": 52,
-      "line_end": 79
+      "id": "prop.dataflow.report-gen_rec-acc-balance_ws-total-bal",
+      "category": "COMPUTATION_DATAFLOW",
+      "semantic_key": "DATAFLOW:REPORT-GEN:REC-ACC-BALANCE->WS-TOTAL-BAL:ADD",
+      "evidence_spans": {
+        "evidence": {
+          "file_path": "legacy/core-banking-system/REPORT-GEN.CBL",
+          "line_start": 45,
+          "line_end": 45
+        }
+      }
     },
     {
-      "id": "prop.flow.report_loop",
-      "category": "CONTROL_FLOW_LOOP",
-      "semantic_key": "LOOP:REPORT-GEN:WS-EOF-FLAG = 'Y'",
-      "file_path": "legacy/core-banking-system/REPORT-GEN.CBL",
-      "line_start": 35,
-      "line_end": 48
+      "id": "prop.dataflow.report-gen_1_ws-count",
+      "category": "COMPUTATION_DATAFLOW",
+      "semantic_key": "DATAFLOW:REPORT-GEN:1->WS-COUNT:ADD",
+      "evidence_spans": {
+        "evidence": {
+          "file_path": "legacy/core-banking-system/REPORT-GEN.CBL",
+          "line_start": 46,
+          "line_end": 46
+        }
+      }
     },
     {
-      "id": "prop.flow.main_evaluate",
-      "category": "EVALUATE_BRANCHING",
-      "semantic_key": "EVALUATE:BANK-MAIN:WS-CHOICE",
-      "file_path": "legacy/core-banking-system/BANK-MAIN.CBL",
-      "line_start": 22,
-      "line_end": 33
+      "id": "prop.platform.trans-proc_1",
+      "category": "PLATFORM_DEPENDENCY",
+      "semantic_key": "PLATFORM:TRANS-PROC:WINDOWS_CMD:cmd /c del ACCOUNTS.DAT",
+      "evidence_spans": {
+        "evidence": {
+          "file_path": "legacy/core-banking-system/TRANS-PROC.CBL",
+          "line_start": 86,
+          "line_end": 86
+        }
+      }
     },
     {
-      "id": "prop.flow.trans_evaluate",
-      "category": "EVALUATE_BRANCHING",
-      "semantic_key": "EVALUATE:TRANS-PROC:WS-TRANS-TYPE",
-      "file_path": "legacy/core-banking-system/TRANS-PROC.CBL",
-      "line_start": 59,
-      "line_end": 74
+      "id": "prop.platform.trans-proc_2",
+      "category": "PLATFORM_DEPENDENCY",
+      "semantic_key": "PLATFORM:TRANS-PROC:WINDOWS_CMD:cmd /c ren ACCOUNTS.TMP ACCOUNTS.DAT",
+      "evidence_spans": {
+        "evidence": {
+          "file_path": "legacy/core-banking-system/TRANS-PROC.CBL",
+          "line_start": 88,
+          "line_end": 88
+        }
+      }
     },
     {
-      "id": "prop.math.deposit_add",
-      "category": "ARITHMETIC_OPERATION",
-      "semantic_key": "ARITHMETIC:TRANS-PROC:ADD:WS-TRANS-AMOUNT->REC-ACC-BALANCE",
-      "file_path": "legacy/core-banking-system/TRANS-PROC.CBL",
-      "line_start": 60,
-      "line_end": 60
+      "id": "prop.platform.trans-proc_3",
+      "category": "PLATFORM_DEPENDENCY",
+      "semantic_key": "PLATFORM:TRANS-PROC:WINDOWS_CMD:cmd /c del ACCOUNTS.TMP",
+      "evidence_spans": {
+        "evidence": {
+          "file_path": "legacy/core-banking-system/TRANS-PROC.CBL",
+          "line_start": 92,
+          "line_end": 92
+        }
+      }
     },
     {
-      "id": "prop.math.withdrawal_sub",
-      "category": "ARITHMETIC_OPERATION",
-      "semantic_key": "ARITHMETIC:TRANS-PROC:SUBTRACT:WS-TRANS-AMOUNT->REC-ACC-BALANCE",
-      "file_path": "legacy/core-banking-system/TRANS-PROC.CBL",
-      "line_start": 65,
-      "line_end": 66
-    },
-    {
-      "id": "prop.math.trans_counter_add",
-      "category": "ARITHMETIC_OPERATION",
-      "semantic_key": "ARITHMETIC:TRANS-PROC:ADD:1->WS-TRANS-COUNT",
-      "file_path": "legacy/core-banking-system/TRANS-PROC.CBL",
-      "line_start": 58,
-      "line_end": 58
-    },
-    {
-      "id": "prop.math.rep_total_add",
-      "category": "ARITHMETIC_OPERATION",
-      "semantic_key": "ARITHMETIC:REPORT-GEN:ADD:REC-ACC-BALANCE->WS-TOTAL-BAL",
-      "file_path": "legacy/core-banking-system/REPORT-GEN.CBL",
-      "line_start": 45,
-      "line_end": 45
-    },
-    {
-      "id": "prop.math.rep_count_add",
-      "category": "ARITHMETIC_OPERATION",
-      "semantic_key": "ARITHMETIC:REPORT-GEN:ADD:1->WS-COUNT",
-      "file_path": "legacy/core-banking-system/REPORT-GEN.CBL",
-      "line_start": 46,
-      "line_end": 46
-    },
-    {
-      "id": "prop.math.rep_deposit_tot",
-      "category": "ARITHMETIC_OPERATION",
-      "semantic_key": "ARITHMETIC:REPORT-GEN:ADD:REC-ACC-BALANCE->WS-TOTAL-CREDITS",
-      "file_path": "legacy/core-banking-system/REPORT-GEN.CBL",
-      "line_start": 41,
-      "line_end": 45
-    },
-    {
-      "id": "prop.math.rep_withdraw_tot",
-      "category": "ARITHMETIC_OPERATION",
-      "semantic_key": "ARITHMETIC:REPORT-GEN:ADD:REC-ACC-BALANCE->WS-TOTAL-DEBITS",
-      "file_path": "legacy/core-banking-system/REPORT-GEN.CBL",
-      "line_start": 42,
-      "line_end": 45
-    },
-    {
-      "id": "prop.branch.nsf_check",
-      "category": "CONDITIONAL_BRANCH",
-      "semantic_key": "CONDITIONAL:TRANS-PROC:IF_PREDICATE:REC-ACC-BALANCE >= WS-TRANS-AMOUNT",
-      "file_path": "legacy/core-banking-system/TRANS-PROC.CBL",
-      "line_start": 64,
-      "line_end": 70
-    },
-    {
-      "id": "prop.branch.invalid_menu",
-      "category": "CONDITIONAL_BRANCH",
-      "semantic_key": "CONDITIONAL:BANK-MAIN:WHEN_OTHER:WHEN OTHER",
-      "file_path": "legacy/core-banking-system/BANK-MAIN.CBL",
-      "line_start": 31,
-      "line_end": 32
-    },
-    {
-      "id": "prop.branch.invalid_tx_type",
-      "category": "CONDITIONAL_BRANCH",
-      "semantic_key": "CONDITIONAL:TRANS-PROC:WHEN_OTHER:WHEN OTHER",
-      "file_path": "legacy/core-banking-system/TRANS-PROC.CBL",
-      "line_start": 71,
-      "line_end": 73
-    },
-    {
-      "id": "prop.branch.eof_condition",
-      "category": "CONDITIONAL_BRANCH",
-      "semantic_key": "CONDITIONAL:REPORT-GEN:AT_END:AT END",
-      "file_path": "legacy/core-banking-system/REPORT-GEN.CBL",
-      "line_start": 36,
-      "line_end": 39
-    },
-    {
-      "id": "prop.io.main_menu_display",
-      "category": "INTERACTIVE_IO",
-      "semantic_key": "INTERACTIVE_IO:BANK-MAIN:DISPLAY:MENU_OPTIONS",
-      "file_path": "legacy/core-banking-system/BANK-MAIN.CBL",
-      "line_start": 13,
-      "line_end": 19
-    },
-    {
-      "id": "prop.io.main_choice_accept",
-      "category": "INTERACTIVE_IO",
-      "semantic_key": "INTERACTIVE_IO:BANK-MAIN:ACCEPT:WS-CHOICE",
-      "file_path": "legacy/core-banking-system/BANK-MAIN.CBL",
-      "line_start": 20,
-      "line_end": 20
-    },
-    {
-      "id": "prop.io.report_summary_display",
-      "category": "INTERACTIVE_IO",
-      "semantic_key": "INTERACTIVE_IO:REPORT-GEN:DISPLAY:PRINT-LINE",
-      "file_path": "legacy/core-banking-system/REPORT-GEN.CBL",
-      "line_start": 51,
-      "line_end": 55
-    },
-    {
-      "id": "prop.term.main_stop_run",
-      "category": "TERMINATION",
-      "semantic_key": "TERMINATION:BANK-MAIN:STOP RUN",
-      "file_path": "legacy/core-banking-system/BANK-MAIN.CBL",
-      "line_start": 36,
-      "line_end": 36
-    },
-    {
-      "id": "prop.term.sub_exit_init",
-      "category": "TERMINATION",
-      "semantic_key": "TERMINATION:INIT-DB:STOP RUN",
-      "file_path": "legacy/core-banking-system/INIT-DB.CBL",
-      "line_start": 46,
-      "line_end": 46
-    },
-    {
-      "id": "prop.term.sub_exit_trans",
-      "category": "TERMINATION",
-      "semantic_key": "TERMINATION:TRANS-PROC:STOP RUN",
-      "file_path": "legacy/core-banking-system/TRANS-PROC.CBL",
-      "line_start": 96,
-      "line_end": 96
-    },
-    {
-      "id": "prop.risk.missing_file_status",
+      "id": "prop.risk.init-db_account-file_missing_status",
       "category": "BEHAVIORAL_RISK",
-      "semantic_key": "BEHAVIORAL_RISK:TRANS-PROC:MISSING_FILE_STATUS_CHECK:UNCHECKED_FILE_STATUS:(OPEN,READ,WRITE,CLOSE):SILENT_IO_FAILURE:HIGH",
-      "file_path": "legacy/core-banking-system/TRANS-PROC.CBL",
-      "line_start": 7,
-      "line_end": 10
+      "semantic_key": "RISK:INIT-DB:MISSING_FILE_STATUS_CHECK:UNCHECKED_FILE_STATUS:SILENT_IO_FAILURE:HIGH",
+      "evidence_spans": {
+        "precondition_evidence": {
+          "file_path": "legacy/core-banking-system/INIT-DB.CBL",
+          "line_start": 7,
+          "line_end": 8
+        },
+        "operation_evidence": {
+          "file_path": "legacy/core-banking-system/INIT-DB.CBL",
+          "line_start": 24,
+          "line_end": 44
+        },
+        "affected_resource_evidence": {
+          "file_path": "legacy/core-banking-system/INIT-DB.CBL",
+          "line_start": 7,
+          "line_end": 8
+        }
+      }
     },
     {
-      "id": "prop.risk.comp3_unpack_overflow",
+      "id": "prop.risk.report-gen_account-file_missing_status",
       "category": "BEHAVIORAL_RISK",
-      "semantic_key": "BEHAVIORAL_RISK:ACCOUNTS:PACKED_DECIMAL_CONVERSION_OVERFLOW:HIGH_PRECISION_ARITHMETIC:(UNPACK,COMPUTE,STORE):ARITHMETIC_PRECISION_LOSS:HIGH",
-      "file_path": "legacy/core-banking-system/ACCOUNTS.CPY",
-      "line_start": 5,
-      "line_end": 5
+      "semantic_key": "RISK:REPORT-GEN:MISSING_FILE_STATUS_CHECK:UNCHECKED_FILE_STATUS:SILENT_IO_FAILURE:HIGH",
+      "evidence_spans": {
+        "precondition_evidence": {
+          "file_path": "legacy/core-banking-system/REPORT-GEN.CBL",
+          "line_start": 7,
+          "line_end": 8
+        },
+        "operation_evidence": {
+          "file_path": "legacy/core-banking-system/REPORT-GEN.CBL",
+          "line_start": 28,
+          "line_end": 50
+        },
+        "affected_resource_evidence": {
+          "file_path": "legacy/core-banking-system/REPORT-GEN.CBL",
+          "line_start": 7,
+          "line_end": 8
+        }
+      }
     },
     {
-      "id": "prop.risk.unvalidated_menu_input",
+      "id": "prop.risk.trans-proc_account-file_missing_status",
       "category": "BEHAVIORAL_RISK",
-      "semantic_key": "BEHAVIORAL_RISK:BANK-MAIN:UNVALIDATED_USER_INPUT:DIRECT_ACCEPT_INTO_STORAGE:(ACCEPT,EVALUATE):UNEXPECTED_BRANCH_EXECUTION:MEDIUM",
-      "file_path": "legacy/core-banking-system/BANK-MAIN.CBL",
-      "line_start": 20,
-      "line_end": 20
+      "semantic_key": "RISK:TRANS-PROC:MISSING_FILE_STATUS_CHECK:UNCHECKED_FILE_STATUS:SILENT_IO_FAILURE:HIGH",
+      "evidence_spans": {
+        "precondition_evidence": {
+          "file_path": "legacy/core-banking-system/TRANS-PROC.CBL",
+          "line_start": 7,
+          "line_end": 8
+        },
+        "operation_evidence": {
+          "file_path": "legacy/core-banking-system/TRANS-PROC.CBL",
+          "line_start": 46,
+          "line_end": 81
+        },
+        "affected_resource_evidence": {
+          "file_path": "legacy/core-banking-system/TRANS-PROC.CBL",
+          "line_start": 7,
+          "line_end": 8
+        }
+      }
     },
     {
-      "id": "prop.risk.concurrent_file_access",
+      "id": "prop.risk.trans-proc_non_atomic_update",
       "category": "BEHAVIORAL_RISK",
-      "semantic_key": "BEHAVIORAL_RISK:SYSTEM:CONCURRENT_FILE_ACCESS_CONFLICT:SEQUENTIAL_EXCLUSIVE_ACCESS:(OPEN,MODIFY,CLOSE):FILE_LOCKING_OR_CORRUPTION:HIGH",
-      "file_path": "legacy/core-banking-system/TRANS-PROC.CBL",
-      "line_start": 46,
-      "line_end": 48
+      "semantic_key": "RISK:TRANS-PROC:NON_ATOMIC_FILE_UPDATE:PROCESS_FAILURE_BETWEEN_COMMANDS:PERMANENT_DATA_LOSS:HIGH",
+      "evidence_spans": {
+        "precondition_evidence": {
+          "file_path": "legacy/core-banking-system/TRANS-PROC.CBL",
+          "line_start": 86,
+          "line_end": 86
+        },
+        "operation_evidence": {
+          "file_path": "legacy/core-banking-system/TRANS-PROC.CBL",
+          "line_start": 87,
+          "line_end": 89
+        },
+        "affected_resource_evidence": {
+          "file_path": "legacy/core-banking-system/TRANS-PROC.CBL",
+          "line_start": 88,
+          "line_end": 88
+        }
+      }
     },
     {
-      "id": "prop.risk.monolithic_coupling",
-      "category": "ARCHITECTURAL_RISK",
-      "semantic_key": "ARCHITECTURAL_RISK:MONOLITHIC_DYNAMIC_CALL_COUPLING:TIGHT_PROGRAM_COUPLING:(BANK-MAIN,INIT-DB,REPORT-GEN,TRANS-PROC):DIFFICULTY_DECOUPLING_MICROSERVICES:HIGH",
-      "file_path": "legacy/core-banking-system/BANK-MAIN.CBL",
-      "line_start": 24,
-      "line_end": 28
-    },
-    {
-      "id": "prop.risk.stateful_file_dependence",
-      "category": "ARCHITECTURAL_RISK",
-      "semantic_key": "ARCHITECTURAL_RISK:STATEFUL_LOCAL_FILE_DEPENDENCE:FILESYSTEM_STATE_DEPENDENCE:(INIT-DB,REPORT-GEN,TRANS-PROC):PREVENTS_HORIZONTAL_SCALING:HIGH",
-      "file_path": "legacy/core-banking-system/TRANS-PROC.CBL",
-      "line_start": 86,
-      "line_end": 94
-    },
-    {
-      "id": "prop.risk.unhandled_eof_trans",
-      "category": "ARCHITECTURAL_RISK",
-      "semantic_key": "ARCHITECTURAL_RISK:UNHANDLED_EMPTY_FILE_CONDITION:EMPTY_DATASET_HANDLING:(REPORT-GEN,TRANS-PROC):ZERO_RECORDS_PROCESSED_SILENTLY:MEDIUM",
-      "file_path": "legacy/core-banking-system/TRANS-PROC.CBL",
-      "line_start": 53,
-      "line_end": 56
-    },
-    {
-      "id": "prop.state.main_ws_choice",
-      "category": "WORKING_STORAGE_STATE",
-      "semantic_key": "WS_STATE:BANK-MAIN:WS-CHOICE:X:MENU_SELECTION_INDICATOR",
-      "file_path": "legacy/core-banking-system/BANK-MAIN.CBL",
-      "line_start": 8,
-      "line_end": 8
-    },
-    {
-      "id": "prop.state.trans_eof_flag",
-      "category": "WORKING_STORAGE_STATE",
-      "semantic_key": "WS_STATE:TRANS-PROC:WS-EOF-FLAG:X:FILE_EOF_STATUS_FLAG",
-      "file_path": "legacy/core-banking-system/TRANS-PROC.CBL",
-      "line_start": 29,
-      "line_end": 29
-    },
-    {
-      "id": "prop.state.rep_totals_buffer",
-      "category": "WORKING_STORAGE_STATE",
-      "semantic_key": "WS_STATE:REPORT-GEN:WS-TOTAL-BAL:S9(15)V99:BALANCE_ACCUMULATION_BUFFER",
-      "file_path": "legacy/core-banking-system/REPORT-GEN.CBL",
-      "line_start": 20,
-      "line_end": 22
-    },
-    {
-      "id": "prop.protocol.e2e_lifecycle",
-      "category": "TRANSACTION_PROTOCOL",
-      "semantic_key": "PROTOCOL:CORE_BANKING_E2E_WORKFLOW:(INITIALIZE_DATABASE->PROCESS_TRANSACTIONS->GENERATE_SUMMARY_REPORT)",
-      "file_path": "legacy/core-banking-system/BANK-MAIN.CBL",
-      "line_start": 22,
-      "line_end": 33
+      "id": "prop.state_cmp.1000000003",
+      "category": "DATA_STATE_COMPARISON",
+      "semantic_key": "DATA_STATE_CMP:1000000003:200.00:100.00:UNKNOWN",
+      "evidence_spans": {
+        "dat_evidence": {
+          "file_path": "legacy/core-banking-system/ACCOUNTS.DAT",
+          "line_start": 3,
+          "line_end": 3
+        },
+        "initializer_evidence": {
+          "file_path": "legacy/core-banking-system/INIT-DB.CBL",
+          "line_start": 40,
+          "line_end": 40
+        }
+      }
     }
   ]
 }

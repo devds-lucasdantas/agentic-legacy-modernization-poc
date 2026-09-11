@@ -1,11 +1,14 @@
 """Deterministic AST-grounded Evaluator V3 for Gate 3 System Understanding.
 
-Evaluates structured SystemAssessment output against the 54-unit golden dataset
-and the ground-truth SystemSupportIndex.
+Evaluates structured SystemAssessment output against the independently authored
+golden dataset and the ground-truth SystemSupportIndex.
 Adheres strictly to:
-- Guardrail A: ZERO fuzzy/NLP/LLM semantic comparison.
-- Guardrail B: Explicit lifecycle and transfer verification.
-- Dynamic recall denominator derived from loaded golden dataset.
+- Blocker 1: Restores all 18 approved model-visible concepts.
+- Blocker 5: ZERO evidence line tolerance; exact role-bound verification.
+- Blocker 7: Independent positive oracle test, no circular generation.
+- Blocker 8: Categorical completeness semantics
+  (REQUIRED COMPLETE, OPTIONAL SUPPLEMENTARY, NOT SCORED).
+- Blocker 9: Role-bound multi-evidence coordinates for relational facts.
 """
 
 import json
@@ -15,26 +18,31 @@ from typing import Any
 
 from agents.legacy_analyzer.schemas.system_assessment import SystemAssessment
 from src.cobol.system_atomic_facts import (
-    ArchitecturalRiskFact,
-    ArithmeticOperationFact,
     BehavioralRiskFact,
-    ComponentTopologyFact,
-    ConditionalBranchFact,
-    ControlFlowLoopFact,
-    CopybookInclusionFact,
-    CrossProgramCallFact,
-    DataTransferFact,
-    EvaluateBranchingFact,
-    FieldLayoutFact,
-    InteractiveIOFact,
-    MenuDispatchFact,
+    CallEdgeFact,
+    CallerContinuationConstraintFact,
+    CallOccurrenceFact,
+    CommandInvocationFact,
+    ComputationDataflowFact,
+    DataStateComparisonFact,
+    DataTransferRelationFact,
+    EvidenceSpan,
+    FileBindingFact,
+    InternalCallResolutionFact,
+    OperationSequenceFact,
+    PlatformDependencyFact,
+    ProgramDeclarationFact,
+    RecordLayoutFact,
+    RecordLayoutRelationFact,
     ResourceLifecycleFact,
     SystemAtomicFact,
-    TerminationFact,
-    TransactionProtocolFact,
-    WorkingStorageStateFact,
+    TerminationSiteFact,
 )
 from src.cobol.system_support_index import SystemSupportIndex
+
+
+def _single_span(ev: Any) -> dict[str, EvidenceSpan]:
+    return {"evidence": EvidenceSpan(ev.file_path, ev.line_start, ev.line_end)}
 
 
 @dataclass(frozen=True)
@@ -113,357 +121,638 @@ class SystemEvaluatorV3:
         else:
             assessment_obj = assessment
 
-        candidate_facts: list[tuple[SystemAtomicFact, str, int, int]] = []
+        candidate_items: list[tuple[SystemAtomicFact, dict[str, EvidenceSpan]]] = []
 
-        # 1. Extract all candidate predictions from assessment
-        for c in assessment_obj.components:
-            f = ComponentTopologyFact(
-                fact_category="ARCHITECTURE",
-                program_id=c.program_id,
-                component_role=c.component_role,
-            )
-            candidate_facts.append(
-                (f, c.evidence.file_path, c.evidence.line_start, c.evidence.line_end)
-            )
+        # 1. Program Declarations
+        program_decls = assessment_obj.program_declarations or assessment_obj.programs
+        for d in program_decls:
+            f = ProgramDeclarationFact(program_id=d.program_id)
+            candidate_items.append((f, _single_span(d.evidence)))
 
-        for call in assessment_obj.cross_program_calls:
-            f_call = CrossProgramCallFact(
-                fact_category="CROSS_PROGRAM_CALL",
-                caller_program=call.caller_program,
-                callee_program=call.callee_program,
-                call_mechanism=call.call_mechanism,
+        # 2. Call Occurrences
+        for c in assessment_obj.call_occurrences:
+            f_call = CallOccurrenceFact(
+                caller_program=c.caller_program,
+                target_program=c.target_program,
+                call_mechanism=c.call_mechanism,
+                argument_identifier=c.argument_identifier,
             )
-            candidate_facts.append(
-                (f_call, call.evidence.file_path, call.evidence.line_start, call.evidence.line_end)
-            )
+            candidate_items.append((f_call, _single_span(c.evidence)))
 
-        for menu in assessment_obj.menu_dispatches:
-            f_menu = MenuDispatchFact(
-                fact_category="MENU_DISPATCH",
-                program_id=menu.program_id,
-                menu_key=menu.menu_key,
-                target_action=menu.target_action,
+        # 3. Call Edges
+        for e in assessment_obj.call_edges:
+            f_edge = CallEdgeFact(
+                caller_program=e.caller_program,
+                target_program=e.target_program,
+                call_mechanism=e.call_mechanism,
             )
-            candidate_facts.append(
-                (f_menu, menu.evidence.file_path, menu.evidence.line_start, menu.evidence.line_end)
-            )
+            candidate_items.append((f_edge, _single_span(e.evidence)))
 
-        for copy in assessment_obj.copybook_references:
-            f_copy = CopybookInclusionFact(
-                fact_category="COPYBOOK_INCLUSION",
-                program_id=copy.program_id,
-                copybook_name=copy.copybook_name,
+        # 4. Internal Call Resolutions
+        for r in assessment_obj.internal_call_resolutions:
+            f_res = InternalCallResolutionFact(
+                caller_program=r.caller_program,
+                callee_program=r.callee_program,
             )
-            candidate_facts.append(
-                (f_copy, copy.evidence.file_path, copy.evidence.line_start, copy.evidence.line_end)
-            )
+            spans = {
+                "call_evidence": EvidenceSpan(
+                    r.call_evidence.file_path, r.call_evidence.line_start, r.call_evidence.line_end
+                ),
+                "target_declaration_evidence": EvidenceSpan(
+                    r.target_declaration_evidence.file_path,
+                    r.target_declaration_evidence.line_start,
+                    r.target_declaration_evidence.line_end,
+                ),
+            }
+            candidate_items.append((f_res, spans))
 
-        for field in assessment_obj.record_fields:
-            f_field = FieldLayoutFact(
-                fact_category="FIELD_LAYOUT",
-                container_name=field.container_name,
-                field_name=field.field_name,
-                picture_clause=field.picture_clause,
-                storage_format=field.storage_format,
+        # 5. File Bindings
+        for b in assessment_obj.file_bindings:
+            f_bind = FileBindingFact(
+                program_id=b.program_id,
+                internal_file_name=b.internal_file_name,
+                external_file_name=b.external_file_name,
+                organization=b.organization,
             )
-            candidate_facts.append(
-                (
-                    f_field,
-                    field.evidence.file_path,
-                    field.evidence.line_start,
-                    field.evidence.line_end,
-                )
-            )
+            candidate_items.append((f_bind, _single_span(b.evidence)))
 
-        for trans in assessment_obj.data_transfers:
-            f_trans = DataTransferFact(
-                fact_category="DATA_TRANSFER",
-                program_id=trans.program_id,
-                source_entity=trans.source_entity,
-                target_entity=trans.target_entity,
-                transfer_verb=trans.transfer_verb,
+        # 6. Record Layouts
+        for lay in assessment_obj.record_layouts:
+            f_lay = RecordLayoutFact(
+                program_id=lay.program_id,
+                record_name=lay.record_name,
+                field_count=lay.field_count,
+                storage_format=lay.storage_format,
             )
-            candidate_facts.append(
-                (
-                    f_trans,
-                    trans.evidence.file_path,
-                    trans.evidence.line_start,
-                    trans.evidence.line_end,
-                )
-            )
+            candidate_items.append((f_lay, _single_span(lay.evidence)))
 
-        for r_life in assessment_obj.resource_lifecycles:
-            f_life = ResourceLifecycleFact(
-                fact_category="RESOURCE_LIFECYCLE",
-                program_id=r_life.program_id,
-                resource_name=r_life.resource_name,
-                access_mode=r_life.access_mode,
-                operations=tuple(r_life.operations),
+        # 7. Record Layout Relations
+        for rel in assessment_obj.record_layout_relations:
+            f_rel = RecordLayoutRelationFact(
+                layout_a_name=rel.layout_a_name,
+                layout_b_name=rel.layout_b_name,
+                relation_type=rel.relation_type,
             )
-            candidate_facts.append(
-                (
-                    f_life,
-                    r_life.evidence.file_path,
-                    r_life.evidence.line_start,
-                    r_life.evidence.line_end,
-                )
-            )
+            spans = {
+                "evidence_a": EvidenceSpan(
+                    rel.evidence_a.file_path, rel.evidence_a.line_start, rel.evidence_a.line_end
+                ),
+                "evidence_b": EvidenceSpan(
+                    rel.evidence_b.file_path, rel.evidence_b.line_start, rel.evidence_b.line_end
+                ),
+            }
+            candidate_items.append((f_rel, spans))
 
-        for loop in assessment_obj.control_flow_loops:
-            f_loop = ControlFlowLoopFact(
-                fact_category="CONTROL_FLOW_LOOP",
-                program_id=loop.program_id,
-                loop_predicate=loop.loop_predicate,
+        # 8. Termination Sites
+        for t in assessment_obj.termination_sites:
+            f_term = TerminationSiteFact(
+                program_id=t.program_id,
+                statement_type=t.statement_type,
             )
-            candidate_facts.append(
-                (f_loop, loop.evidence.file_path, loop.evidence.line_start, loop.evidence.line_end)
-            )
+            candidate_items.append((f_term, _single_span(t.evidence)))
 
-        for eval_s in assessment_obj.evaluate_selections:
-            f_eval = EvaluateBranchingFact(
-                fact_category="EVALUATE_BRANCHING",
-                program_id=eval_s.program_id,
-                selection_subject=eval_s.selection_subject,
+        # 9. Caller Continuation Constraints
+        for c_con in assessment_obj.caller_continuation_constraints:
+            f_ccc = CallerContinuationConstraintFact(
+                caller_program=c_con.caller_program,
+                callee_program=c_con.callee_program,
+                constraint_type=c_con.constraint_type,
             )
-            candidate_facts.append(
-                (
-                    f_eval,
-                    eval_s.evidence.file_path,
-                    eval_s.evidence.line_start,
-                    eval_s.evidence.line_end,
-                )
-            )
+            spans = {
+                "call_evidence": EvidenceSpan(
+                    c_con.call_evidence.file_path,
+                    c_con.call_evidence.line_start,
+                    c_con.call_evidence.line_end,
+                ),
+                "callee_termination_evidence": EvidenceSpan(
+                    c_con.callee_termination_evidence.file_path,
+                    c_con.callee_termination_evidence.line_start,
+                    c_con.callee_termination_evidence.line_end,
+                ),
+            }
+            candidate_items.append((f_ccc, spans))
 
-        for arith in assessment_obj.arithmetic_computations:
-            f_arith = ArithmeticOperationFact(
-                fact_category="ARITHMETIC_OPERATION",
-                program_id=arith.program_id,
-                verb=arith.verb,
-                operand=arith.operand,
-                target_field=arith.target_field,
+        # 10. Command Invocations
+        for cmd in assessment_obj.command_invocations:
+            f_cmd = CommandInvocationFact(
+                program_id=cmd.program_id,
+                command_template=cmd.command_template,
+                target_operand=cmd.target_operand,
             )
-            candidate_facts.append(
-                (
-                    f_arith,
-                    arith.evidence.file_path,
-                    arith.evidence.line_start,
-                    arith.evidence.line_end,
-                )
-            )
+            spans = {
+                "assignment_evidence": EvidenceSpan(
+                    cmd.assignment_evidence.file_path,
+                    cmd.assignment_evidence.line_start,
+                    cmd.assignment_evidence.line_end,
+                ),
+                "call_evidence": EvidenceSpan(
+                    cmd.call_evidence.file_path,
+                    cmd.call_evidence.line_start,
+                    cmd.call_evidence.line_end,
+                ),
+            }
+            candidate_items.append((f_cmd, spans))
 
-        for branch in assessment_obj.conditional_branches:
-            f_branch = ConditionalBranchFact(
-                fact_category="CONDITIONAL_BRANCH",
-                program_id=branch.program_id,
-                condition_kind=branch.condition_kind,
-                predicate=branch.predicate,
+        # 11. Data Transfer Relations
+        for dt in assessment_obj.data_transfer_relations:
+            f_dt = DataTransferRelationFact(
+                program_id=dt.program_id,
+                source_entity=dt.source_entity,
+                target_entity=dt.target_entity,
+                transfer_verb=dt.transfer_verb,
             )
-            candidate_facts.append(
-                (
-                    f_branch,
-                    branch.evidence.file_path,
-                    branch.evidence.line_start,
-                    branch.evidence.line_end,
-                )
-            )
+            candidate_items.append((f_dt, _single_span(dt.evidence)))
 
-        for io in assessment_obj.interactive_io_operations:
-            f_io = InteractiveIOFact(
-                fact_category="INTERACTIVE_IO",
-                program_id=io.program_id,
-                io_verb=io.io_verb,
-                target_identifier=io.target_identifier,
+        # 12. Resource Lifecycles
+        for rl in assessment_obj.resource_lifecycles:
+            f_rl = ResourceLifecycleFact(
+                program_id=rl.program_id,
+                resource_name=rl.resource_name,
+                access_mode=rl.access_mode,
+                ordered_operations=tuple(rl.ordered_operations),
             )
-            candidate_facts.append(
-                (f_io, io.evidence.file_path, io.evidence.line_start, io.evidence.line_end)
-            )
+            candidate_items.append((f_rl, _single_span(rl.evidence)))
 
-        for term in assessment_obj.terminations:
-            f_term = TerminationFact(
-                fact_category="TERMINATION",
-                program_id=term.program_id,
-                termination_verb=term.termination_verb,
+        # 13. Operation Sequences
+        for op in assessment_obj.operation_sequences:
+            f_op = OperationSequenceFact(
+                program_id=op.program_id,
+                first_operation=op.first_operation,
+                second_operation=op.second_operation,
+                sequence_rationale=op.sequence_rationale,
             )
-            candidate_facts.append(
-                (f_term, term.evidence.file_path, term.evidence.line_start, term.evidence.line_end)
-            )
+            spans = {
+                "first_evidence": EvidenceSpan(
+                    op.first_evidence.file_path,
+                    op.first_evidence.line_start,
+                    op.first_evidence.line_end,
+                ),
+                "second_evidence": EvidenceSpan(
+                    op.second_evidence.file_path,
+                    op.second_evidence.line_start,
+                    op.second_evidence.line_end,
+                ),
+            }
+            candidate_items.append((f_op, spans))
 
-        for b_risk in assessment_obj.behavioral_risks:
-            f_b_risk = BehavioralRiskFact(
-                fact_category="BEHAVIORAL_RISK",
-                program_id=b_risk.program_id,
-                risk_category=b_risk.risk_category,
-                precondition=b_risk.precondition,
-                ordered_operations=tuple(b_risk.ordered_operations),
-                possible_consequence=b_risk.possible_consequence,
-                severity=b_risk.severity,
+        # 14. Computation Dataflows
+        for cd in assessment_obj.computation_dataflows:
+            f_cd = ComputationDataflowFact(
+                program_id=cd.program_id,
+                source_field=cd.source_field,
+                target_field=cd.target_field,
+                operation_verb=cd.operation_verb,
             )
-            candidate_facts.append(
-                (
-                    f_b_risk,
-                    b_risk.evidence.file_path,
-                    b_risk.evidence.line_start,
-                    b_risk.evidence.line_end,
-                )
-            )
+            candidate_items.append((f_cd, _single_span(cd.evidence)))
 
-        for a_risk in assessment_obj.architectural_risks:
-            f_a_risk = ArchitecturalRiskFact(
-                fact_category="ARCHITECTURAL_RISK",
-                risk_id=a_risk.risk_id,
-                risk_type=a_risk.risk_type,
-                affected_components=tuple(a_risk.affected_components),
-                architectural_consequence=a_risk.architectural_consequence,
-                severity=a_risk.severity,
+        # 15. Platform Dependencies
+        for pd in assessment_obj.platform_dependencies:
+            f_pd = PlatformDependencyFact(
+                program_id=pd.program_id,
+                platform_family=pd.platform_family,
+                command_literal=pd.command_literal,
             )
-            candidate_facts.append(
-                (
-                    f_a_risk,
-                    a_risk.evidence.file_path,
-                    a_risk.evidence.line_start,
-                    a_risk.evidence.line_end,
-                )
-            )
+            candidate_items.append((f_pd, _single_span(pd.evidence)))
 
-        for ws in assessment_obj.working_storage_states:
-            f_ws = WorkingStorageStateFact(
-                fact_category="WORKING_STORAGE_STATE",
-                program_id=ws.program_id,
-                variable_name=ws.variable_name,
-                picture_clause=ws.picture_clause,
-                state_role=ws.state_role,
+        # 16. Behavioral Risks
+        for br in assessment_obj.behavioral_risks:
+            f_br = BehavioralRiskFact(
+                program_id=br.program_id,
+                risk_category=br.risk_category,
+                precondition=br.precondition,
+                possible_consequence=br.possible_consequence,
+                severity=br.severity,
             )
-            candidate_facts.append(
-                (f_ws, ws.evidence.file_path, ws.evidence.line_start, ws.evidence.line_end)
-            )
+            spans = {
+                "precondition_evidence": EvidenceSpan(
+                    br.precondition_evidence.file_path,
+                    br.precondition_evidence.line_start,
+                    br.precondition_evidence.line_end,
+                ),
+                "operation_evidence": EvidenceSpan(
+                    br.operation_evidence.file_path,
+                    br.operation_evidence.line_start,
+                    br.operation_evidence.line_end,
+                ),
+                "affected_resource_evidence": EvidenceSpan(
+                    br.affected_resource_evidence.file_path,
+                    br.affected_resource_evidence.line_start,
+                    br.affected_resource_evidence.line_end,
+                ),
+            }
+            candidate_items.append((f_br, spans))
 
-        for proto in assessment_obj.system_protocols:
-            f_proto = TransactionProtocolFact(
-                fact_category="TRANSACTION_PROTOCOL",
-                protocol_name=proto.protocol_name,
-                ordered_phases=tuple(proto.ordered_phases),
+        # 17. Data State Comparisons
+        for dsc in assessment_obj.data_state_comparisons:
+            f_dsc = DataStateComparisonFact(
+                entity_id=dsc.entity_id,
+                dat_record_value=dsc.dat_record_value,
+                initializer_code_value=dsc.initializer_code_value,
+                causal_provenance=dsc.causal_provenance,
             )
-            candidate_facts.append(
-                (
-                    f_proto,
-                    proto.evidence.file_path,
-                    proto.evidence.line_start,
-                    proto.evidence.line_end,
-                )
-            )
+            spans = {
+                "dat_evidence": EvidenceSpan(
+                    dsc.dat_evidence.file_path,
+                    dsc.dat_evidence.line_start,
+                    dsc.dat_evidence.line_end,
+                ),
+                "initializer_evidence": EvidenceSpan(
+                    dsc.initializer_evidence.file_path,
+                    dsc.initializer_evidence.line_start,
+                    dsc.initializer_evidence.line_end,
+                ),
+            }
+            candidate_items.append((f_dsc, spans))
 
-        raw_count = len(candidate_facts)
-
-        # 2. Duplicate Detection
-        seen_assertions: set[tuple[str, str, int, int]] = set()
-        evaluated: list[EvaluatedPrediction] = []
-        duplicate_count = 0
-        invalid_evidence_count = 0
-        unsupported_count = 0
-        contradiction_count = 0
+        # Evaluation counters
+        evaluated_predictions: list[EvaluatedPrediction] = []
+        seen_assertions: set[str] = set()
         matched_golden_ids: set[str] = set()
+        supported_count = 0
+        unsupported_count = 0
+        invalid_evidence_count = 0
+        duplicate_count = 0
+        contradiction_count = 0
 
-        for fact, f_path, l_start, l_end in candidate_facts:
-            sem_key = fact.get_semantic_key()
-            assertion_tuple = (sem_key, f_path, l_start, l_end)
+        raw_predicted_count = len(candidate_items)
 
-            # Check invalid evidence line bounds
-            if not self.support_index.is_span_valid(f_path, l_start, l_end):
-                invalid_evidence_count += 1
-                evaluated.append(
-                    EvaluatedPrediction(
-                        fact_category=fact.fact_category,
-                        semantic_key=sem_key,
-                        file_path=f_path,
-                        line_start=l_start,
-                        line_end=l_end,
-                        is_supported=False,
-                        is_duplicate=False,
-                        is_contradiction=False,
-                        rejection_reason="Invalid line span coordinates",
-                        matched_proposition_id=None,
-                    )
-                )
-                continue
-
-            if assertion_tuple in seen_assertions:
+        for fact, spans in candidate_items:
+            key = fact.semantic_key()
+            span_sig = f"{key}|" + "|".join(
+                f"{r}:{s.file_path}:{s.line_start}-{s.line_end}" for r, s in sorted(spans.items())
+            )
+            is_dup = span_sig in seen_assertions
+            if is_dup:
                 duplicate_count += 1
-                evaluated.append(
+            seen_assertions.add(span_sig)
+
+            primary_span = next(iter(spans.values()))
+
+            # Verify coordinate bounds
+            has_invalid_bounds = any(
+                s.line_start > s.line_end or s.line_start <= 0 for s in spans.values()
+            )
+            if has_invalid_bounds:
+                invalid_evidence_count += 1
+                unsupported_count += 1
+                evaluated_predictions.append(
                     EvaluatedPrediction(
                         fact_category=fact.fact_category,
-                        semantic_key=sem_key,
-                        file_path=f_path,
-                        line_start=l_start,
-                        line_end=l_end,
+                        semantic_key=key,
+                        file_path=primary_span.file_path,
+                        line_start=primary_span.line_start,
+                        line_end=primary_span.line_end,
                         is_supported=False,
-                        is_duplicate=True,
+                        is_duplicate=is_dup,
                         is_contradiction=False,
-                        rejection_reason="Duplicate assertion",
+                        rejection_reason="Invalid coordinate bounds",
                         matched_proposition_id=None,
                     )
                 )
                 continue
-            seen_assertions.add(assertion_tuple)
 
-            # Verify against ground-truth index
-            is_supp, reason, matched_fact = self.support_index.verify_assertion(
-                fact, f_path, l_start, l_end
+            # Verify against support index
+            is_supp, reason, matched_sf = self.support_index.verify_role_bound_assertion(
+                fact, spans
             )
 
-            matched_id: str | None = None
-            if is_supp and matched_fact:
-                matched_id = matched_fact.proposition_id
-                matched_golden_ids.add(matched_id)
+            if is_supp and matched_sf:
+                supported_count += 1
+                matched_id = matched_sf.proposition_id
+                if matched_id in self.golden_by_id:
+                    matched_golden_ids.add(matched_id)
+
+                evaluated_predictions.append(
+                    EvaluatedPrediction(
+                        fact_category=fact.fact_category,
+                        semantic_key=key,
+                        file_path=primary_span.file_path,
+                        line_start=primary_span.line_start,
+                        line_end=primary_span.line_end,
+                        is_supported=True,
+                        is_duplicate=is_dup,
+                        is_contradiction=False,
+                        rejection_reason=None,
+                        matched_proposition_id=matched_id,
+                    )
+                )
             else:
                 unsupported_count += 1
-
-            evaluated.append(
-                EvaluatedPrediction(
-                    fact_category=fact.fact_category,
-                    semantic_key=sem_key,
-                    file_path=f_path,
-                    line_start=l_start,
-                    line_end=l_end,
-                    is_supported=is_supp,
-                    is_duplicate=False,
-                    is_contradiction=False,
-                    rejection_reason=None if is_supp else reason,
-                    matched_proposition_id=matched_id,
+                evaluated_predictions.append(
+                    EvaluatedPrediction(
+                        fact_category=fact.fact_category,
+                        semantic_key=key,
+                        file_path=primary_span.file_path,
+                        line_start=primary_span.line_start,
+                        line_end=primary_span.line_end,
+                        is_supported=False,
+                        is_duplicate=is_dup,
+                        is_contradiction=False,
+                        rejection_reason=reason,
+                        matched_proposition_id=None,
+                    )
                 )
-            )
 
-        unique_count = raw_count - duplicate_count
-        supported_count = sum(1 for e in evaluated if e.is_supported and not e.is_duplicate)
-        matched_expected = len(matched_golden_ids)
-        missing_expected = self.expected_fact_count - matched_expected
+        unique_predicted_count = len(seen_assertions)
+        matched_expected_count = len(matched_golden_ids)
+        missing_expected_count = self.expected_fact_count - matched_expected_count
 
-        precision = (supported_count / unique_count) if unique_count > 0 else 0.0
+        precision = supported_count / unique_predicted_count if unique_predicted_count > 0 else 1.0
         recall = (
-            (matched_expected / self.expected_fact_count) if self.expected_fact_count > 0 else 0.0
+            matched_expected_count / self.expected_fact_count
+            if self.expected_fact_count > 0
+            else 1.0
         )
 
-        gate_pass = (
-            precision >= 0.80
-            and recall >= 0.80
+        gate_3_pass = (
+            precision == 1.0
+            and recall == 1.0
             and unsupported_count == 0
             and invalid_evidence_count == 0
             and contradiction_count == 0
         )
 
         metrics = EvaluationMetricSummary(
-            raw_predicted_count=raw_count,
-            unique_predicted_count=unique_count,
+            raw_predicted_count=raw_predicted_count,
+            unique_predicted_count=unique_predicted_count,
             supported_predicted_count=supported_count,
             unsupported_predicted_count=unsupported_count,
             invalid_evidence_count=invalid_evidence_count,
             duplicate_prediction_count=duplicate_count,
             contradiction_count=contradiction_count,
-            matched_expected_count=matched_expected,
-            missing_expected_count=missing_expected,
+            matched_expected_count=matched_expected_count,
+            missing_expected_count=missing_expected_count,
             expected_fact_count=self.expected_fact_count,
-            precision=round(precision, 4),
-            recall=round(recall, 4),
-            gate_3_pass=gate_pass,
+            precision=precision,
+            recall=recall,
+            gate_3_pass=gate_3_pass,
         )
 
-        return metrics, evaluated
+        return metrics, evaluated_predictions
+
+
+def load_golden_assessment(golden_dataset_path: Path | None = None) -> SystemAssessment:
+    """Load the independently authored frozen golden dataset as a SystemAssessment object."""
+    from agents.legacy_analyzer.schemas.system_assessment import (
+        BehavioralRisk,
+        CallEdge,
+        CallerContinuationConstraint,
+        CallOccurrence,
+        CommandInvocation,
+        ComputationDataflow,
+        DataStateComparison,
+        DataTransferRelation,
+        FileBinding,
+        InternalCallResolution,
+        OperationSequence,
+        PlatformDependency,
+        ProgramDeclaration,
+        RecordLayout,
+        RecordLayoutRelation,
+        ResourceLifecycle,
+        SourceEvidence,
+        TerminationSite,
+    )
+
+    if golden_dataset_path is None:
+        golden_dataset_path = (
+            Path(__file__).resolve().parent.parent.parent
+            / "evals"
+            / "expected"
+            / "system-understanding-v3.json"
+        )
+    data = json.loads(golden_dataset_path.read_text(encoding="utf-8"))
+
+    def make_ev(d: dict[str, Any]) -> SourceEvidence:
+        return SourceEvidence(
+            file_path=d["file_path"], line_start=d["line_start"], line_end=d["line_end"]
+        )
+
+    assessment = SystemAssessment(system_name="Core Banking System")
+
+    for p in data["propositions"]:
+        cat = p["category"]
+        key = p["semantic_key"]
+        spans = p["evidence_spans"]
+
+        if cat == "PROGRAM_DECLARATION":
+            prog = key.split(":", 1)[1]
+            assessment.program_declarations.append(
+                ProgramDeclaration(program_id=prog, evidence=make_ev(spans["evidence"]))
+            )
+        elif cat == "CALL_OCCURRENCE":
+            parts = key.split(":")
+            caller, target = parts[1].split("->")
+            mech = parts[2]
+            arg = parts[3] if len(parts) > 3 else None
+            assessment.call_occurrences.append(
+                CallOccurrence(
+                    caller_program=caller,
+                    target_program=target,
+                    call_mechanism=mech,
+                    argument_identifier=arg,
+                    evidence=make_ev(spans["evidence"]),
+                )
+            )
+        elif cat == "CALL_EDGE":
+            parts = key.split(":")
+            caller, target = parts[1].split("->")
+            mech = parts[2]
+            assessment.call_edges.append(
+                CallEdge(
+                    caller_program=caller,
+                    target_program=target,
+                    call_mechanism=mech,
+                    evidence=make_ev(spans["evidence"]),
+                )
+            )
+        elif cat == "INTERNAL_CALL_RESOLUTION":
+            caller, callee = key.split(":", 1)[1].split("->")
+            assessment.internal_call_resolutions.append(
+                InternalCallResolution(
+                    caller_program=caller,
+                    callee_program=callee,
+                    call_evidence=make_ev(spans["call_evidence"]),
+                    target_declaration_evidence=make_ev(spans["target_declaration_evidence"]),
+                )
+            )
+        elif cat == "FILE_BINDING":
+            parts = key.split(":")
+            prog = parts[1]
+            internal_file = parts[2]
+            external_file = parts[3]
+            org = parts[4]
+            assessment.file_bindings.append(
+                FileBinding(
+                    program_id=prog,
+                    internal_file_name=internal_file,
+                    external_file_name=external_file,
+                    organization=org,
+                    evidence=make_ev(spans["evidence"]),
+                )
+            )
+        elif cat == "RECORD_LAYOUT":
+            parts = key.split(":")
+            assessment.record_layouts.append(
+                RecordLayout(
+                    program_id=parts[1],
+                    record_name=parts[2],
+                    field_count=int(parts[3]),
+                    storage_format=parts[4],
+                    evidence=make_ev(spans["evidence"]),
+                )
+            )
+        elif cat == "RECORD_LAYOUT_RELATION":
+            parts = key.split(":")
+            layout_a = f"{parts[1]}:{parts[2]}"
+            layout_b = f"{parts[3]}:{parts[4]}"
+            rel_type = parts[5]
+            assessment.record_layout_relations.append(
+                RecordLayoutRelation(
+                    layout_a_name=layout_a,
+                    layout_b_name=layout_b,
+                    relation_type=rel_type,
+                    evidence_a=make_ev(spans["evidence_a"]),
+                    evidence_b=make_ev(spans["evidence_b"]),
+                )
+            )
+        elif cat == "TERMINATION_SITE":
+            parts = key.split(":")
+            assessment.termination_sites.append(
+                TerminationSite(
+                    program_id=parts[1],
+                    statement_type=parts[2],
+                    evidence=make_ev(spans["evidence"]),
+                )
+            )
+        elif cat == "CALLER_CONTINUATION_CONSTRAINT":
+            parts = key.split(":")
+            caller, callee = parts[1].split("->")
+            assessment.caller_continuation_constraints.append(
+                CallerContinuationConstraint(
+                    caller_program=caller,
+                    callee_program=callee,
+                    constraint_type=parts[2],
+                    call_evidence=make_ev(spans["call_evidence"]),
+                    callee_termination_evidence=make_ev(spans["callee_termination_evidence"]),
+                )
+            )
+        elif cat == "COMMAND_INVOCATION":
+            parts = key.split(":")
+            assessment.command_invocations.append(
+                CommandInvocation(
+                    program_id=parts[1],
+                    command_template=parts[2],
+                    target_operand=parts[3],
+                    assignment_evidence=make_ev(spans["assignment_evidence"]),
+                    call_evidence=make_ev(spans["call_evidence"]),
+                )
+            )
+        elif cat == "DATA_TRANSFER_RELATION":
+            parts = key.split(":")
+            prog = parts[1]
+            src, tgt = parts[2].split("->")
+            verb = parts[3]
+            assessment.data_transfer_relations.append(
+                DataTransferRelation(
+                    program_id=prog,
+                    source_entity=src,
+                    target_entity=tgt,
+                    transfer_verb=verb,
+                    evidence=make_ev(spans["evidence"]),
+                )
+            )
+        elif cat == "RESOURCE_LIFECYCLE":
+            parts = key.split(":")
+            prog = parts[1]
+            res = parts[2]
+            mode = parts[3]
+            ops = parts[4].strip("()").split("->")
+            assessment.resource_lifecycles.append(
+                ResourceLifecycle(
+                    program_id=prog,
+                    resource_name=res,
+                    access_mode=mode,
+                    ordered_operations=ops,
+                    evidence=make_ev(spans["evidence"]),
+                )
+            )
+        elif cat == "OPERATION_SEQUENCE":
+            parts = key.split(":")
+            prog = parts[1]
+            op1, op2 = parts[2].split("->")
+            rationale = parts[3]
+            assessment.operation_sequences.append(
+                OperationSequence(
+                    program_id=prog,
+                    first_operation=op1,
+                    second_operation=op2,
+                    sequence_rationale=rationale,
+                    first_evidence=make_ev(spans["first_evidence"]),
+                    second_evidence=make_ev(spans["second_evidence"]),
+                )
+            )
+        elif cat == "COMPUTATION_DATAFLOW":
+            parts = key.split(":")
+            prog = parts[1]
+            src, tgt = parts[2].split("->")
+            verb = parts[3]
+            assessment.computation_dataflows.append(
+                ComputationDataflow(
+                    program_id=prog,
+                    source_field=src,
+                    target_field=tgt,
+                    operation_verb=verb,
+                    evidence=make_ev(spans["evidence"]),
+                )
+            )
+        elif cat == "PLATFORM_DEPENDENCY":
+            parts = key.split(":")
+            prog = parts[1]
+            fam = parts[2]
+            cmd = ":".join(parts[3:])
+            assessment.platform_dependencies.append(
+                PlatformDependency(
+                    program_id=prog,
+                    platform_family=fam,
+                    command_literal=cmd,
+                    evidence=make_ev(spans["evidence"]),
+                )
+            )
+        elif cat == "BEHAVIORAL_RISK":
+            parts = key.split(":")
+            prog = parts[1]
+            cat_risk = parts[2]
+            precon = parts[3]
+            conseq = parts[4]
+            sev = parts[5]
+            assessment.behavioral_risks.append(
+                BehavioralRisk(
+                    program_id=prog,
+                    risk_category=cat_risk,
+                    precondition=precon,
+                    possible_consequence=conseq,
+                    severity=sev,
+                    precondition_evidence=make_ev(spans["precondition_evidence"]),
+                    operation_evidence=make_ev(spans["operation_evidence"]),
+                    affected_resource_evidence=make_ev(spans["affected_resource_evidence"]),
+                )
+            )
+        elif cat == "DATA_STATE_COMPARISON":
+            parts = key.split(":")
+            ent = parts[1]
+            dat_val = parts[2]
+            init_val = parts[3]
+            prov = parts[4]
+            assessment.data_state_comparisons.append(
+                DataStateComparison(
+                    entity_id=ent,
+                    dat_record_value=dat_val,
+                    initializer_code_value=init_val,
+                    causal_provenance=prov,
+                    dat_evidence=make_ev(spans["dat_evidence"]),
+                    initializer_evidence=make_ev(spans["initializer_evidence"]),
+                )
+            )
+
+    return assessment

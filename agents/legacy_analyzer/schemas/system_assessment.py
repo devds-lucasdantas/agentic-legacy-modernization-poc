@@ -261,8 +261,11 @@ class SystemAssessment(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     system_name: str = Field(description="Formal name of the analyzed legacy system")
-    programs: list[ProgramDeclaration] = Field(
+    program_declarations: list[ProgramDeclaration] = Field(
         default_factory=list, description="All declared programs in the system"
+    )
+    programs: list[ProgramDeclaration] = Field(
+        default_factory=list, description="Alias for program_declarations"
     )
     call_occurrences: list[CallOccurrence] = Field(
         default_factory=list, description="All individual CALL occurrences"

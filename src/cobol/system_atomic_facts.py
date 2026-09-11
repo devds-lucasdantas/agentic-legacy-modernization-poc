@@ -42,6 +42,10 @@ class SystemAtomicFact:
         """Return a deterministic string key representing semantic identity."""
         raise NotImplementedError
 
+    def semantic_key(self) -> str:
+        """Alias for get_semantic_key."""
+        return self.get_semantic_key()
+
 
 # ---------------------------------------------------------------------------
 # Evidence Span & Supported Fact Container
