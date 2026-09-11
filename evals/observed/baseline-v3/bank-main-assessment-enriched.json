@@ -1,0 +1,227 @@
+{
+  "program": {
+    "program_id": "BANK-MAIN",
+    "evidence": {
+      "line_start": 2,
+      "line_end": 2,
+      "snippet": "       PROGRAM-ID. BANK-MAIN."
+    }
+  },
+  "data_fields": [
+    {
+      "name": "WS-CHOICE",
+      "level": "01",
+      "picture": "X",
+      "section": "WORKING-STORAGE",
+      "evidence": {
+        "line_start": 8,
+        "line_end": 8,
+        "snippet": "       01 WS-CHOICE  PIC X."
+      }
+    }
+  ],
+  "call_dependencies": [
+    {
+      "target_program": "INIT-DB",
+      "evidence": {
+        "line_start": 24,
+        "line_end": 24,
+        "snippet": "                        CALL 'INIT-DB'"
+      }
+    },
+    {
+      "target_program": "TRANS-PROC",
+      "evidence": {
+        "line_start": 26,
+        "line_end": 26,
+        "snippet": "                        CALL 'TRANS-PROC'"
+      }
+    },
+    {
+      "target_program": "REPORT-GEN",
+      "evidence": {
+        "line_start": 28,
+        "line_end": 28,
+        "snippet": "                        CALL 'REPORT-GEN'"
+      }
+    }
+  ],
+  "menu_options": [
+    {
+      "action_type": "CALL",
+      "option_key": "1",
+      "target_program": "INIT-DB",
+      "evidence": {
+        "line_start": 23,
+        "line_end": 24,
+        "snippet": "                   WHEN '1'\n                        CALL 'INIT-DB'"
+      }
+    },
+    {
+      "action_type": "CALL",
+      "option_key": "2",
+      "target_program": "TRANS-PROC",
+      "evidence": {
+        "line_start": 25,
+        "line_end": 26,
+        "snippet": "                   WHEN '2'\n                        CALL 'TRANS-PROC'"
+      }
+    },
+    {
+      "action_type": "CALL",
+      "option_key": "3",
+      "target_program": "REPORT-GEN",
+      "evidence": {
+        "line_start": 27,
+        "line_end": 28,
+        "snippet": "                   WHEN '3'\n                        CALL 'REPORT-GEN'"
+      }
+    },
+    {
+      "action_type": "DISPLAY",
+      "option_key": "4",
+      "display_literal": "Bye.",
+      "evidence": {
+        "line_start": 29,
+        "line_end": 30,
+        "snippet": "                   WHEN '4'\n                        DISPLAY 'Bye.'"
+      }
+    },
+    {
+      "action_type": "DISPLAY",
+      "option_key": "OTHER",
+      "display_literal": "Invalid.",
+      "evidence": {
+        "line_start": 31,
+        "line_end": 32,
+        "snippet": "                   WHEN OTHER\n                        DISPLAY 'Invalid.'"
+      }
+    }
+  ],
+  "control_flow": [
+    {
+      "construct_type": "PERFORM_UNTIL",
+      "condition": "WS-CHOICE = '4'",
+      "evidence": {
+        "line_start": 12,
+        "line_end": 34,
+        "snippet": "           PERFORM UNTIL WS-CHOICE = '4'\n                   DISPLAY ' '\n                   DISPLAY '=== CORE BANKING SYSTEM ==='\n                   DISPLAY '1. Init Database'\n                   DISPLAY '2. Transaction'\n                   DISPLAY '3. Report'\n                   DISPLAY '4. Exit'\n                   DISPLAY 'Option: ' WITH NO ADVANCING\n                   ACCEPT WS-CHOICE\n\n                   EVALUATE WS-CHOICE\n                   WHEN '1'\n                        CALL 'INIT-DB'\n                   WHEN '2'\n                        CALL 'TRANS-PROC'\n                   WHEN '3'\n                        CALL 'REPORT-GEN'\n                   WHEN '4'\n                        DISPLAY 'Bye.'\n                   WHEN OTHER\n                        DISPLAY 'Invalid.'\n                   END-EVALUATE\n           END-PERFORM."
+      }
+    },
+    {
+      "construct_type": "EVALUATE",
+      "subject": "WS-CHOICE",
+      "evidence": {
+        "line_start": 22,
+        "line_end": 33,
+        "snippet": "                   EVALUATE WS-CHOICE\n                   WHEN '1'\n                        CALL 'INIT-DB'\n                   WHEN '2'\n                        CALL 'TRANS-PROC'\n                   WHEN '3'\n                        CALL 'REPORT-GEN'\n                   WHEN '4'\n                        DISPLAY 'Bye.'\n                   WHEN OTHER\n                        DISPLAY 'Invalid.'\n                   END-EVALUATE"
+      }
+    },
+    {
+      "construct_type": "STOP_RUN",
+      "evidence": {
+        "line_start": 36,
+        "line_end": 36,
+        "snippet": "           STOP RUN."
+      }
+    }
+  ],
+  "io_operations": [
+    {
+      "operation_type": "DISPLAY",
+      "literal": " ",
+      "evidence": {
+        "line_start": 13,
+        "line_end": 13,
+        "snippet": "                   DISPLAY ' '"
+      }
+    },
+    {
+      "operation_type": "DISPLAY",
+      "literal": "=== CORE BANKING SYSTEM ===",
+      "evidence": {
+        "line_start": 14,
+        "line_end": 14,
+        "snippet": "                   DISPLAY '=== CORE BANKING SYSTEM ==='"
+      }
+    },
+    {
+      "operation_type": "DISPLAY",
+      "literal": "1. Init Database",
+      "evidence": {
+        "line_start": 15,
+        "line_end": 15,
+        "snippet": "                   DISPLAY '1. Init Database'"
+      }
+    },
+    {
+      "operation_type": "DISPLAY",
+      "literal": "2. Transaction",
+      "evidence": {
+        "line_start": 16,
+        "line_end": 16,
+        "snippet": "                   DISPLAY '2. Transaction'"
+      }
+    },
+    {
+      "operation_type": "DISPLAY",
+      "literal": "3. Report",
+      "evidence": {
+        "line_start": 17,
+        "line_end": 17,
+        "snippet": "                   DISPLAY '3. Report'"
+      }
+    },
+    {
+      "operation_type": "DISPLAY",
+      "literal": "4. Exit",
+      "evidence": {
+        "line_start": 18,
+        "line_end": 18,
+        "snippet": "                   DISPLAY '4. Exit'"
+      }
+    },
+    {
+      "operation_type": "DISPLAY",
+      "literal": "Option: ",
+      "evidence": {
+        "line_start": 19,
+        "line_end": 19,
+        "snippet": "                   DISPLAY 'Option: ' WITH NO ADVANCING"
+      }
+    },
+    {
+      "operation_type": "ACCEPT",
+      "target_identifier": "WS-CHOICE",
+      "evidence": {
+        "line_start": 20,
+        "line_end": 20,
+        "snippet": "                   ACCEPT WS-CHOICE"
+      }
+    },
+    {
+      "operation_type": "DISPLAY",
+      "literal": "Bye.",
+      "evidence": {
+        "line_start": 30,
+        "line_end": 30,
+        "snippet": "                        DISPLAY 'Bye.'"
+      }
+    },
+    {
+      "operation_type": "DISPLAY",
+      "literal": "Invalid.",
+      "evidence": {
+        "line_start": 32,
+        "line_end": 32,
+        "snippet": "                        DISPLAY 'Invalid.'"
+      }
+    }
+  ],
+  "copybook_dependencies": [],
+  "_host_enrichment": {
+    "status": "HOST_DERIVED",
+    "method": "EXACT_SOURCE_BYTE_SLICE",
+    "source_line_count": 36
+  }
+}

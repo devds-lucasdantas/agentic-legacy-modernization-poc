@@ -1,0 +1,10 @@
+{
+  "status": "COMPLETED",
+  "run_label": "baseline-v3",
+  "timestamp": "2026-09-11T15:43:24.895759+00:00",
+  "git_commit_sha": "922cbcb70972899f05bd71f6c9b323bd2de02466",
+  "gate_2_pass": true,
+  "requested_model": "gpt-5-mini",
+  "response_model_id": "gpt-5-mini",
+  "foundry_project_fingerprint": "3f0c34d730680ad8baac11d2825e120045eb19be1d9ec1c0b2a2d337096ae33f"
+}
