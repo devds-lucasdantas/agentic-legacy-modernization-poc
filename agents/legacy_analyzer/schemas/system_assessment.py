@@ -72,14 +72,14 @@ class InternalCallResolution(BaseModel):
 
 
 class RecordLayout(BaseModel):
-    """Field definition within a 01 record hierarchy."""
+    """01 Record layout definition declared in program or copybook."""
 
     model_config = ConfigDict(extra="forbid")
 
-    container_name: str = Field(description="Parent 01 record or copybook name")
-    field_name: str = Field(description="COBOL field identifier")
-    picture_clause: str | None = Field(default=None, description="PICTURE clause if declared")
-    storage_format: str = Field(description="Data representation: DISPLAY, COMP-3, BINARY, etc.")
+    program_id: str = Field(description="Program or copybook declaring the record layout")
+    record_name: str = Field(description="01 Record layout identifier")
+    field_count: int = Field(description="Number of elementary subordinate fields in the layout")
+    storage_format: str = Field(description="Storage format of record fields: DISPLAY or COMP-3")
     evidence: SourceEvidence
 
 

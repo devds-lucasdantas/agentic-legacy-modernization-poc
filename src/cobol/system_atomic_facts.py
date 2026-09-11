@@ -1,14 +1,14 @@
-"""Canonical System Atomic Fact representations for Gate 3 COBOL System Analysis.
+"""Canonical System Atomic Fact representations for Gate 3 COBOL System Analysis (Candidate V3.1).
 
-Defines the semantic domain primitives for multi-file legacy banking system understanding.
-Adheres strictly to Guardrail A:
-- ZERO reliance on fuzzy/NLP/LLM evaluation.
-- All truth-bearing fields are structured or deterministically normalized.
-- Exact generic comparison against grounded facts.
+Defines normalized, immutable, hashable domain primitives matching the 18 approved
+model-visible concepts and role-bound source evidence.
+Strictly adheres to Guardrail A:
+- ZERO reliance on fuzzy/NLP/LLM semantic evaluation.
+- Deterministic canonicalization and exact comparison.
+- Role-bound multi-evidence coordinates for relational facts.
 """
 
-from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 def normalize_identifier(text: str) -> str:
@@ -19,22 +19,6 @@ def normalize_identifier(text: str) -> str:
 def normalize_keyword(text: str) -> str:
     """Normalize a COBOL keyword: uppercase, strip, collapse whitespace."""
     return " ".join(text.strip().split()).upper()
-
-
-def normalize_predicate(text: str) -> str:
-    """Normalize a condition predicate: uppercase, normalize operators, strip spaces."""
-    s = " ".join(text.strip().split()).upper()
-    # Normalize comparison operators
-    s = s.replace("GREATER THAN OR EQUAL TO", ">=")
-    s = s.replace("NOT LESS THAN", ">=")
-    s = s.replace("EQUAL TO", "=")
-    s = s.replace("EQUALS", "=")
-    return s
-
-
-def normalize_operations(ops: Sequence[str]) -> tuple[str, ...]:
-    """Normalize a sequence of file/lifecycle operations (e.g. ['OPEN', 'READ', 'CLOSE'])."""
-    return tuple(normalize_keyword(op) for op in ops)
 
 
 def canonicalize_token(text: str) -> str:
@@ -60,430 +44,523 @@ class SystemAtomicFact:
 
 
 # ---------------------------------------------------------------------------
-# Group 1: Architecture & Component Topology
+# Evidence Span & Supported Fact Container
 # ---------------------------------------------------------------------------
 
 
 @dataclass(frozen=True)
-class ComponentTopologyFact(SystemAtomicFact):
-    """Program or component presence and root topology."""
+class EvidenceSpan:
+    """Physical line coordinate span within a repository source file."""
+
+    file_path: str
+    line_start: int
+    line_end: int
+
+    def __post_init__(self) -> None:
+        norm = self.file_path.replace("\\", "/")
+        object.__setattr__(self, "file_path", norm)
+        if self.line_start < 1 or self.line_end < self.line_start:
+            raise ValueError(f"Invalid coordinate span [{self.line_start}, {self.line_end}]")
+
+
+@dataclass(frozen=True)
+class SupportedSystemFact:
+    """An atomic fact bound to exact ground-truth role-bound source evidence."""
+
+    fact: SystemAtomicFact
+    proposition_id: str
+    evidence_spans: dict[str, EvidenceSpan]
+
+    @property
+    def primary_evidence(self) -> EvidenceSpan:
+        """Return the primary or first evidence span."""
+        return next(iter(self.evidence_spans.values()))
+
+    @property
+    def file_path(self) -> str:
+        return self.primary_evidence.file_path
+
+    @property
+    def line_start(self) -> int:
+        return self.primary_evidence.line_start
+
+    @property
+    def line_end(self) -> int:
+        return self.primary_evidence.line_end
+
+
+# ---------------------------------------------------------------------------
+# 1. Program Declaration
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ProgramDeclarationFact(SystemAtomicFact):
+    """Program compilation unit declared via PROGRAM-ID."""
 
     program_id: str
-    component_role: str
+    fact_category: str = field(default="PROGRAM_DECLARATION", init=False)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "program_id", normalize_identifier(self.program_id))
-        object.__setattr__(self, "component_role", canonicalize_token(self.component_role))
 
     def get_semantic_key(self) -> str:
-        return f"TOPOLOGY:{self.program_id}:{self.component_role}"
+        return f"PROGRAM:{self.program_id}"
 
 
 # ---------------------------------------------------------------------------
-# Group 2: Cross-Program Invocations & Dispatching
+# 2. Call Occurrence
 # ---------------------------------------------------------------------------
 
 
 @dataclass(frozen=True)
-class CrossProgramCallFact(SystemAtomicFact):
-    """Inter-program CALL invocation."""
+class CallOccurrenceFact(SystemAtomicFact):
+    """Specific physical occurrence of a procedural CALL statement."""
+
+    caller_program: str
+    target_program: str
+    call_mechanism: str  # LITERAL_TARGET or DYNAMIC_TARGET
+    argument_identifier: str | None = None
+    fact_category: str = field(default="CALL_OCCURRENCE", init=False)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "caller_program", normalize_identifier(self.caller_program))
+        object.__setattr__(self, "target_program", normalize_identifier(self.target_program))
+        object.__setattr__(self, "call_mechanism", canonicalize_token(self.call_mechanism))
+        if self.argument_identifier:
+            object.__setattr__(
+                self, "argument_identifier", normalize_identifier(self.argument_identifier)
+            )
+
+    def get_semantic_key(self) -> str:
+        arg_str = f":{self.argument_identifier}" if self.argument_identifier else ""
+        return (
+            f"CALL_OCCURRENCE:{self.caller_program}->{self.target_program}:"
+            f"{self.call_mechanism}{arg_str}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# 3. Call Edge
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class CallEdgeFact(SystemAtomicFact):
+    """Unique directed topological edge in the system call graph."""
+
+    caller_program: str
+    target_program: str
+    call_mechanism: str
+    fact_category: str = field(default="CALL_EDGE", init=False)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "caller_program", normalize_identifier(self.caller_program))
+        object.__setattr__(self, "target_program", normalize_identifier(self.target_program))
+        object.__setattr__(self, "call_mechanism", canonicalize_token(self.call_mechanism))
+
+    def get_semantic_key(self) -> str:
+        return f"CALL_EDGE:{self.caller_program}->{self.target_program}:{self.call_mechanism}"
+
+
+# ---------------------------------------------------------------------------
+# 4. Internal Call Resolution
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class InternalCallResolutionFact(SystemAtomicFact):
+    """Resolution of a CALL occurrence to an internal compilation unit."""
 
     caller_program: str
     callee_program: str
-    call_mechanism: str  # e.g. 'DYNAMIC_CALL_LITERAL'
-    parameters: tuple[str, ...] = ()
+    fact_category: str = field(default="INTERNAL_CALL_RESOLUTION", init=False)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "caller_program", normalize_identifier(self.caller_program))
         object.__setattr__(self, "callee_program", normalize_identifier(self.callee_program))
-        object.__setattr__(self, "call_mechanism", canonicalize_token(self.call_mechanism))
-        object.__setattr__(
-            self, "parameters", tuple(normalize_identifier(p) for p in self.parameters)
-        )
 
     def get_semantic_key(self) -> str:
-        params_str = ",".join(self.parameters)
-        return (
-            f"CALL:{self.caller_program}->{self.callee_program}:"
-            f"{self.call_mechanism}:({params_str})"
-        )
-
-
-@dataclass(frozen=True)
-class MenuDispatchFact(SystemAtomicFact):
-    """Menu selection dispatch branch (e.g. Option '1' -> INIT-DB)."""
-
-    program_id: str
-    menu_key: str
-    target_action: str
-
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "program_id", normalize_identifier(self.program_id))
-        object.__setattr__(self, "menu_key", self.menu_key.strip())
-        object.__setattr__(self, "target_action", normalize_identifier(self.target_action))
-
-    def get_semantic_key(self) -> str:
-        return f"DISPATCH:{self.program_id}:{self.menu_key}->{self.target_action}"
+        return f"INTERNAL_CALL:{self.caller_program}->{self.callee_program}"
 
 
 # ---------------------------------------------------------------------------
-# Group 3: Shared Copybook Inclusion & Layout Grounding
+# 5. Record Layout
 # ---------------------------------------------------------------------------
 
 
 @dataclass(frozen=True)
-class CopybookInclusionFact(SystemAtomicFact):
-    """Copybook reference / inclusion via COPY statement."""
+class RecordLayoutFact(SystemAtomicFact):
+    """01 Record layout declaration in program or copybook."""
 
     program_id: str
-    copybook_name: str
+    record_name: str
+    field_count: int
+    storage_format: str  # DISPLAY, COMP-3
+    fact_category: str = field(default="RECORD_LAYOUT", init=False)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "program_id", normalize_identifier(self.program_id))
-        object.__setattr__(self, "copybook_name", normalize_identifier(self.copybook_name))
-
-    def get_semantic_key(self) -> str:
-        return f"COPYBOOK_INCLUSION:{self.program_id}:{self.copybook_name}"
-
-
-@dataclass(frozen=True)
-class FieldLayoutFact(SystemAtomicFact):
-    """Field declaration and representation in copybook or record."""
-
-    container_name: str
-    field_name: str
-    picture_clause: str
-    storage_format: str  # e.g. 'COMP-3' or 'DISPLAY'
-
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "container_name", normalize_identifier(self.container_name))
-        object.__setattr__(self, "field_name", normalize_identifier(self.field_name))
-        object.__setattr__(self, "picture_clause", normalize_identifier(self.picture_clause))
+        object.__setattr__(self, "record_name", normalize_identifier(self.record_name))
         object.__setattr__(self, "storage_format", canonicalize_token(self.storage_format))
 
     def get_semantic_key(self) -> str:
         return (
-            f"FIELD_LAYOUT:{self.container_name}:{self.field_name}:"
-            f"{self.picture_clause}:{self.storage_format}"
+            f"RECORD_LAYOUT:{self.program_id}:{self.record_name}:"
+            f"{self.field_count}:{self.storage_format}"
         )
 
 
 # ---------------------------------------------------------------------------
-# Group 4: Cross-Program Data Transfer & Record Mapping
+# 6. Record Layout Relation
 # ---------------------------------------------------------------------------
 
 
 @dataclass(frozen=True)
-class DataTransferFact(SystemAtomicFact):
-    """Data movement between memory structures or file records."""
+class RecordLayoutRelationFact(SystemAtomicFact):
+    """Binary relation or representation comparison between two record layouts."""
+
+    layout_a_name: str
+    layout_b_name: str
+    relation_type: str  # IDENTICAL, EQUIVALENT, REPRESENTATION_MISMATCH
+    fact_category: str = field(default="RECORD_LAYOUT_RELATION", init=False)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "layout_a_name", normalize_identifier(self.layout_a_name))
+        object.__setattr__(self, "layout_b_name", normalize_identifier(self.layout_b_name))
+        object.__setattr__(self, "relation_type", canonicalize_token(self.relation_type))
+
+    def get_semantic_key(self) -> str:
+        # Order-invariant representation for comparison
+        pair = sorted([self.layout_a_name, self.layout_b_name])
+        return f"LAYOUT_RELATION:{pair[0]}:{pair[1]}:{self.relation_type}"
+
+
+# ---------------------------------------------------------------------------
+# 7. File Binding
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class FileBindingFact(SystemAtomicFact):
+    """File-Control SELECT ... ASSIGN TO clause."""
+
+    program_id: str
+    internal_file_name: str
+    external_file_name: str
+    organization: str
+    fact_category: str = field(default="FILE_BINDING", init=False)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "program_id", normalize_identifier(self.program_id))
+        object.__setattr__(
+            self, "internal_file_name", normalize_identifier(self.internal_file_name)
+        )
+        clean_ext = self.external_file_name.strip("'\"")
+        object.__setattr__(self, "external_file_name", normalize_identifier(clean_ext))
+        object.__setattr__(self, "organization", canonicalize_token(self.organization))
+
+    def get_semantic_key(self) -> str:
+        return (
+            f"FILE_BINDING:{self.program_id}:{self.internal_file_name}:"
+            f"{self.external_file_name}:{self.organization}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# 8. File Operation
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class FileOperationFact(SystemAtomicFact):
+    """Discrete file I/O verb executed on an internal file."""
+
+    program_id: str
+    internal_file_name: str
+    operation_verb: str  # OPEN_INPUT, OPEN_OUTPUT, READ, WRITE, CLOSE
+    fact_category: str = field(default="FILE_OPERATION", init=False)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "program_id", normalize_identifier(self.program_id))
+        object.__setattr__(
+            self, "internal_file_name", normalize_identifier(self.internal_file_name)
+        )
+        object.__setattr__(self, "operation_verb", canonicalize_token(self.operation_verb))
+
+    def get_semantic_key(self) -> str:
+        return f"FILE_OP:{self.program_id}:{self.internal_file_name}:{self.operation_verb}"
+
+
+# ---------------------------------------------------------------------------
+# 9. Termination Site
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class TerminationSiteFact(SystemAtomicFact):
+    """Explicit run-unit termination statement in procedure division."""
+
+    program_id: str
+    statement_type: str  # STOP_RUN, GOBACK, EXIT_PROGRAM
+    fact_category: str = field(default="TERMINATION_SITE", init=False)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "program_id", normalize_identifier(self.program_id))
+        object.__setattr__(self, "statement_type", canonicalize_token(self.statement_type))
+
+    def get_semantic_key(self) -> str:
+        return f"TERMINATION:{self.program_id}:{self.statement_type}"
+
+
+# ---------------------------------------------------------------------------
+# 10. Caller Continuation Constraint
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class CallerContinuationConstraintFact(SystemAtomicFact):
+    """Control flow constraint on caller imposed by subprogram termination."""
+
+    caller_program: str
+    callee_program: str
+    constraint_type: str  # PROCESS_TERMINATION_ON_CALL or RETURN_TO_CALLER
+    fact_category: str = field(default="CALLER_CONTINUATION_CONSTRAINT", init=False)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "caller_program", normalize_identifier(self.caller_program))
+        object.__setattr__(self, "callee_program", normalize_identifier(self.callee_program))
+        object.__setattr__(self, "constraint_type", canonicalize_token(self.constraint_type))
+
+    def get_semantic_key(self) -> str:
+        return (
+            f"CONTINUATION_CONSTRAINT:{self.caller_program}->{self.callee_program}:"
+            f"{self.constraint_type}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# 11. Command Invocation
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class CommandInvocationFact(SystemAtomicFact):
+    """Operating system shell command invocation via SYSTEM library."""
+
+    program_id: str
+    command_template: str
+    target_operand: str
+    fact_category: str = field(default="COMMAND_INVOCATION", init=False)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "program_id", normalize_identifier(self.program_id))
+        clean_cmd = self.command_template.strip("'\"")
+        object.__setattr__(self, "command_template", clean_cmd)
+        object.__setattr__(self, "target_operand", normalize_identifier(self.target_operand))
+
+    def get_semantic_key(self) -> str:
+        return f"COMMAND_INVOCATION:{self.program_id}:{self.command_template}:{self.target_operand}"
+
+
+# ---------------------------------------------------------------------------
+# 12. Data Transfer Relation
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class DataTransferRelationFact(SystemAtomicFact):
+    """Explicit data transfer between records or memory structures."""
 
     program_id: str
     source_entity: str
     target_entity: str
-    transfer_verb: str  # e.g. 'MOVE' or 'WRITE'
+    transfer_verb: str  # MOVE
+    fact_category: str = field(default="DATA_TRANSFER_RELATION", init=False)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "program_id", normalize_identifier(self.program_id))
         object.__setattr__(self, "source_entity", normalize_identifier(self.source_entity))
         object.__setattr__(self, "target_entity", normalize_identifier(self.target_entity))
-        object.__setattr__(self, "transfer_verb", normalize_keyword(self.transfer_verb))
+        object.__setattr__(self, "transfer_verb", canonicalize_token(self.transfer_verb))
 
     def get_semantic_key(self) -> str:
         return (
-            f"DATA_TRANSFER:{self.program_id}:{self.transfer_verb}:"
-            f"{self.source_entity}->{self.target_entity}"
+            f"DATA_TRANSFER:{self.program_id}:{self.source_entity}->"
+            f"{self.target_entity}:{self.transfer_verb}"
         )
 
 
 # ---------------------------------------------------------------------------
-# Group 5: Shared File Lifecycle Operations
+# 13. Resource Lifecycle
 # ---------------------------------------------------------------------------
 
 
 @dataclass(frozen=True)
 class ResourceLifecycleFact(SystemAtomicFact):
-    """File lifecycle operations within a program."""
+    """Complete operation sequence and mode for an internal file handle."""
 
     program_id: str
     resource_name: str
-    access_mode: str  # e.g. 'INPUT', 'OUTPUT', 'I-O'
-    operations: tuple[str, ...]
+    access_mode: str  # INPUT or OUTPUT
+    ordered_operations: tuple[str, ...]
+    fact_category: str = field(default="RESOURCE_LIFECYCLE", init=False)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "program_id", normalize_identifier(self.program_id))
         object.__setattr__(self, "resource_name", normalize_identifier(self.resource_name))
-        object.__setattr__(self, "access_mode", normalize_keyword(self.access_mode))
-        object.__setattr__(self, "operations", normalize_operations(self.operations))
+        object.__setattr__(self, "access_mode", canonicalize_token(self.access_mode))
+        object.__setattr__(
+            self,
+            "ordered_operations",
+            tuple(canonicalize_token(op) for op in self.ordered_operations),
+        )
 
     def get_semantic_key(self) -> str:
-        ops_str = ",".join(self.operations)
-        return f"LIFECYCLE:{self.program_id}:{self.resource_name}:{self.access_mode}:({ops_str})"
+        ops_str = "->".join(self.ordered_operations)
+        return (
+            f"RESOURCE_LIFECYCLE:{self.program_id}:{self.resource_name}:"
+            f"{self.access_mode}:({ops_str})"
+        )
 
 
 # ---------------------------------------------------------------------------
-# Group 6: Control Flow Topology & Paragraph Sequences
+# 14. Operation Sequence
 # ---------------------------------------------------------------------------
 
 
 @dataclass(frozen=True)
-class ControlFlowLoopFact(SystemAtomicFact):
-    """Loop construct (PERFORM UNTIL)."""
+class OperationSequenceFact(SystemAtomicFact):
+    """Strict temporal ordering between two procedural operations."""
 
     program_id: str
-    loop_predicate: str
+    first_operation: str
+    second_operation: str
+    sequence_rationale: str
+    fact_category: str = field(default="OPERATION_SEQUENCE", init=False)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "program_id", normalize_identifier(self.program_id))
-        object.__setattr__(self, "loop_predicate", normalize_predicate(self.loop_predicate))
+        object.__setattr__(self, "first_operation", canonicalize_token(self.first_operation))
+        object.__setattr__(self, "second_operation", canonicalize_token(self.second_operation))
+        object.__setattr__(self, "sequence_rationale", canonicalize_token(self.sequence_rationale))
 
     def get_semantic_key(self) -> str:
-        return f"LOOP:{self.program_id}:{self.loop_predicate}"
-
-
-@dataclass(frozen=True)
-class EvaluateBranchingFact(SystemAtomicFact):
-    """Multi-way branch construct (EVALUATE)."""
-
-    program_id: str
-    selection_subject: str
-
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "program_id", normalize_identifier(self.program_id))
-        object.__setattr__(self, "selection_subject", normalize_identifier(self.selection_subject))
-
-    def get_semantic_key(self) -> str:
-        return f"EVALUATE:{self.program_id}:{self.selection_subject}"
+        return (
+            f"OP_SEQUENCE:{self.program_id}:{self.first_operation}->"
+            f"{self.second_operation}:{self.sequence_rationale}"
+        )
 
 
 # ---------------------------------------------------------------------------
-# Group 7: Arithmetic Operations & Computation Sequences
+# 15. Computation Dataflow
 # ---------------------------------------------------------------------------
 
 
 @dataclass(frozen=True)
-class ArithmeticOperationFact(SystemAtomicFact):
-    """Arithmetic statement (ADD, SUBTRACT, COMPUTE)."""
+class ComputationDataflowFact(SystemAtomicFact):
+    """Arithmetic transformation or accumulation dataflow."""
 
     program_id: str
-    verb: str
-    operand: str
+    source_field: str
     target_field: str
+    operation_verb: str  # ADD, SUBTRACT, MOVE
+    fact_category: str = field(default="COMPUTATION_DATAFLOW", init=False)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "program_id", normalize_identifier(self.program_id))
-        object.__setattr__(self, "verb", normalize_keyword(self.verb))
-        object.__setattr__(self, "operand", normalize_identifier(self.operand))
+        object.__setattr__(self, "source_field", normalize_identifier(self.source_field))
         object.__setattr__(self, "target_field", normalize_identifier(self.target_field))
+        object.__setattr__(self, "operation_verb", canonicalize_token(self.operation_verb))
 
     def get_semantic_key(self) -> str:
-        return f"ARITHMETIC:{self.program_id}:{self.verb}:{self.operand}->{self.target_field}"
+        return (
+            f"DATAFLOW:{self.program_id}:{self.source_field}->"
+            f"{self.target_field}:{self.operation_verb}"
+        )
 
 
 # ---------------------------------------------------------------------------
-# Group 8: Conditional Branching & Evaluation Predicates
+# 16. Platform Dependency
 # ---------------------------------------------------------------------------
 
 
 @dataclass(frozen=True)
-class ConditionalBranchFact(SystemAtomicFact):
-    """Conditional decision predicate (IF condition or AT END handler)."""
+class PlatformDependencyFact(SystemAtomicFact):
+    """Operating system or platform execution constraint."""
 
     program_id: str
-    condition_kind: str  # 'IF_PREDICATE', 'WHEN_OTHER', 'AT_END'
-    predicate: str
+    platform_family: str  # WINDOWS_CMD
+    command_literal: str
+    fact_category: str = field(default="PLATFORM_DEPENDENCY", init=False)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "program_id", normalize_identifier(self.program_id))
-        object.__setattr__(self, "condition_kind", canonicalize_token(self.condition_kind))
-        object.__setattr__(self, "predicate", normalize_predicate(self.predicate))
+        object.__setattr__(self, "platform_family", canonicalize_token(self.platform_family))
+        clean_cmd = self.command_literal.strip("'\"")
+        object.__setattr__(self, "command_literal", clean_cmd)
 
     def get_semantic_key(self) -> str:
-        return f"CONDITIONAL:{self.program_id}:{self.condition_kind}:{self.predicate}"
+        return f"PLATFORM:{self.program_id}:{self.platform_family}:{self.command_literal}"
 
 
 # ---------------------------------------------------------------------------
-# Group 9: Interactive I/O Operations
-# ---------------------------------------------------------------------------
-
-
-@dataclass(frozen=True)
-class InteractiveIOFact(SystemAtomicFact):
-    """Terminal / console interaction (DISPLAY, ACCEPT)."""
-
-    program_id: str
-    io_verb: str  # 'DISPLAY', 'ACCEPT'
-    target_identifier: str  # Variable accepted into or literal/field displayed
-
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "program_id", normalize_identifier(self.program_id))
-        object.__setattr__(self, "io_verb", normalize_keyword(self.io_verb))
-        object.__setattr__(self, "target_identifier", normalize_identifier(self.target_identifier))
-
-    def get_semantic_key(self) -> str:
-        return f"INTERACTIVE_IO:{self.program_id}:{self.io_verb}:{self.target_identifier}"
-
-
-# ---------------------------------------------------------------------------
-# Group 10: Run-Unit Termination Semantics
-# ---------------------------------------------------------------------------
-
-
-@dataclass(frozen=True)
-class TerminationFact(SystemAtomicFact):
-    """Program or run-unit termination statement (STOP RUN, EXIT PROGRAM, GOBACK)."""
-
-    program_id: str
-    termination_verb: str
-
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "program_id", normalize_identifier(self.program_id))
-        object.__setattr__(self, "termination_verb", normalize_keyword(self.termination_verb))
-
-    def get_semantic_key(self) -> str:
-        return f"TERMINATION:{self.program_id}:{self.termination_verb}"
-
-
-# ---------------------------------------------------------------------------
-# Group 11: Behavioral Risks & Edge Cases
+# 17. Behavioral Risk
 # ---------------------------------------------------------------------------
 
 
 @dataclass(frozen=True)
 class BehavioralRiskFact(SystemAtomicFact):
-    """Behavioral edge-case or procedural risk with canonicalized elements."""
+    """System-level behavioral risk or operational fragility."""
 
     program_id: str
-    risk_category: str
+    risk_category: (
+        str  # MISSING_FILE_STATUS_CHECK, NON_ATOMIC_FILE_UPDATE, CALLEE_PROCESS_TERMINATION
+    )
     precondition: str
-    ordered_operations: tuple[str, ...]
     possible_consequence: str
-    severity: str
+    severity: str  # HIGH, MEDIUM, LOW
+    fact_category: str = field(default="BEHAVIORAL_RISK", init=False)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "program_id", normalize_identifier(self.program_id))
         object.__setattr__(self, "risk_category", canonicalize_token(self.risk_category))
         object.__setattr__(self, "precondition", canonicalize_token(self.precondition))
         object.__setattr__(
-            self, "ordered_operations", normalize_operations(self.ordered_operations)
-        )
-        object.__setattr__(
             self, "possible_consequence", canonicalize_token(self.possible_consequence)
         )
         object.__setattr__(self, "severity", canonicalize_token(self.severity))
 
     def get_semantic_key(self) -> str:
-        ops_str = ",".join(self.ordered_operations)
         return (
-            f"BEHAVIORAL_RISK:{self.program_id}:{self.risk_category}:{self.precondition}:"
-            f"({ops_str}):{self.possible_consequence}:{self.severity}"
+            f"RISK:{self.program_id}:{self.risk_category}:{self.precondition}:"
+            f"{self.possible_consequence}:{self.severity}"
         )
 
 
 # ---------------------------------------------------------------------------
-# Group 12: System-Level Architectural Risks
+# 18. Data State Comparison
 # ---------------------------------------------------------------------------
 
 
 @dataclass(frozen=True)
-class ArchitecturalRiskFact(SystemAtomicFact):
-    """System-level architectural anti-pattern or cross-cutting risk."""
+class DataStateComparisonFact(SystemAtomicFact):
+    """Discrepancy observed between DAT record and source initializer code."""
 
-    risk_id: str
-    risk_type: str
-    affected_components: tuple[str, ...]
-    architectural_consequence: str
-    severity: str
-
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "risk_id", canonicalize_token(self.risk_id))
-        object.__setattr__(self, "risk_type", canonicalize_token(self.risk_type))
-        object.__setattr__(
-            self,
-            "affected_components",
-            tuple(sorted(normalize_identifier(c) for c in self.affected_components)),
-        )
-        object.__setattr__(
-            self, "architectural_consequence", canonicalize_token(self.architectural_consequence)
-        )
-        object.__setattr__(self, "severity", canonicalize_token(self.severity))
-
-    def get_semantic_key(self) -> str:
-        comps_str = ",".join(self.affected_components)
-        return (
-            f"ARCHITECTURAL_RISK:{self.risk_id}:{self.risk_type}:({comps_str}):"
-            f"{self.architectural_consequence}:{self.severity}"
-        )
-
-
-# ---------------------------------------------------------------------------
-# Group 13: In-Memory Working Storage State & Flags
-# ---------------------------------------------------------------------------
-
-
-@dataclass(frozen=True)
-class WorkingStorageStateFact(SystemAtomicFact):
-    """Working-storage state variable and semantic role."""
-
-    program_id: str
-    variable_name: str
-    picture_clause: str
-    state_role: str
+    entity_id: str
+    dat_record_value: str
+    initializer_code_value: str
+    causal_provenance: str  # UNKNOWN
+    fact_category: str = field(default="DATA_STATE_COMPARISON", init=False)
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "program_id", normalize_identifier(self.program_id))
-        object.__setattr__(self, "variable_name", normalize_identifier(self.variable_name))
-        object.__setattr__(self, "picture_clause", normalize_identifier(self.picture_clause))
-        object.__setattr__(self, "state_role", canonicalize_token(self.state_role))
+        object.__setattr__(self, "entity_id", normalize_identifier(self.entity_id))
+        object.__setattr__(self, "dat_record_value", self.dat_record_value.strip())
+        object.__setattr__(self, "initializer_code_value", self.initializer_code_value.strip())
+        object.__setattr__(self, "causal_provenance", canonicalize_token(self.causal_provenance))
 
     def get_semantic_key(self) -> str:
         return (
-            f"WS_STATE:{self.program_id}:{self.variable_name}:"
-            f"{self.picture_clause}:{self.state_role}"
+            f"DATA_STATE_CMP:{self.entity_id}:{self.dat_record_value}:"
+            f"{self.initializer_code_value}:{self.causal_provenance}"
         )
-
-
-# ---------------------------------------------------------------------------
-# Group 14: Cross-File Transaction Processing Protocol
-# ---------------------------------------------------------------------------
-
-
-@dataclass(frozen=True)
-class TransactionProtocolFact(SystemAtomicFact):
-    """System-wide multi-program execution protocol."""
-
-    protocol_name: str
-    ordered_phases: tuple[str, ...]
-
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "protocol_name", canonicalize_token(self.protocol_name))
-        object.__setattr__(
-            self, "ordered_phases", tuple(canonicalize_token(p) for p in self.ordered_phases)
-        )
-
-    def get_semantic_key(self) -> str:
-        phases_str = "->".join(self.ordered_phases)
-        return f"PROTOCOL:{self.protocol_name}:({phases_str})"
-
-
-# ---------------------------------------------------------------------------
-# Grounded Occurrence Definition
-# ---------------------------------------------------------------------------
-
-
-@dataclass(frozen=True)
-class SupportedSystemFact:
-    """An atomic fact bound to exact ground-truth source evidence."""
-
-    fact: SystemAtomicFact
-    proposition_id: str
-    file_path: str
-    line_start: int
-    line_end: int
-
-    def __post_init__(self) -> None:
-        norm_path = self.file_path.replace("\\", "/")
-        object.__setattr__(self, "file_path", norm_path)
-        if self.line_start < 1 or self.line_end < self.line_start:
-            raise ValueError(
-                f"Invalid line span [{self.line_start}, {self.line_end}] for {self.file_path}"
-            )
