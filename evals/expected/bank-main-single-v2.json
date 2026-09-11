@@ -1,6 +1,6 @@
 {
   "$schema": "bank-main-single-golden-dataset-v2",
-  "dataset_version": "2.1.0",
+  "dataset_version": "2.2.0",
   "scope": [
     "legacy/core-banking-system/BANK-MAIN.CBL"
   ],

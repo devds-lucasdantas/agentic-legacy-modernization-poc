@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from openai import OpenAI
+from openai.types.responses import ResponseOutputRefusal
 from openai.types.shared_params import Reasoning
 
 from agents.legacy_analyzer.config import FoundryConfig, load_config
@@ -36,22 +37,28 @@ ReasoningEffort = Literal[
 ]
 
 
+class ResponseRefusedError(ValueError):
+    """Raised when model response contains native refusal content."""
+
+
 @dataclass
 class ExecutionMetadata:
-    """Execution metadata for an analysis run."""
+    """Execution metadata for an analysis run (Version 2.2.0)."""
 
     gate: str = "2"
     run_label: str = "baseline-v2"
     timestamp: str = ""
     model: str = ""
+    requested_model: str = ""
+    response_model_id: str | None = None
     model_version: str | None = None
     reasoning_effort: ReasoningEffort = "low"
     source_file: str = ""
     source_sha256: str = ""
     git_commit_sha: str = ""
-    schema_version: str = "2.1.0"
-    prompt_version: str = "gate2-baseline-v2.1"
-    evaluator_version: str = "2.1.0"
+    schema_version: str = "2.2.0"
+    prompt_version: str = "gate2-baseline-v2.2"
+    evaluator_version: str = "2.2.0"
     response_id: str | None = None
     elapsed_seconds: float = 0.0
     input_tokens: int | None = None
@@ -69,6 +76,38 @@ def load_system_prompt() -> str:
     """Load the system prompt markdown file."""
     prompt_path = Path(__file__).resolve().parent / "prompts" / "system.md"
     return prompt_path.read_text(encoding="utf-8")
+
+
+def inspect_response_for_refusal(response: Any) -> None:
+    """Traverse OpenAI Responses API response and reject native refusal content anywhere.
+
+    Traverses response.output -> output messages -> message.content -> content items.
+    Rejects:
+    - Top-level refusal
+    - Refusal item directly in output
+    - Refusal content nested inside any output message
+    Raises ResponseRefusedError with a fixed safe message (no raw refusal leakage).
+    """
+    if getattr(response, "refusal", None):
+        raise ResponseRefusedError("Model response was refused by provider policy.")
+
+    output = getattr(response, "output", None)
+    if isinstance(output, list):
+        for item in output:
+            if isinstance(item, ResponseOutputRefusal) or getattr(item, "type", None) == "refusal":
+                raise ResponseRefusedError("Model response was refused by provider policy.")
+            if getattr(item, "refusal", None):
+                raise ResponseRefusedError("Model response was refused by provider policy.")
+            content = getattr(item, "content", None)
+            if isinstance(content, list):
+                for c_item in content:
+                    if (
+                        isinstance(c_item, ResponseOutputRefusal)
+                        or getattr(c_item, "type", None) == "refusal"
+                    ):
+                        raise ResponseRefusedError("Model response was refused by provider policy.")
+                    if getattr(c_item, "refusal", None):
+                        raise ResponseRefusedError("Model response was refused by provider policy.")
 
 
 class LegacyAnalyzerAgent:
@@ -132,6 +171,7 @@ class LegacyAnalyzerAgent:
             run_label=run_label,
             timestamp=datetime.now(UTC).isoformat(),
             model=self.config.foundry_model,
+            requested_model=self.config.foundry_model,
             reasoning_effort=self.reasoning_effort,
             source_file=prep.relative_path,
             source_sha256=prep.sha256,
@@ -158,20 +198,11 @@ class LegacyAnalyzerAgent:
         metadata.elapsed_seconds = round(elapsed, 2)
 
         # 3. Validate completion status and check for refusal
-        refusal = getattr(parsed_response, "refusal", None)
-        if refusal:
-            raise ValueError(f"Model refused request: {refusal}")
-
-        # Check nested output items for refusal where applicable
-        if hasattr(parsed_response, "output") and isinstance(parsed_response.output, list):
-            for item in parsed_response.output:
-                item_refusal = getattr(item, "refusal", None)
-                if item_refusal:
-                    raise ValueError(f"Model refused request in nested output item: {item_refusal}")
-
         status = getattr(parsed_response, "status", None)
         if status != "completed":
             raise ValueError(f"Model response did not complete successfully: status='{status}'")
+
+        inspect_response_for_refusal(parsed_response)
 
         # 4. Extract parsed Pydantic object and API metadata (strict: no weak fallback)
         assessment: LegacyAssessment | None = getattr(parsed_response, "output_parsed", None)
@@ -182,6 +213,7 @@ class LegacyAnalyzerAgent:
 
         metadata.schema_valid = True
         metadata.response_id = getattr(parsed_response, "id", None)
+        metadata.response_model_id = getattr(parsed_response, "model", None)
 
         if hasattr(parsed_response, "usage") and parsed_response.usage is not None:
             metadata.input_tokens = getattr(parsed_response.usage, "input_tokens", None)

@@ -98,6 +98,7 @@ def make_perfect_assessment_v2() -> LegacyAssessment:
         ],
         menu_options=[
             CallMenuOption(
+                action_type="CALL",
                 option_key="1",
                 target_program="INIT-DB",
                 evidence=SourceEvidence(
@@ -107,6 +108,7 @@ def make_perfect_assessment_v2() -> LegacyAssessment:
                 ),
             ),
             CallMenuOption(
+                action_type="CALL",
                 option_key="2",
                 target_program="TRANS-PROC",
                 evidence=SourceEvidence(
@@ -116,6 +118,7 @@ def make_perfect_assessment_v2() -> LegacyAssessment:
                 ),
             ),
             CallMenuOption(
+                action_type="CALL",
                 option_key="3",
                 target_program="REPORT-GEN",
                 evidence=SourceEvidence(
@@ -125,6 +128,7 @@ def make_perfect_assessment_v2() -> LegacyAssessment:
                 ),
             ),
             DisplayMenuOption(
+                action_type="DISPLAY",
                 option_key="4",
                 display_literal="Bye.",
                 evidence=SourceEvidence(
@@ -134,6 +138,7 @@ def make_perfect_assessment_v2() -> LegacyAssessment:
                 ),
             ),
             DisplayMenuOption(
+                action_type="DISPLAY",
                 option_key="OTHER",
                 display_literal="Invalid.",
                 evidence=SourceEvidence(
@@ -145,6 +150,7 @@ def make_perfect_assessment_v2() -> LegacyAssessment:
         ],
         control_flow=[
             PerformUntilConstruct(
+                construct_type="PERFORM_UNTIL",
                 condition="WS-CHOICE = '4'",
                 evidence=SourceEvidence(
                     line_start=12,
@@ -153,6 +159,7 @@ def make_perfect_assessment_v2() -> LegacyAssessment:
                 ),
             ),
             EvaluateConstruct(
+                construct_type="EVALUATE",
                 subject="WS-CHOICE",
                 evidence=SourceEvidence(
                     line_start=22,
@@ -161,6 +168,7 @@ def make_perfect_assessment_v2() -> LegacyAssessment:
                 ),
             ),
             StopRunConstruct(
+                construct_type="STOP_RUN",
                 evidence=SourceEvidence(
                     line_start=36,
                     line_end=36,
@@ -170,6 +178,7 @@ def make_perfect_assessment_v2() -> LegacyAssessment:
         ],
         io_operations=[
             AcceptIO(
+                operation_type="ACCEPT",
                 target_identifier="WS-CHOICE",
                 evidence=SourceEvidence(
                     line_start=20,

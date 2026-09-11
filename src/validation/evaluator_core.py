@@ -42,8 +42,8 @@ class ExpectedFactMatch:
 class CoreEvaluationReport:
     """Detailed evaluation report produced by the unified evaluation core."""
 
-    evaluator_version: str = "2.1.0"
-    golden_dataset_version: str = "2.1.0"
+    evaluator_version: str = "2.2.0"
+    golden_dataset_version: str = "2.2.0"
 
     schema_valid: bool = True
     source_sha256_match: bool = True

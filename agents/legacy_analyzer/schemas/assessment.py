@@ -1,17 +1,18 @@
-"""Pydantic v2 schemas for structured legacy COBOL assessments (Version 2.1.0).
+"""Pydantic v2 schemas for structured legacy COBOL assessments (Version 2.2.0).
 
 Designed for OpenAI Responses API native Structured Outputs (`responses.parse`).
-Uses strict discriminated unions to ensure invalid states are unrepresentable:
-- MenuOption: CallMenuOption vs DisplayMenuOption (discriminator: action_type)
-- ControlFlowConstruct: PerformUntil vs Evaluate vs StopRun (discriminator: construct_type)
-- IOOperation: AcceptIO vs DisplayIO (discriminator: operation_type)
+Uses strict variant models combined through standard unions to produce supported
+`anyOf` JSON schema constructs without unsupported `oneOf` or `discriminator` properties:
+- MenuOption: CallMenuOption | DisplayMenuOption
+- ControlFlowConstruct: PerformUntilConstruct | EvaluateConstruct | StopRunConstruct
+- IOOperation: AcceptIO | DisplayIO
 
 All field descriptions are completely generic and free of fixture answer hints.
 Host-controlled execution metadata (file path, SHA256, schema version, callee boundaries) is
 managed outside this schema.
 """
 
-from typing import Annotated, Literal
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -62,13 +63,13 @@ class DataField(BaseModel):
     evidence: SourceEvidence = Field(description="Source citation for the variable declaration.")
 
 
-# Discriminated Menu Option Variants
+# Strict Menu Option Variant Models
 class CallMenuOption(BaseModel):
     """Menu choice or evaluation branch that invokes an external subprogram."""
 
     model_config = ConfigDict(extra="forbid")
 
-    action_type: Literal["CALL"] = "CALL"
+    action_type: Literal["CALL"] = Field(description="Action discriminant type 'CALL'.")
     option_key: str = Field(
         description="The selection key or branch condition literal (e.g. '1', '2')."
     )
@@ -85,7 +86,7 @@ class DisplayMenuOption(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    action_type: Literal["DISPLAY"] = "DISPLAY"
+    action_type: Literal["DISPLAY"] = Field(description="Action discriminant type 'DISPLAY'.")
     option_key: str = Field(
         description="The selection key or branch condition literal (e.g. '4', 'OTHER')."
     )
@@ -97,19 +98,18 @@ class DisplayMenuOption(BaseModel):
     )
 
 
-MenuOption = Annotated[
-    CallMenuOption | DisplayMenuOption,
-    Field(discriminator="action_type"),
-]
+MenuOption = CallMenuOption | DisplayMenuOption
 
 
-# Discriminated Control Flow Variants
+# Strict Control Flow Variant Models
 class PerformUntilConstruct(BaseModel):
     """Loop construct executed until a termination condition is met."""
 
     model_config = ConfigDict(extra="forbid")
 
-    construct_type: Literal["PERFORM_UNTIL"] = "PERFORM_UNTIL"
+    construct_type: Literal["PERFORM_UNTIL"] = Field(
+        description="Construct discriminant type 'PERFORM_UNTIL'."
+    )
     condition: str = Field(
         description="The loop termination condition expression following the UNTIL keyword."
     )
@@ -123,7 +123,9 @@ class EvaluateConstruct(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    construct_type: Literal["EVALUATE"] = "EVALUATE"
+    construct_type: Literal["EVALUATE"] = Field(
+        description="Construct discriminant type 'EVALUATE'."
+    )
     subject: str = Field(
         description="The expression or identifier evaluated in the EVALUATE statement."
     )
@@ -137,23 +139,24 @@ class StopRunConstruct(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    construct_type: Literal["STOP_RUN"] = "STOP_RUN"
+    construct_type: Literal["STOP_RUN"] = Field(
+        description="Construct discriminant type 'STOP_RUN'."
+    )
     evidence: SourceEvidence = Field(description="Source citation for the STOP RUN statement.")
 
 
-ControlFlowConstruct = Annotated[
-    PerformUntilConstruct | EvaluateConstruct | StopRunConstruct,
-    Field(discriminator="construct_type"),
-]
+ControlFlowConstruct = PerformUntilConstruct | EvaluateConstruct | StopRunConstruct
 
 
-# Discriminated I/O Operation Variants
+# Strict I/O Operation Variant Models
 class AcceptIO(BaseModel):
     """Terminal input operation (ACCEPT)."""
 
     model_config = ConfigDict(extra="forbid")
 
-    operation_type: Literal["ACCEPT"] = "ACCEPT"
+    operation_type: Literal["ACCEPT"] = Field(
+        description="I/O operation discriminant type 'ACCEPT'."
+    )
     target_identifier: str = Field(description="Field or identifier into which input is accepted.")
     evidence: SourceEvidence = Field(description="Source citation for the ACCEPT statement.")
 
@@ -163,15 +166,14 @@ class DisplayIO(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    operation_type: Literal["DISPLAY"] = "DISPLAY"
+    operation_type: Literal["DISPLAY"] = Field(
+        description="I/O operation discriminant type 'DISPLAY'."
+    )
     literal: str = Field(description="Literal text or variable content displayed to the terminal.")
     evidence: SourceEvidence = Field(description="Source citation for the DISPLAY statement.")
 
 
-IOOperation = Annotated[
-    AcceptIO | DisplayIO,
-    Field(discriminator="operation_type"),
-]
+IOOperation = AcceptIO | DisplayIO
 
 
 class LegacyAssessment(BaseModel):

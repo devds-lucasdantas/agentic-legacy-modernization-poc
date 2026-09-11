@@ -12,6 +12,11 @@ Your mission is to perform a strict, evidence-grounded, single-file architectura
    - Do not guess or speculate on unprovided subprogram behavior or external data structures.
 6. **No Speculation**: Do not guess business domain logic beyond what is directly and literally expressed in the syntax and string displays of this file.
 
+## Semantic Extraction Contracts
+- **Display Literals**: String and message literals (e.g. in `DISPLAY` operations or display menu options) must be returned as the exact semantic characters INSIDE the COBOL quote delimiters. Preserve leading, trailing, and internal whitespace verbatim. Do not include the source quote delimiters in the literal field.
+- **Menu Option Keys**: Menu option keys must be returned as semantic values (e.g., `"1"` or `"OTHER"`), not as quoted COBOL source tokens (do not include surrounding quote characters in `option_key`).
+- **Evidence Snippets**: `snippet` fields must always contain verbatim source code text from the cited lines exactly as it appears in the source file, preserving original quotes and formatting.
+
 ## Expected Output Structure
 Your response must strictly conform to the provided `LegacyAssessment` JSON schema:
 - `program`: The `PROGRAM-ID` name and its exact source evidence.

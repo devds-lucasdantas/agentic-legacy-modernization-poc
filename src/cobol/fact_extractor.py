@@ -18,7 +18,8 @@ from src.cobol.atomic_facts import (
     normalize_condition,
     normalize_identifier,
     normalize_pic,
-    normalize_string_literal,
+    parse_cobol_literal_token,
+    parse_source_menu_key_token,
 )
 
 
@@ -242,7 +243,7 @@ class SourceFactExtractor:
                     wm = when_re.search(w_text)
                     if wm:
                         raw_key = wm.group(1).strip()
-                        norm_key = raw_key.replace("'", "").replace('"', "").upper()
+                        norm_key = parse_source_menu_key_token(raw_key)
 
                         # Collect branch statement text:
                         # either remainder of WHEN line or following lines
@@ -284,7 +285,8 @@ class SourceFactExtractor:
                                 )
                             )
                         elif disp_m:
-                            lit = normalize_string_literal(disp_m.group(1))
+                            raw_lit = disp_m.group(1)
+                            lit = parse_cobol_literal_token(raw_lit)
                             result.occurrences.append(
                                 SupportedFactOccurrence(
                                     fact=AtomicFact(
@@ -296,7 +298,7 @@ class SourceFactExtractor:
                                     occurrence_id=f"menu_{norm_key}_{w_line}",
                                     line_start=w_line,
                                     line_end=stmt_end_line,
-                                    required_evidence_fragments=(f"WHEN {raw_key}", lit),
+                                    required_evidence_fragments=(f"WHEN {raw_key}", raw_lit),
                                 )
                             )
                         else:
@@ -351,7 +353,13 @@ class SourceFactExtractor:
         display_re = re.compile(r"\bDISPLAY\s+(['\"][^'\"]*['\"]|\b[A-Za-z0-9-]+\b)", re.IGNORECASE)
         for idx, text in proc_lines:
             for dm in display_re.finditer(text):
-                disp_content = normalize_string_literal(dm.group(1))
+                raw_arg = dm.group(1)
+                if (raw_arg.startswith("'") and raw_arg.endswith("'")) or (
+                    raw_arg.startswith('"') and raw_arg.endswith('"')
+                ):
+                    disp_content = parse_cobol_literal_token(raw_arg)
+                else:
+                    disp_content = normalize_identifier(raw_arg)
                 result.occurrences.append(
                     SupportedFactOccurrence(
                         fact=AtomicFact(
@@ -363,7 +371,7 @@ class SourceFactExtractor:
                         occurrence_id=f"display_{idx}_{dm.start()}",
                         line_start=idx,
                         line_end=idx,
-                        required_evidence_fragments=("DISPLAY", disp_content),
+                        required_evidence_fragments=("DISPLAY", raw_arg),
                     )
                 )
 

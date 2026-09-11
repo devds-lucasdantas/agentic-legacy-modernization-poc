@@ -248,7 +248,27 @@ def validate_claim_evidence(
     norm_actual = normalize_snippet(" ".join(actual_slice_lines))
 
     for frag in supported_occurrence.required_evidence_fragments:
+        if not frag or not frag.strip():
+            return EvidenceValidationResult(
+                is_valid=False,
+                error_message=(
+                    f"Occurrence has vacuous required fragment '{frag}' for fact "
+                    f"'{predicted.fact.canonical_id}'"
+                ),
+                field_context=context,
+                evidence=ev_obj.model_dump(),
+            )
         norm_frag = normalize_snippet(frag)
+        if not norm_frag:
+            return EvidenceValidationResult(
+                is_valid=False,
+                error_message=(
+                    f"Occurrence has vacuous normalized required fragment '{frag}' for fact "
+                    f"'{predicted.fact.canonical_id}'"
+                ),
+                field_context=context,
+                evidence=ev_obj.model_dump(),
+            )
         if norm_frag not in norm_snippet:
             return EvidenceValidationResult(
                 is_valid=False,

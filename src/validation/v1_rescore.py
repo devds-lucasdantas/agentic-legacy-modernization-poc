@@ -1,4 +1,4 @@
-"""Offline rescoring adapter for historical Baseline V1 assessment under Evaluator V2.1 rules.
+"""Offline rescoring adapter for historical Baseline V1 assessment under Evaluator V2.2 rules.
 
 Ensures:
 1. Does NOT modify the original V1 JSON.
@@ -6,7 +6,7 @@ Ensures:
    of loop conditions or evaluate subjects).
 3. Evaluates predictions through the shared unified evaluation core (evaluator_core.py).
 4. Explicitly reports converted_claim_count, unevaluated_claim_count, and unevaluated_claims.
-5. Emits a new versioned rescore artifact (evals/results/gate-2-v1-rescored-with-v2.1.json).
+5. Emits a new versioned rescore artifact (evals/results/gate-2-v1-rescored-with-v2.2.json).
 """
 
 import json
@@ -323,10 +323,16 @@ def rescore_v1_assessment(
         host_verifications=host_verif,
     )
 
+    effective_repo_root = repo_root or REPO_ROOT
+    try:
+        rel_v1_path = str(p.resolve().relative_to(effective_repo_root.resolve())).replace("\\", "/")
+    except ValueError:
+        rel_v1_path = str(p).replace("\\", "/")
+
     report_dict: dict[str, Any] = {
-        "rescore_evaluator_version": "2.1.0",
-        "golden_dataset_version": "2.1.0",
-        "v1_source_file": str(p),
+        "rescore_evaluator_version": "2.2.0",
+        "golden_dataset_version": "2.2.0",
+        "v1_source_file": rel_v1_path,
         "claim_accounting": {
             "historical_claim_count": len(historical_claims),
             "converted_claim_count": len(converted_preds),
@@ -335,7 +341,7 @@ def rescore_v1_assessment(
         },
         "evaluation_metrics": core_report.to_dict(),
         "notes": (
-            "Historical Baseline V1 offline rescore under Evaluator V2.1 rules. "
+            "Historical Baseline V1 offline rescore under Evaluator V2.2 rules. "
             "Original V1 JSON preserved intact. Evaluates structural claims losslessly."
         ),
     }
@@ -350,7 +356,7 @@ def rescore_v1_assessment(
 
 if __name__ == "__main__":
     v1_path = REPO_ROOT / "evals" / "observed" / "gate-2-baseline-v1-assessment.json"
-    rescore_out = REPO_ROOT / "evals" / "results" / "gate-2-v1-rescored-with-v2.1.json"
+    rescore_out = REPO_ROOT / "evals" / "results" / "gate-2-v1-rescored-with-v2.2.json"
     result = rescore_v1_assessment(v1_path, output_path=rescore_out)
     print("Rescore completed!")
     print(f"Historical claims: {result['claim_accounting']['historical_claim_count']}")

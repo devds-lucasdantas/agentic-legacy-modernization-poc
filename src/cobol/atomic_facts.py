@@ -1,13 +1,15 @@
-"""Canonical Atomic Fact representations for COBOL analysis (Version 2.1.0).
+"""Canonical Atomic Fact representations for COBOL analysis (Version 2.2.0).
 
 Separates:
-1. Semantic Normalization: Category-aware normalization for identifiers, keywords,
-   PIC clauses, conditions, and display/string literals.
-2. AtomicFact: Pure semantic identity (normalized, immutable, hashable).
-3. SupportedFactOccurrence: Ground-truth fact occurrence in source code with exact
-   physical statement span [line_start, line_end] and required operands.
-4. PredictedFact: Model assertion binding an AtomicFact to cited SourceEvidence.
-5. Contradiction Semantics: Distinguishes multi-valued relations (CALL, DISPLAY, COPY)
+1. Source Token Parsing: Strictly decodes quoted source literal tokens and WHEN branch tokens.
+2. Semantic Normalization: Type-aware normalization for identifiers, keywords, PIC clauses,
+   conditions, and menu keys. Model semantic values for literals and menu keys
+   are preserved verbatim.
+3. AtomicFact: Pure semantic identity (normalized, immutable, hashable).
+4. SupportedFactOccurrence: Ground-truth fact occurrence in source code with exact
+   physical statement span [line_start, line_end] and non-vacuous required operands.
+5. PredictedFact: Model assertion binding an AtomicFact to cited SourceEvidence.
+6. Contradiction Semantics: Distinguishes multi-valued relations (CALL, DISPLAY, COPY)
    from single-valued properties (PROGRAM, MENU_OPTION branch, DATA_FIELD attributes).
 """
 
@@ -26,22 +28,79 @@ def normalize_keyword(text: str) -> str:
     return " ".join(text.strip().split()).upper()
 
 
-def normalize_string_literal(text: str) -> str:
-    """Normalize a COBOL string literal: preserve case and internal spacing.
+def parse_cobol_literal_token(token: str) -> str:
+    """Decode a quoted COBOL source literal token.
 
-    Strips surrounding quotes (' or \") if present, but preserves exact casing,
-    internal whitespace, and punctuation inside the literal.
+    Requires matching quote delimiters (' or \") when a quoted source token is expected.
+    Removes the matching outer delimiter exactly once.
+    Preserves every character inside verbatim: case, leading/trailing/internal spaces,
+    and punctuation.
     """
-    s = text.strip()
+    s = token.strip()
+    if len(s) < 2:
+        raise ValueError(f"Invalid COBOL literal token: '{token}' (too short)")
     if (s.startswith("'") and s.endswith("'")) or (s.startswith('"') and s.endswith('"')):
-        s = s[1:-1]
+        return s[1:-1]
+    raise ValueError(f"Invalid COBOL literal token: '{token}' (missing matching outer quotes)")
+
+
+def parse_source_menu_key_token(token: str) -> str:
+    """Parse a COBOL source WHEN branch condition token.
+
+    Matches either:
+    - Exact keyword OTHER (case-insensitive) -> 'OTHER'
+    - Exact quoted literal token (e.g. \"'1'\" -> \"1\")
+    """
+    s = token.strip()
+    if s.upper() == "OTHER":
+        return "OTHER"
+    if (s.startswith("'") and s.endswith("'") and len(s) >= 2) or (
+        s.startswith('"') and s.endswith('"') and len(s) >= 2
+    ):
+        inner = s[1:-1]
+        if "'" in inner or '"' in inner:
+            raise ValueError(f"Malformed source menu key token with inner quotes: '{token}'")
+        return inner
+    raise ValueError(f"Invalid source menu key token: '{token}'")
+
+
+def normalize_menu_key(key: str) -> str:
+    """Normalize a model-produced semantic menu key.
+
+    Model fields already contain semantic values (e.g. '1', '2', '3', '4', 'OTHER').
+    Preserves semantic values as-is.
+    Does NOT strip quotes heuristically.
+    Malformed values such as \"'1'\", \"1''\", \"'1\", \"1'\", \"O'THER\" are NEVER
+    repaired into supported keys.
+    """
+    s = key.strip()
+    if s.upper() == "OTHER":
+        return "OTHER"
     return s
 
 
-def normalize_pic(raw_pic: str | None) -> str:
-    """Canonicalize a COBOL PICTURE clause string.
+def normalize_semantic_literal(text: str) -> str:
+    """Normalize a model-produced semantic string/display literal.
 
-    Examples:
+    The model schema value IS ALREADY the semantic literal content.
+    Do NOT trim it.
+    Do NOT strip quotes heuristically.
+    Do NOT uppercase it.
+    Do NOT decode it a second time.
+    Strictly idempotent: normalize_semantic_literal(val) == val.
+    """
+    return text
+
+
+def normalize_string_literal(text: str) -> str:
+    """Legacy alias / fallback for string literals (preserved for compatibility)."""
+    return normalize_semantic_literal(text)
+
+
+def normalize_pic(raw_pic: str | None) -> str:
+    """Canonicalize a COBOL PICTURE clause string using a narrow supported grammar.
+
+    Only canonicalizes VALID supported syntax:
     - None or '' or 'NONE' -> 'NONE'
     - 'X' -> 'X(1)'
     - 'X(1)' -> 'X(1)'
@@ -49,32 +108,47 @@ def normalize_pic(raw_pic: str | None) -> str:
     - '999' -> '9(3)'
     - 'XXXXX' -> 'X(5)'
     - '9(12)' -> '9(12)'
+    - 'S9(4)' -> 'S9(4)'
     - 'PIC X' -> 'X(1)'
+
+    Does NOT use broad punctuation removal (no arbitrary rstrip('.')).
+    Malformed values (e.g. 'X....', 'X(', '9(abc)') remain un-normalized distinct claims
+    and will not match valid source PIC clauses.
     """
     if not raw_pic or raw_pic.strip().upper() in ("NONE", ""):
         return "NONE"
 
-    s = raw_pic.strip().upper()
-    if s.startswith("PIC "):
+    s = raw_pic.strip()
+    if s.upper().startswith("PIC "):
         s = s[4:].strip()
-    elif s.startswith("PICTURE "):
+    elif s.upper().startswith("PICTURE "):
         s = s[8:].strip()
-    s = s.rstrip(".")
 
-    # Remove internal spaces
-    s = "".join(s.split())
+    # Narrow grammar for supported Gate 2 PIC clauses
+    m_single = re.fullmatch(r"([X9AS])", s, re.IGNORECASE)
+    if m_single:
+        return f"{m_single.group(1).upper()}(1)"
 
-    # Check for repeated single characters: e.g. 999 -> 9(3), XXX -> X(3)
-    m_repeat = re.fullmatch(r"([A-Z9])\1*", s)
-    if m_repeat and len(s) > 1:
-        char = m_repeat.group(1)
-        count = len(s)
+    m_repeat = re.fullmatch(r"([X9AS])\1+", s, re.IGNORECASE)
+    if m_repeat:
+        char = m_repeat.group(1).upper()
+        return f"{char}({len(s)})"
+
+    m_paren = re.fullmatch(r"([X9AS])\((\d+)\)", s, re.IGNORECASE)
+    if m_paren:
+        char = m_paren.group(1).upper()
+        count = int(m_paren.group(2))
         return f"{char}({count})"
 
-    # Check for single char without count: X -> X(1), 9 -> 9(1), A -> A(1)
-    if re.fullmatch(r"[A-Z9]", s):
-        return f"{s}(1)"
+    m_signed_paren = re.fullmatch(r"S(9)\((\d+)\)", s, re.IGNORECASE)
+    if m_signed_paren:
+        return f"S9({int(m_signed_paren.group(2))})"
 
+    m_signed_repeat = re.fullmatch(r"S(9)+", s, re.IGNORECASE)
+    if m_signed_repeat:
+        return f"S9({len(s) - 1})"
+
+    # Malformed or unsupported PIC: return as-is, never normalize into valid PIC
     return s
 
 
@@ -87,13 +161,11 @@ def normalize_condition(cond: str) -> str:
          'ws-choice = \"4\"' -> \"WS-CHOICE = '4'\"
     """
     s = cond.strip()
-    # Match pattern: <identifier> <op> <literal or identifier>
     m = re.match(r"^([A-Za-z0-9-]+)\s*(=|NOT\s*=|<>|>|<|>=|<=)\s*(.+)$", s, re.IGNORECASE)
     if m:
         lhs = m.group(1).upper()
         op = " ".join(m.group(2).upper().split())
         rhs = m.group(3).strip()
-        # If rhs is quoted literal, canonicalize to single quotes with preserved content
         if (rhs.startswith("'") and rhs.endswith("'")) or (
             rhs.startswith('"') and rhs.endswith('"')
         ):
@@ -135,11 +207,11 @@ class AtomicFact:
             norm_object = normalize_identifier(self.object)
         elif norm_kind == "MENU_OPTION":
             # Subject is menu option key (e.g. '1', '4', 'OTHER')
-            norm_subject = self.subject.strip().replace("'", "").replace('"', "").upper()
+            norm_subject = normalize_menu_key(self.subject)
             if norm_predicate == "CALLS":
                 norm_object = normalize_identifier(self.object)
             elif norm_predicate == "DISPLAYS":
-                norm_object = normalize_string_literal(self.object)
+                norm_object = normalize_semantic_literal(self.object)
             else:
                 norm_object = normalize_token(self.object)
         elif norm_kind == "CONTROL_FLOW":
@@ -157,7 +229,7 @@ class AtomicFact:
             if norm_subject == "ACCEPT":
                 norm_object = normalize_identifier(self.object)
             elif norm_subject == "DISPLAY":
-                norm_object = normalize_string_literal(self.object)
+                norm_object = normalize_semantic_literal(self.object)
             else:
                 norm_object = normalize_token(self.object)
         elif norm_kind == "DEPENDENCY_SCAN":
