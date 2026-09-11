@@ -12,6 +12,7 @@ Adheres strictly to:
 
 from copy import deepcopy
 from pathlib import Path
+from typing import Any
 
 from agents.legacy_analyzer.schemas.system_assessment import (
     CallEdge,
@@ -107,7 +108,7 @@ def test_deletion_of_each_required_proposition_causes_fail():
     base_assessment = load_golden_assessment()
 
     # Test deleting one item from each collection
-    collections = [
+    collections: list[tuple[str, list[Any]]] = [
         ("program_declarations", base_assessment.program_declarations),
         ("call_occurrences", base_assessment.call_occurrences),
         ("call_edges", base_assessment.call_edges),
