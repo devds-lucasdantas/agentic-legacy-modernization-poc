@@ -3,7 +3,7 @@
 **Generated mechanically from repository data without manual constants.**
 
 ## 1. Provenance and Repository State
-- **Current Git HEAD**: `239aa8c561685f13c0fd00f44d1b3d6ec36ce9a7`
+- **Current Git HEAD**: `62a90531dc495bfe595a92cca280b7c42bfa2901`
 - **Preserved Remote Anchor**: `364e334`
 - **Legacy Repository Status**: `UNTOUCHED / CLEAN`
 - **Gate 2 Artifacts Status**: `UNTOUCHED / CLEAN`
@@ -12,6 +12,7 @@
 
 ### Recent Forward Git Commits
 ```text
+62a9053 docs(gate-3): add mechanically generated remediation round 2 audit report
 239aa8c feat(gate-3): two-phase authorization, irrevocable reservation, and targeted regression suite
 72843ce feat(gate-3): independent static golden dataset, schema leakage removal, and category policies
 364e334 fix(gate-3): add type annotation to adversarial regressions test
@@ -19,7 +20,6 @@
 fdb3fb5 feat(gate-3): real source-mutating counterfactuals and independent oracle tests
 fbddbf6 feat(gate-3): rebuild golden dataset and independent semantic verifier
 148ca4b feat(gate-3): generic ast parser and fact extractor with zero fixture identifiers
-8cf84ae feat(gate-3): restore approved model schema with role-bound evidence and neutral prompt
 ```
 
 ## 2. Independent Golden Dataset Verification
