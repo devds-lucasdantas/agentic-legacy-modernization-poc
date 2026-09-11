@@ -15,11 +15,11 @@ The legacy core banking system is located under `legacy/core-banking-system/`. A
 | File Name | File Type | Physical Lines | SHA256 Hash | System Role |
 |---|---|---|---|---|
 | `BANK-MAIN.CBL` | COBOL Program | 36 | `b03adc9592f2853006263ef67fcc6dc716b99333b84bc0198bff7b7f0af1a028` | Main dispatch menu, user interactive loop, subprogram caller |
-| `INIT-DB.CBL` | COBOL Program | 46 | `cb3f48653ca265d6fe620714ee88185c7c13a013914a84d47c21ae9320e85ff7` | Database/file initializer, initial account record population |
-| `TRANS-PROC.CBL` | COBOL Program | 96 | `8295b9c0fb925f6f43708a38a9d1bbad5b83938be830d984cfb77626964efc77` | Transaction processor (deposits, withdrawals, balance calculations) |
-| `REPORT-GEN.CBL` | COBOL Program | 57 | `a7fa76251bdf858ff40e8fe3fc8bb8eb1895a5fbc40d6c5bb5d2eb7b243be8dc` | Account audit and balance report generator |
-| `ACCOUNTS.CPY` | Copybook | 9 | `5eb747e92383c2763f6834468f0cb6ee7c191a32997aa774bf79d8c3683a48e7` | Shared account record schema (`ACCOUNT-RECORD`, fields, PICTURE clauses) |
-| `ACCOUNTS.DAT` | Sequential Data | 3 | `b1c5b8b9826d0ba480a8f8e025ec1ff5fcbcadba1a5e1cf3e7fcb9a07172fa82` | Test data fixture containing seed account records |
+| `INIT-DB.CBL` | COBOL Program | 46 | `4732bea13b5ec6ed5dc4b1d63f70d5e69fb76e8f65270da9f365fcc1ed88a4b1` | Database/file initializer, initial account record population |
+| `TRANS-PROC.CBL` | COBOL Program | 96 | `2dbb4fe4d0208271ffb1e2c26fe67dfde8b99163ed0046091bee96db8e3c1267` | Transaction processor (deposits, withdrawals, balance calculations) |
+| `REPORT-GEN.CBL` | COBOL Program | 57 | `568b514089efb24b9d3855e3562601c2da506213c72eb5f5464542acb14c0993` | Account audit and balance report generator |
+| `ACCOUNTS.CPY` | Copybook | 9 | `8be563740b435cbe89775659a302dac70362e7aa9de227632326d0d85f3e36bf` | Shared account record schema (`ACCOUNT-RECORD`, fields, PICTURE clauses) |
+| `ACCOUNTS.DAT` | Sequential Data | 3 | `f1d10d416848db31ef8d33b7735acab6d482ab6d83b28350e16a708fbc353d2d` | Test data fixture containing seed account records |
 
 **Total Physical Lines:** 247 lines.
 
@@ -48,14 +48,15 @@ Every physical source line in the COBOL bundle is systematically classified with
 ### 3.3 Parser Coverage Certificate
 
 The parser computes and emits an immutable `ParserCoverageCertificate` containing:
-- `physical_line_count`: Total physical lines across all six files (247).
-- `blank_line_count`: Count of blank lines.
-- `comment_line_count`: Count of COBOL comment lines (indicator column `*`).
-- `data_fixture_line_count`: Count of raw data lines in `ACCOUNTS.DAT`.
-- `logical_statement_count`: Total logical COBOL statements identified across all programs and copybooks.
-- `parsed_and_scored_count`: Statements mapped to scored golden propositions.
-- `recognized_but_unscored_count`: Valid COBOL statements recognized but not scored.
-- `unsupported_relevant_count`: Must be strictly `0`.
+- `physical_line_count`: Total physical lines across all six files (`247`).
+- `blank_line_count`: Count of blank lines (`31`).
+- `comment_line_count`: Count of COBOL comment lines (indicator column `*`) (`1`).
+- `data_fixture_line_count`: Count of raw data lines in `ACCOUNTS.DAT` (`3`).
+- `logical_statement_count`: Total logical COBOL statements identified (`203`).
+- `parsed_and_scored_count`: Statements mapped to scored golden propositions (`106`).
+- `recognized_but_unscored_count`: Valid COBOL statements recognized but unscored (`97`).
+- `unsupported_relevant_count`: Strictly zero (`0`).
+- `certificate_sha256`: `541d0120455a15b42f562aca539eeb2be02fe21e302ea5ca1b65302b47804d79`.
 - `per_statement_classifications`: Full statement-by-statement classification map with file, line range, verb, and category.
 
 ---
