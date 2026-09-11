@@ -25,9 +25,9 @@ def test_schema_v2_field_presence():
     from agents.legacy_analyzer.agent import ExecutionMetadata
 
     meta = ExecutionMetadata()
-    assert meta.schema_version == "2.2.0"
-    assert meta.prompt_version == "gate2-baseline-v2.2"
-    assert meta.evaluator_version == "2.3.0"
+    assert meta.schema_version == "2.3.0"
+    assert meta.prompt_version == "gate2-baseline-v2.3"
+    assert meta.evaluator_version == "2.4.0"
     assert hasattr(meta, "foundry_project_fingerprint")
     assert not hasattr(meta, "endpoint") or "endpoint" not in meta.__dict__
 

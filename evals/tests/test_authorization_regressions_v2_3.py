@@ -103,7 +103,7 @@ def test_01_independent_complete_correct_bank_main_assessment_passes():
     assert report.precision >= 0.95
     assert report.recall >= 0.90
     assert report.unsupported_predicted_count == 0
-    assert report.evaluator_version == "2.3.0"
+    assert report.evaluator_version == "2.4.0"
 
 
 def test_02_false_menu_key_space_1_space_fails():

@@ -78,15 +78,21 @@ class TestEvidenceVulnerabilities:
         ev = SourceEvidence(
             line_start=9,
             line_end=9,
-            snippet="CALL 'FABRICATED-TARGET'",
         )
         res = validate_evidence(ev, source_lines)
         assert res.is_valid is False
         assert "blank source lines" in (res.error_message or "")
 
+        # Candidate V2.4 SourceEvidence strictly forbids extra snippet property
+        with pytest.raises(ValidationError):
+            SourceEvidence(line_start=9, line_end=9, snippet="CALL 'FABRICATED-TARGET'")  # type: ignore[call-arg]
+
     def test_2_real_snippet_plus_fabricated_appended_text_rejected(self, source_lines):
         # Line 24 is "CALL 'INIT-DB'"
-        ev = SourceEvidence(
+        from agents.legacy_analyzer.schemas.assessment_v1 import SourceEvidence as SourceEvidenceV1
+
+        ev = SourceEvidenceV1(
+            source_file="BANK-MAIN.CBL",
             line_start=24,
             line_end=24,
             snippet="CALL 'INIT-DB' AND DROP TABLE USERS",
@@ -223,7 +229,6 @@ class TestFalsePositiveAccounting:
                 evidence=SourceEvidence(
                     line_start=36,
                     line_end=36,
-                    snippet="STOP RUN.",
                 ),
             )
         )
@@ -243,7 +248,6 @@ class TestFalsePositiveAccounting:
                 evidence=SourceEvidence(
                     line_start=36,
                     line_end=36,
-                    snippet="STOP RUN.",
                 ),
             )
         )
@@ -337,7 +341,6 @@ class TestDuplicatesAndContradictions:
                 evidence=SourceEvidence(
                     line_start=23,
                     line_end=24,
-                    snippet="WHEN '1'\n     CALL 'INIT-DB'",
                 ),
             )
         )

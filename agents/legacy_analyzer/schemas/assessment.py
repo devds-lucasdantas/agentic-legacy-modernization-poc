@@ -1,4 +1,4 @@
-"""Pydantic v2 schemas for structured legacy COBOL assessments (Version 2.2.0).
+"""Pydantic v2 schemas for structured legacy COBOL assessments (Version 2.3.0).
 
 Designed for OpenAI Responses API native Structured Outputs (`responses.parse`).
 Uses strict variant models combined through standard unions to produce supported
@@ -10,6 +10,8 @@ Uses strict variant models combined through standard unions to produce supported
 All field descriptions are completely generic and free of fixture answer hints.
 Host-controlled execution metadata (file path, SHA256, schema version, callee boundaries) is
 managed outside this schema.
+Evidence citations contain exact line coordinates [line_start, line_end] only;
+text snippets are derived host-side from verified source code.
 """
 
 from typing import Literal
@@ -18,13 +20,12 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 class SourceEvidence(BaseModel):
-    """Traceable line and snippet citation in the analyzed source code."""
+    """Traceable line coordinates in the analyzed source code (Version 2.3.0)."""
 
     model_config = ConfigDict(extra="forbid")
 
     line_start: int = Field(description="1-indexed starting line number in the source file.")
     line_end: int = Field(description="1-indexed ending line number in the source file.")
-    snippet: str = Field(description="Exact source code line or text snippet evidencing this fact.")
 
 
 class ProgramIdentity(BaseModel):

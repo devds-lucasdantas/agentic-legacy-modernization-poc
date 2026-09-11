@@ -47,14 +47,13 @@ from src.cobol.source_reader import EXPECTED_BANK_MAIN_SHA256
 
 
 def make_perfect_assessment_v2() -> LegacyAssessment:
-    """Return a synthetic assessment conforming to Schema V2.1 matching all expected facts."""
+    """Return a synthetic assessment conforming to Schema V2.3 matching all expected facts."""
     return LegacyAssessment(
         program=ProgramIdentity(
             program_id="BANK-MAIN",
             evidence=SourceEvidence(
                 line_start=1,
                 line_end=2,
-                snippet="IDENTIFICATION DIVISION.\nPROGRAM-ID. BANK-MAIN.",
             ),
         ),
         data_fields=[
@@ -66,7 +65,6 @@ def make_perfect_assessment_v2() -> LegacyAssessment:
                 evidence=SourceEvidence(
                     line_start=8,
                     line_end=8,
-                    snippet="01 WS-CHOICE  PIC X.",
                 ),
             )
         ],
@@ -76,7 +74,6 @@ def make_perfect_assessment_v2() -> LegacyAssessment:
                 evidence=SourceEvidence(
                     line_start=24,
                     line_end=24,
-                    snippet="CALL 'INIT-DB'",
                 ),
             ),
             CallDependency(
@@ -84,7 +81,6 @@ def make_perfect_assessment_v2() -> LegacyAssessment:
                 evidence=SourceEvidence(
                     line_start=26,
                     line_end=26,
-                    snippet="CALL 'TRANS-PROC'",
                 ),
             ),
             CallDependency(
@@ -92,7 +88,6 @@ def make_perfect_assessment_v2() -> LegacyAssessment:
                 evidence=SourceEvidence(
                     line_start=28,
                     line_end=28,
-                    snippet="CALL 'REPORT-GEN'",
                 ),
             ),
         ],
@@ -104,7 +99,6 @@ def make_perfect_assessment_v2() -> LegacyAssessment:
                 evidence=SourceEvidence(
                     line_start=23,
                     line_end=24,
-                    snippet="WHEN '1'\n     CALL 'INIT-DB'",
                 ),
             ),
             CallMenuOption(
@@ -114,7 +108,6 @@ def make_perfect_assessment_v2() -> LegacyAssessment:
                 evidence=SourceEvidence(
                     line_start=25,
                     line_end=26,
-                    snippet="WHEN '2'\n     CALL 'TRANS-PROC'",
                 ),
             ),
             CallMenuOption(
@@ -124,7 +117,6 @@ def make_perfect_assessment_v2() -> LegacyAssessment:
                 evidence=SourceEvidence(
                     line_start=27,
                     line_end=28,
-                    snippet="WHEN '3'\n     CALL 'REPORT-GEN'",
                 ),
             ),
             DisplayMenuOption(
@@ -134,7 +126,6 @@ def make_perfect_assessment_v2() -> LegacyAssessment:
                 evidence=SourceEvidence(
                     line_start=29,
                     line_end=30,
-                    snippet="WHEN '4'\n     DISPLAY 'Bye.'",
                 ),
             ),
             DisplayMenuOption(
@@ -144,7 +135,6 @@ def make_perfect_assessment_v2() -> LegacyAssessment:
                 evidence=SourceEvidence(
                     line_start=31,
                     line_end=32,
-                    snippet="WHEN OTHER\n     DISPLAY 'Invalid.'",
                 ),
             ),
         ],
@@ -155,7 +145,6 @@ def make_perfect_assessment_v2() -> LegacyAssessment:
                 evidence=SourceEvidence(
                     line_start=12,
                     line_end=34,
-                    snippet="PERFORM UNTIL WS-CHOICE = '4'\n...\nEND-PERFORM.",
                 ),
             ),
             EvaluateConstruct(
@@ -164,7 +153,6 @@ def make_perfect_assessment_v2() -> LegacyAssessment:
                 evidence=SourceEvidence(
                     line_start=22,
                     line_end=33,
-                    snippet="EVALUATE WS-CHOICE\n...\nEND-EVALUATE",
                 ),
             ),
             StopRunConstruct(
@@ -172,7 +160,6 @@ def make_perfect_assessment_v2() -> LegacyAssessment:
                 evidence=SourceEvidence(
                     line_start=36,
                     line_end=36,
-                    snippet="STOP RUN.",
                 ),
             ),
         ],
@@ -183,7 +170,6 @@ def make_perfect_assessment_v2() -> LegacyAssessment:
                 evidence=SourceEvidence(
                     line_start=20,
                     line_end=20,
-                    snippet="ACCEPT WS-CHOICE",
                 ),
             )
         ],

@@ -103,78 +103,79 @@ def validate_evidence(
             evidence=evidence_dict,
         )
 
-    # 3. Snippet match check
-    norm_snippet = normalize_snippet(evidence.snippet)
-    if not norm_snippet:
-        return EvidenceValidationResult(
-            is_valid=False,
-            error_message="Snippet is empty",
-            field_context=context,
-            evidence=evidence_dict,
-        )
-
-    # Slice actual lines (line_start and line_end are 1-indexed)
+    # 3. Blank source lines check
     actual_slice_lines = source_lines[evidence.line_start - 1 : evidence.line_end]
     actual_slice_text = " ".join(actual_slice_lines)
     norm_actual = normalize_snippet(actual_slice_text)
 
-    # Reject non-empty snippets against completely blank source slices
     if not norm_actual:
         return EvidenceValidationResult(
             is_valid=False,
             error_message=(
-                f"Snippet '{evidence.snippet}' cited for blank source lines "
+                f"Evidence cited for blank source lines "
                 f"[{evidence.line_start}..{evidence.line_end}]"
             ),
             field_context=context,
             evidence=evidence_dict,
         )
 
-    # Ellipsis support: requires all nonempty fragments in strict forward order
-    if "..." in evidence.snippet or "…" in evidence.snippet:
-        raw_parts = [p.strip() for p in re.split(r"\.{3}|…", evidence.snippet) if p.strip()]
-        if not raw_parts:
+    # 4. Snippet match check (for historical schemas or fixtures that include snippet)
+    if hasattr(evidence, "snippet") and getattr(evidence, "snippet", None) is not None:
+        raw_snippet = getattr(evidence, "snippet")
+        norm_snippet = normalize_snippet(raw_snippet)
+        if not norm_snippet:
             return EvidenceValidationResult(
                 is_valid=False,
-                error_message=f"Ellipsis snippet '{evidence.snippet}' has no textual content",
+                error_message="Snippet is empty",
                 field_context=context,
                 evidence=evidence_dict,
             )
 
-        current_idx = 0
-        for part in raw_parts:
-            norm_part = normalize_snippet(part)
-            if not norm_part:
-                continue
-            found_idx = norm_actual.find(norm_part, current_idx)
-            if found_idx == -1:
+        # Ellipsis support: requires all nonempty fragments in strict forward order
+        if "..." in raw_snippet or "…" in raw_snippet:
+            raw_parts = [p.strip() for p in re.split(r"\.{3}|…", raw_snippet) if p.strip()]
+            if not raw_parts:
                 return EvidenceValidationResult(
                     is_valid=False,
-                    error_message=(
-                        f"Ellipsis snippet fragment '{part}' not found in source slice in order"
-                    ),
+                    error_message=f"Ellipsis snippet '{raw_snippet}' has no textual content",
                     field_context=context,
                     evidence=evidence_dict,
                 )
-            current_idx = found_idx + len(norm_part)
 
-        return EvidenceValidationResult(
-            is_valid=True,
-            field_context=context,
-            evidence=evidence_dict,
-        )
+            current_idx = 0
+            for part in raw_parts:
+                norm_part = normalize_snippet(part)
+                if not norm_part:
+                    continue
+                found_idx = norm_actual.find(norm_part, current_idx)
+                if found_idx == -1:
+                    return EvidenceValidationResult(
+                        is_valid=False,
+                        error_message=(
+                            f"Ellipsis snippet fragment '{part}' not found in source slice in order"
+                        ),
+                        field_context=context,
+                        evidence=evidence_dict,
+                    )
+                current_idx = found_idx + len(norm_part)
 
-    # Standard contiguous snippet: must be strictly contained in actual slice
-    if norm_snippet not in norm_actual:
-        return EvidenceValidationResult(
-            is_valid=False,
-            error_message=(
-                f"Evidence snippet '{evidence.snippet}' does not match actual source text "
-                f"in lines [{evidence.line_start}..{evidence.line_end}]"
-            ),
-            field_context=context,
-            evidence=evidence_dict,
-        )
+            return EvidenceValidationResult(
+                is_valid=True,
+                field_context=context,
+                evidence=evidence_dict,
+            )
+
+        # Standard contiguous snippet: must be strictly contained in actual slice
+        if norm_snippet not in norm_actual:
+            return EvidenceValidationResult(
+                is_valid=False,
+                error_message=(
+                    f"Evidence snippet '{raw_snippet}' does not match actual source text "
+                    f"in lines [{evidence.line_start}..{evidence.line_end}]"
+                ),
+                field_context=context,
+                evidence=evidence_dict,
+            )
 
     return EvidenceValidationResult(
         is_valid=True,
@@ -197,11 +198,18 @@ def validate_claim_evidence(
     3. Span length constraint: derived dynamically from occurrence span length + 2 lines tolerance.
     4. Required semantic operands: all required fragments for this occurrence must be present.
     """
-    ev_obj = SourceEvidence(
-        line_start=predicted.line_start,
-        line_end=predicted.line_end,
-        snippet=predicted.snippet,
-    )
+    if predicted.snippet:
+        ev_obj: SourceEvidence | SourceEvidenceV1 = SourceEvidenceV1(
+            source_file="BANK-MAIN.CBL",
+            line_start=predicted.line_start,
+            line_end=predicted.line_end,
+            snippet=predicted.snippet,
+        )
+    else:
+        ev_obj = SourceEvidence(
+            line_start=predicted.line_start,
+            line_end=predicted.line_end,
+        )
 
     # 1. Base validation
     base_res = validate_evidence(ev_obj, source_lines, context=context)

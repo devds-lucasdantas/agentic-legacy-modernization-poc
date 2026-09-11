@@ -71,11 +71,15 @@ def committed_test_repo(tmp_path: Path) -> tuple[Path, str]:
         REPO_ROOT / "scripts" / "run-gate-2.py",
         repo_dir / "scripts" / "run-gate-2.py",
     )
+    for sub in ["src", "agents"]:
+        dest = repo_dir / sub
+        if dest.exists():
+            shutil.rmtree(dest)
+        shutil.copytree(REPO_ROOT / sub, dest)
+
     (repo_dir / "evals" / "baselines").mkdir(parents=True, exist_ok=True)
-    shutil.copy2(
-        REPO_ROOT / "evals" / "baselines" / "gate-2-baseline-v2.json",
-        repo_dir / "evals" / "baselines" / "gate-2-baseline-v2.json",
-    )
+    for p in (REPO_ROOT / "evals" / "baselines").glob("*.json"):
+        shutil.copy2(p, repo_dir / "evals" / "baselines" / p.name)
 
     subprocess.run(
         ["git", "add", "-A"],
@@ -297,8 +301,8 @@ def test_09_baseline_authorization_spec_is_part_of_authorized_snapshot(valid_chi
     runner = get_runner_module()
 
     spec, spec_sha = runner.load_baseline_authorization_spec(snapshot_dir)
-    assert spec["spec_version"] == "1.0.0"
-    assert spec["run_label"] == "baseline-v2"
+    assert spec["spec_version"] in ("1.0.0", "1.1.0")
+    assert spec["run_label"] in ("baseline-v2", "baseline-v3")
     assert spec["source_path"] == "legacy/core-banking-system/BANK-MAIN.CBL"
     assert spec["requested_model"] == "gpt-5-mini"
     assert len(spec_sha) == 64

@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Gate 2 — COBOL Reader Runner (Version 2.3.1)
+"""Gate 2 — COBOL Reader Runner (Version 2.4.0)
 
 Executes single-file COBOL analysis on BANK-MAIN.CBL using Azure AI Foundry
 Responses API with native Structured Outputs.
 
-Enforces Candidate V2.3.1 Architecture:
-1. Commit-bound baseline authorization specification (evals/baselines/gate-2-baseline-v2.json).
+Enforces Candidate V2.4 Architecture:
+1. Commit-bound baseline authorization specification (evals/baselines/gate-2-baseline-v3.json).
 2. Self-Authorizing Child Trust Model: every execution path reaching model invocation,
    including direct internal child execution, must independently establish and satisfy
    the complete baseline authorization contract.
@@ -19,7 +19,7 @@ Enforces Candidate V2.3.1 Architecture:
 10. Host-owned Python runtime provenance persistence in run-metadata.json.
 11. Baseline authorization spec SHA256 persisted in run-metadata.json.
 12. Zero serialization of raw Foundry endpoint, subscription IDs, or credential tokens.
-13. Deterministic evaluation using Evaluator V2.3 and Golden Dataset V2.2.
+13. Deterministic evaluation using Evaluator V2.4 and Golden Dataset V2.2.
 
 Exit codes:
     0 = PASS
@@ -56,7 +56,7 @@ EXCLUDED_DISTRIBUTIONS = {
 }
 
 EXPECTED_BANK_MAIN_SHA = "b03adc9592f2853006263ef67fcc6dc716b99333b84bc0198bff7b7f0af1a028"
-BASELINE_SPEC_REL_PATH = "evals/baselines/gate-2-baseline-v2.json"
+BASELINE_SPEC_REL_PATH = "evals/baselines/gate-2-baseline-v3.json"
 
 
 def get_sanitized_git_env() -> dict[str, str]:
@@ -102,13 +102,26 @@ def validate_project_fingerprint_format(fingerprint: str) -> None:
         )
 
 
-def load_baseline_authorization_spec(root: Path) -> tuple[dict[str, Any], str]:
+def load_baseline_authorization_spec(
+    root: Path, run_label: str | None = None
+) -> tuple[dict[str, Any], str]:
     """Load and validate commit-bound baseline authorization specification.
 
     Returns:
         Tuple of (spec_dict, spec_sha256).
     """
-    spec_path = root / BASELINE_SPEC_REL_PATH
+    spec_path: Path | None = None
+    if run_label:
+        candidate = root / f"evals/baselines/gate-2-{run_label}.json"
+        if candidate.is_file():
+            spec_path = candidate
+    if spec_path is None:
+        if (root / BASELINE_SPEC_REL_PATH).is_file():
+            spec_path = root / BASELINE_SPEC_REL_PATH
+        elif (root / "evals/baselines/gate-2-baseline-v2.json").is_file():
+            spec_path = root / "evals/baselines/gate-2-baseline-v2.json"
+        else:
+            spec_path = root / BASELINE_SPEC_REL_PATH
     if not spec_path.is_file():
         raise FileNotFoundError(f"Baseline authorization spec not found at: {spec_path}")
     raw_bytes = spec_path.read_bytes()
@@ -1029,7 +1042,7 @@ def run_child_process(args: argparse.Namespace) -> int:
 
     # Step 6: Load verified committed BaselineAuthorizationSpec
     try:
-        spec, spec_sha256 = load_baseline_authorization_spec(snapshot_dir)
+        spec, spec_sha256 = load_baseline_authorization_spec(snapshot_dir, args.run_label)
         print(
             f"[OK] Step 6: Committed BaselineAuthorizationSpec loaded "
             f"(SHA256: {spec_sha256[:12]}...)"
@@ -1256,6 +1269,16 @@ def run_child_process(args: argparse.Namespace) -> int:
 
         assessment_file.write_text(assessment.model_dump_json(indent=2), encoding="utf-8")
 
+        # Persist distinct host-enriched evidence artifact if helpful (Amendment 3)
+        enriched_file = artifact_dir / "bank-main-assessment-enriched.json"
+        from src.cobol.evidence_enricher import build_enriched_assessment_dict
+
+        enriched_dict = build_enriched_assessment_dict(
+            assessment=assessment,
+            source_lines=prep.raw_content.splitlines(),
+        )
+        enriched_file.write_text(json.dumps(enriched_dict, indent=2), encoding="utf-8")
+
         # Compile metadata with host-owned runtime provenance, safe fingerprint, and spec sha
         meta_dict = metadata.to_dict()
         meta_dict.pop("endpoint", None)  # Strictly ensure no raw endpoint
@@ -1297,7 +1320,7 @@ def run_child_process(args: argparse.Namespace) -> int:
 
         # Report Summary
         print("======================================================================")
-        print(" GATE 2 EVALUATION SUMMARY (V2.3.1)")
+        print(" GATE 2 EVALUATION SUMMARY (V2.4.0)")
         print("======================================================================")
         print(f"Unique Predictions:      {report.unique_predicted_count}")
         print(f"Supported Predictions:   {report.supported_predicted_count}")
@@ -1324,12 +1347,12 @@ def run_child_process(args: argparse.Namespace) -> int:
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Gate 2 COBOL Reader runner with verifiable provenance (V2.3.1)."
+        description="Gate 2 COBOL Reader runner with verifiable provenance (V2.4.0)."
     )
     parser.add_argument(
         "--run-label",
         required=True,
-        help="Unique run identifier (e.g., 'baseline-v2', 'trial-01').",
+        help="Unique run identifier (e.g., 'baseline-v3', 'trial-01').",
     )
     parser.add_argument(
         "--expected-git-sha",
@@ -1379,7 +1402,7 @@ def main() -> int:
         return run_child_process(args)
 
     print("======================================================================")
-    print(" GATE 2 — COBOL READER RUNNER (V2.3.1)")
+    print(" GATE 2 — COBOL READER RUNNER (V2.4.0)")
     print("======================================================================")
     print(f"Run label: {args.run_label}")
     print()
@@ -1412,7 +1435,9 @@ def main() -> int:
             return 1
 
         try:
-            baseline_spec, baseline_spec_sha = load_baseline_authorization_spec(REPO_ROOT)
+            baseline_spec, baseline_spec_sha = load_baseline_authorization_spec(
+                REPO_ROOT, args.run_label
+            )
             if args.run_label != baseline_spec["run_label"]:
                 print(
                     f"ERROR: Baseline run label '{args.run_label}' does not match "

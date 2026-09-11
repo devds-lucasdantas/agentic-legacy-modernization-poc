@@ -46,7 +46,7 @@ class ExecutionMetadata:
     """Execution metadata for an analysis run (Version 2.2.0)."""
 
     gate: str = "2"
-    run_label: str = "baseline-v2"
+    run_label: str = "baseline-v3"
     timestamp: str = ""
     model: str = ""
     requested_model: str = ""
@@ -56,9 +56,9 @@ class ExecutionMetadata:
     source_file: str = ""
     source_sha256: str = ""
     git_commit_sha: str = ""
-    schema_version: str = "2.2.0"
-    prompt_version: str = "gate2-baseline-v2.2"
-    evaluator_version: str = "2.3.0"
+    schema_version: str = "2.3.0"
+    prompt_version: str = "gate2-baseline-v2.3"
+    evaluator_version: str = "2.4.0"
     response_id: str | None = None
     elapsed_seconds: float = 0.0
     input_tokens: int | None = None
@@ -141,7 +141,7 @@ class LegacyAnalyzerAgent:
     def analyze_source(
         self,
         source_path: str | Path = "legacy/core-banking-system/BANK-MAIN.CBL",
-        run_label: str = "baseline-v2",
+        run_label: str = "baseline-v3",
         repo_root: Path | None = None,
         git_commit_sha: str = "",
     ) -> tuple[LegacyAssessment, ExecutionMetadata]:

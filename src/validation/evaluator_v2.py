@@ -21,6 +21,7 @@ from agents.legacy_analyzer.schemas.assessment import (
     StopRunConstruct,
 )
 from src.cobol.atomic_facts import AtomicFact, PredictedFact
+from src.cobol.evidence_enricher import derive_snippet_from_source
 from src.cobol.source_reader import prepare_source
 from src.cobol.support_index import SourceSupportIndex
 from src.validation.evaluator_core import (
@@ -60,13 +61,18 @@ def load_source_lines(
 def assessment_to_predicted_facts(
     assessment: LegacyAssessment,
     total_lines: int = 36,
+    source_lines: list[str] | None = None,
 ) -> list[PredictedFact]:
-    """Convert a LegacyAssessment instance into a list of PredictedFact items losslessly.
+    """Convert a LegacyAssessment instance into a list of PredictedFact items.
 
-    Zero answer rewriting or heuristic repair:
-    Every factual value produced by the model survives faithfully into PredictedFact.
+    In Candidate V2.4, evidence snippets are host-derived from verified source_lines.
     """
     preds: list[PredictedFact] = []
+
+    def get_snippet(ev: Any) -> str:
+        if source_lines is not None:
+            return derive_snippet_from_source(ev.line_start, ev.line_end, source_lines)
+        return getattr(ev, "snippet", "")
 
     # 1. Program Identity
     prog = assessment.program
@@ -81,7 +87,7 @@ def assessment_to_predicted_facts(
             ),
             line_start=prog.evidence.line_start,
             line_end=prog.evidence.line_end,
-            snippet=prog.evidence.snippet,
+            snippet=get_snippet(prog.evidence),
         )
     )
 
@@ -102,7 +108,7 @@ def assessment_to_predicted_facts(
                 ),
                 line_start=df.evidence.line_start,
                 line_end=df.evidence.line_end,
-                snippet=df.evidence.snippet,
+                snippet=get_snippet(df.evidence),
             )
         )
 
@@ -118,7 +124,7 @@ def assessment_to_predicted_facts(
                 ),
                 line_start=c.evidence.line_start,
                 line_end=c.evidence.line_end,
-                snippet=c.evidence.snippet,
+                snippet=get_snippet(c.evidence),
             )
         )
 
@@ -136,7 +142,7 @@ def assessment_to_predicted_facts(
                     ),
                     line_start=mo.evidence.line_start,
                     line_end=mo.evidence.line_end,
-                    snippet=mo.evidence.snippet,
+                    snippet=get_snippet(mo.evidence),
                 )
             )
         elif isinstance(mo, DisplayMenuOption) or getattr(mo, "action_type", "") == "DISPLAY":
@@ -151,7 +157,7 @@ def assessment_to_predicted_facts(
                     ),
                     line_start=mo.evidence.line_start,
                     line_end=mo.evidence.line_end,
-                    snippet=mo.evidence.snippet,
+                    snippet=get_snippet(mo.evidence),
                 )
             )
 
@@ -171,7 +177,7 @@ def assessment_to_predicted_facts(
                     ),
                     line_start=cf.evidence.line_start,
                     line_end=cf.evidence.line_end,
-                    snippet=cf.evidence.snippet,
+                    snippet=get_snippet(cf.evidence),
                 )
             )
         elif isinstance(cf, EvaluateConstruct) or getattr(cf, "construct_type", "") == "EVALUATE":
@@ -185,7 +191,7 @@ def assessment_to_predicted_facts(
                     ),
                     line_start=cf.evidence.line_start,
                     line_end=cf.evidence.line_end,
-                    snippet=cf.evidence.snippet,
+                    snippet=get_snippet(cf.evidence),
                 )
             )
         elif isinstance(cf, StopRunConstruct) or getattr(cf, "construct_type", "") == "STOP_RUN":
@@ -199,7 +205,7 @@ def assessment_to_predicted_facts(
                     ),
                     line_start=cf.evidence.line_start,
                     line_end=cf.evidence.line_end,
-                    snippet=cf.evidence.snippet,
+                    snippet=get_snippet(cf.evidence),
                 )
             )
 
@@ -216,7 +222,7 @@ def assessment_to_predicted_facts(
                     ),
                     line_start=io_op.evidence.line_start,
                     line_end=io_op.evidence.line_end,
-                    snippet=io_op.evidence.snippet,
+                    snippet=get_snippet(io_op.evidence),
                 )
             )
         elif isinstance(io_op, DisplayIO) or getattr(io_op, "operation_type", "") == "DISPLAY":
@@ -230,7 +236,7 @@ def assessment_to_predicted_facts(
                     ),
                     line_start=io_op.evidence.line_start,
                     line_end=io_op.evidence.line_end,
-                    snippet=io_op.evidence.snippet,
+                    snippet=get_snippet(io_op.evidence),
                 )
             )
 
@@ -275,8 +281,9 @@ def evaluate_assessment_v2(
     source_lines: list[str] | None = None,
     expected_sha256: str = "b03adc9592f2853006263ef67fcc6dc716b99333b84bc0198bff7b7f0af1a028",
     source_sha256_actual: str | None = None,
+    evaluator_version: str = "2.4.0",
 ) -> CoreEvaluationReport:
-    """Evaluate a LegacyAssessment instance deterministically under Gate 2 V2.1 rules."""
+    """Evaluate a LegacyAssessment instance deterministically under Gate 2 V2.4 rules."""
     if golden_data is None:
         golden_data = load_golden_dataset_v2()
     if source_lines is None:
@@ -294,7 +301,11 @@ def evaluate_assessment_v2(
         verification_method="WHOLE_FILE_SCAN",
     )
 
-    predictions = assessment_to_predicted_facts(assessment, total_lines=len(source_lines))
+    predictions = assessment_to_predicted_facts(
+        assessment,
+        total_lines=len(source_lines),
+        source_lines=source_lines,
+    )
 
     return evaluate_predicted_facts(
         predictions=predictions,
@@ -305,4 +316,5 @@ def evaluate_assessment_v2(
         source_sha256_actual=source_sha256_actual,
         expected_sha256=expected_sha256,
         schema_valid=True,
+        evaluator_version=evaluator_version,
     )
