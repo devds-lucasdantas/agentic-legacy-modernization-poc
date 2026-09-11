@@ -452,7 +452,6 @@ def load_authorization_spec(spec_path: Path) -> tuple[dict[str, Any], str]:
         "spec_version",
         "gate",
         "run_label",
-        "expected_git_sha",
         "reasoning_effort",
         "prompt_sha256",
         "wire_schema_sha256",
@@ -475,6 +474,11 @@ def load_authorization_spec(spec_path: Path) -> tuple[dict[str, Any], str]:
     missing = required_keys - set(spec.keys())
     if missing:
         raise ValueError(f"Authorization spec missing required keys: {sorted(missing)}")
+    if "candidate_git_sha" not in spec and "expected_git_sha" not in spec:
+        raise ValueError(
+            "Authorization spec must contain 'candidate_git_sha' or 'expected_git_sha'"
+        )
+    spec["candidate_git_sha"] = spec.get("candidate_git_sha") or spec.get("expected_git_sha", "")
     if spec.get("gate") != 3:
         raise ValueError(f"Authorization spec gate must be 3, got: {spec.get('gate')}")
     if spec.get("openai_client_max_retries") != 0:
@@ -605,22 +609,58 @@ def execute_gate_3(
     if spec["run_label"] != run_label:
         raise ValueError(f"Run label mismatch: CLI={run_label}, spec={spec['run_label']}")
 
-    expected_sha = spec.get("expected_git_sha", "").strip()
-    if expected_sha and expected_sha.lower() != head_sha.lower():
-        raise RuntimeError(f"Authorized git SHA mismatch: HEAD={head_sha}, spec={expected_sha}")
+    candidate_sha = (spec.get("candidate_git_sha") or spec.get("expected_git_sha", "")).strip()
 
-    if not expected_sha and not synthetic and not dry_run:
+    if not candidate_sha and not synthetic and not dry_run:
         raise RuntimeError(
-            "Candidate commit is not frozen: expected_git_sha is empty in authorization spec. "
+            "Candidate commit is not frozen: candidate_git_sha is empty in authorization spec. "
             "Refusing live execution on un-frozen candidate."
         )
 
-    # 4. Determine artifact destination
+    if candidate_sha and not allow_dirty:
+        diff_res = subprocess.run(
+            ["git", "diff", "--name-only", candidate_sha, head_sha],
+            cwd=repo_root,
+            env=env,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        changed_files = [f.strip() for f in diff_res.stdout.splitlines() if f.strip()]
+        disallowed = [f for f in changed_files if not f.startswith("evals/baselines/")]
+        if disallowed:
+            raise RuntimeError(
+                f"Authorization commit {head_sha} modifies files outside evals/baselines/ "
+                f"relative to candidate {candidate_sha}: {disallowed}"
+            )
+
+    # 4. Determine artifact destination & enforce irrevocable reservation
     out_dir = output_dir or (repo_root / "artifacts" / "gate-3" / run_label)
-    out_dir.mkdir(parents=True, exist_ok=True)
+    run_state_file = out_dir / "run-state.json"
+
+    if out_dir.exists():
+        if run_state_file.exists():
+            try:
+                existing_state = json.loads(run_state_file.read_text(encoding="utf-8"))
+                st = existing_state.get("status", "UNKNOWN")
+            except Exception:
+                st = "UNKNOWN"
+            if st in ("RESERVED", "MODEL_INVOCATION", "FAILED", "COMPLETED"):
+                raise RuntimeError(
+                    f"Irrevocable reservation error: Run label '{run_label}' in '{out_dir}' "
+                    f"is already permanently reserved with status '{st}'. "
+                    f"Re-entry is strictly refused."
+                )
+        if not allow_dirty and run_label.startswith("baseline-"):
+            raise RuntimeError(
+                f"Irrevocable reservation error: Artifact directory '{out_dir}' "
+                f"already exists for baseline run. "
+                f"Re-use of official baseline label/directory is strictly forbidden."
+            )
+    else:
+        out_dir.mkdir(parents=True, exist_ok=False)
 
     # 5. Write RESERVED state
-    run_state_file = out_dir / "run-state.json"
     atomic_write_json(
         run_state_file,
         {
@@ -628,18 +668,21 @@ def execute_gate_3(
             "run_label": run_label,
             "gate": 3,
             "timestamp": datetime.now(UTC).isoformat(),
-            "git_commit_sha": head_sha,
+            "candidate_git_sha": candidate_sha,
+            "authorization_commit_sha": head_sha,
+            "git_commit_sha": candidate_sha or head_sha,
             "bundle_sha256": spec["bundle_sha256"],
             "requested_model": spec["requested_model"],
             "foundry_project_fingerprint": spec["foundry_project_fingerprint"],
         },
     )
 
-    # 6. Execute child in isolated mode
+    # 6. Execute child in isolated mode from candidate C snapshot
+    snapshot_target_sha = candidate_sha if candidate_sha else head_sha
     with tempfile.TemporaryDirectory(prefix="gate3_snapshot_") as temp_dir_str:
         temp_dir = Path(temp_dir_str)
         create_git_snapshot_archive(
-            head_sha, temp_dir, repo_root=repo_root, allow_dirty=allow_dirty
+            snapshot_target_sha, temp_dir, repo_root=repo_root, allow_dirty=allow_dirty
         )
 
         child_args = [
@@ -655,6 +698,8 @@ def execute_gate_3(
             "--artifact-dir",
             str(out_dir.resolve()),
             "--authorized-git-sha",
+            candidate_sha or head_sha,
+            "--authorization-commit-sha",
             head_sha,
             "--auth-spec",
             str(auth_spec_path.resolve()),
@@ -702,6 +747,24 @@ def execute_internal_child(args: argparse.Namespace) -> int:
     auth_spec_path = Path(args.auth_spec).resolve()
     run_label = args.run_label
     authorized_sha = args.authorized_git_sha
+    authorization_commit_sha = getattr(args, "authorization_commit_sha", "") or authorized_sha
+    candidate_sha = authorized_sha
+
+    # Verify irrevocable reservation state: abort before any model/credential access
+    run_state_file = artifact_dir / "run-state.json"
+    if run_state_file.exists():
+        try:
+            cur_state = json.loads(run_state_file.read_text(encoding="utf-8"))
+            st = cur_state.get("status")
+            if st in ("MODEL_INVOCATION", "FAILED", "COMPLETED"):
+                print(
+                    f"ERROR: Irrevocable reservation error: Run label '{run_label}' already in "
+                    f"state '{st}'. Refusing re-entry.",
+                    file=sys.stderr,
+                )
+                return 1
+        except Exception:
+            pass
 
     # Ensure controlled sys.path: snapshot_dir is at sys.path[0] and provenance_repo is excluded
     sys.path = [p for p in sys.path if Path(p).resolve() != provenance_repo.resolve()]
@@ -834,7 +897,51 @@ def execute_internal_child(args: argparse.Namespace) -> int:
             "runtime_manifest_sha256": runtime_manifest_sha,
         }
     else:
-        # Live path: persist MODEL_INVOCATION state
+        # Live path: preflight verification before obtaining client or persisting MODEL_INVOCATION
+        from agents.legacy_analyzer.config import (
+            compute_foundry_project_fingerprint,
+            load_config,
+        )
+
+        try:
+            cfg = load_config()
+        except Exception as e:
+            print(f"ERROR: Failed to load config: {e}", file=sys.stderr)
+            return 1
+
+        if cfg.foundry_model != spec["requested_model"]:
+            print(
+                f"ERROR: Model mismatch before invocation: "
+                f"config.foundry_model='{cfg.foundry_model}' "
+                f"!= spec.requested_model='{spec['requested_model']}'",
+                file=sys.stderr,
+            )
+            return 1
+
+        actual_fp = compute_foundry_project_fingerprint(cfg.foundry_project_endpoint)
+        if actual_fp != spec["foundry_project_fingerprint"]:
+            print(
+                f"ERROR: Project fingerprint mismatch before invocation: actual='{actual_fp}' "
+                f"!= spec='{spec['foundry_project_fingerprint']}'",
+                file=sys.stderr,
+            )
+            return 1
+
+        if spec.get("reasoning_effort") != "low":
+            print(
+                f"ERROR: Unexpected reasoning effort: {spec.get('reasoning_effort')}",
+                file=sys.stderr,
+            )
+            return 1
+
+        if spec.get("openai_client_max_retries") != 0 or spec.get("maximum_model_attempts") != 1:
+            print(
+                "ERROR: Attempt policy violation: max retries must be 0 and max attempts must be 1",
+                file=sys.stderr,
+            )
+            return 1
+
+        # Only after all preflight checks pass: persist MODEL_INVOCATION state
         atomic_write_json(
             run_state_file,
             {
@@ -842,6 +949,8 @@ def execute_internal_child(args: argparse.Namespace) -> int:
                 "run_label": run_label,
                 "gate": 3,
                 "timestamp": datetime.now(UTC).isoformat(),
+                "candidate_git_sha": candidate_sha,
+                "authorization_commit_sha": authorization_commit_sha,
                 "git_commit_sha": authorized_sha,
                 "requested_model": spec["requested_model"],
                 "foundry_project_fingerprint": spec["foundry_project_fingerprint"],
@@ -849,7 +958,7 @@ def execute_internal_child(args: argparse.Namespace) -> int:
         )
 
         try:
-            agent = SystemAnalyzerAgent(reasoning_effort=spec["reasoning_effort"])
+            agent = SystemAnalyzerAgent(config=cfg, reasoning_effort=spec["reasoning_effort"])
             assessment, metadata = agent.analyze_system(
                 bundle=bundle,
                 run_label=run_label,
@@ -860,6 +969,29 @@ def execute_internal_child(args: argparse.Namespace) -> int:
             metadata_dict["auth_spec_sha256"] = spec_sha
             metadata_dict["bundle_sha256"] = spec["bundle_sha256"]
             metadata_dict["runtime_manifest_sha256"] = runtime_manifest_sha
+            metadata_dict["candidate_git_sha"] = candidate_sha
+            metadata_dict["authorization_commit_sha"] = authorization_commit_sha
+
+            resp_model = metadata.response_model_id or ""
+            if not resp_model.lower().startswith(spec["requested_model"].lower()):
+                print(
+                    f"ERROR: Response model compatibility violation: got '{resp_model}', "
+                    f"expected compatible with '{spec['requested_model']}'",
+                    file=sys.stderr,
+                )
+                atomic_write_json(
+                    run_state_file,
+                    {
+                        "status": "FAILED",
+                        "error_phase": "RESPONSE_MODEL_COMPATIBILITY",
+                        "error_message": f"Response model mismatch: {resp_model}",
+                        "timestamp": datetime.now(UTC).isoformat(),
+                        "candidate_git_sha": candidate_sha,
+                        "authorization_commit_sha": authorization_commit_sha,
+                        "git_commit_sha": authorized_sha,
+                    },
+                )
+                return 1
         except Exception as e:
             print(f"ERROR: Model invocation failed: {e}", file=sys.stderr)
             atomic_write_json(
@@ -869,6 +1001,8 @@ def execute_internal_child(args: argparse.Namespace) -> int:
                     "error_phase": "MODEL_INVOCATION",
                     "error_message": str(e),
                     "timestamp": datetime.now(UTC).isoformat(),
+                    "candidate_git_sha": candidate_sha,
+                    "authorization_commit_sha": authorization_commit_sha,
                     "git_commit_sha": authorized_sha,
                 },
             )
@@ -881,31 +1015,11 @@ def execute_internal_child(args: argparse.Namespace) -> int:
     evaluator = SystemEvaluatorV3(index, golden_dataset_path=golden_file)
     eval_result, predictions = evaluator.evaluate_assessment(assessment)
 
-    # Step 13: Persist artifacts
-    atomic_write_json(artifact_dir / "assessment.json", assessment.model_dump())
-    atomic_write_json(artifact_dir / "evaluation-result.json", eval_result.to_dict())
-    atomic_write_json(artifact_dir / "run-metadata.json", metadata_dict)
+    # Step 13: Complete immutable artifact preservation (14 distinct artifacts)
+    from agents.legacy_analyzer.schemas.system_export import get_system_openai_wire_schema
+    from agents.legacy_analyzer.system_agent import load_system_v3_prompt
 
-    manifest_artifacts = [
-        "assessment.json",
-        "evaluation-result.json",
-        "run-metadata.json",
-        "run-state.json",
-    ]
-    manifest = {
-        "gate": 3,
-        "run_label": run_label,
-        "timestamp": datetime.now(UTC).isoformat(),
-        "git_commit_sha": authorized_sha,
-        "gate_3_pass": eval_result.gate_3_pass,
-        "artifacts": manifest_artifacts,
-        "precision": eval_result.precision,
-        "recall": eval_result.recall,
-        "matched_expected_count": eval_result.matched_expected_count,
-        "expected_fact_count": eval_result.expected_fact_count,
-    }
-    atomic_write_json(artifact_dir / "manifest.json", manifest)
-
+    # 1. Update run-state.json to final COMPLETED status before manifest
     atomic_write_json(
         run_state_file,
         {
@@ -914,9 +1028,94 @@ def execute_internal_child(args: argparse.Namespace) -> int:
             "run_label": run_label,
             "gate": 3,
             "timestamp": datetime.now(UTC).isoformat(),
+            "candidate_git_sha": candidate_sha,
+            "authorization_commit_sha": authorization_commit_sha,
             "git_commit_sha": authorized_sha,
         },
     )
+
+    # 2. authorization-spec.json
+    atomic_write_json(artifact_dir / "authorization-spec.json", spec)
+
+    # 3. production-prompt.md
+    prompt_text = load_system_v3_prompt()
+    (artifact_dir / "production-prompt.md").write_text(prompt_text, encoding="utf-8")
+
+    # 4. wire-schema.json
+    wire_schema = get_system_openai_wire_schema()
+    atomic_write_json(artifact_dir / "wire-schema.json", wire_schema)
+
+    # 5. source-manifest.json
+    source_manifest = {
+        rel_path: {
+            "size": len(f.raw_content.encode("utf-8")),
+            "lines": f.line_count,
+            "sha256": f.sha256,
+        }
+        for rel_path, f in bundle.files.items()
+    }
+    atomic_write_json(artifact_dir / "source-manifest.json", source_manifest)
+
+    # 6. canonical-input-bundle.txt
+    (artifact_dir / "canonical-input-bundle.txt").write_text(
+        bundle.formatted_prompt_payload, encoding="utf-8"
+    )
+
+    # 7. parser-coverage-certificate.json
+    coverage_cert = parser.get_parser_coverage_certificate()
+    atomic_write_json(artifact_dir / "parser-coverage-certificate.json", coverage_cert.to_dict())
+
+    # 8. runtime-manifest.json
+    atomic_write_json(artifact_dir / "runtime-manifest.json", runtime_manifest)
+
+    # 9. raw-response.json
+    raw_response_content = (
+        {"mock": True, "source": "synthetic-golden-v3"}
+        if args.synthetic
+        else (metadata_dict.get("raw_response_text") or {})
+    )
+    atomic_write_json(artifact_dir / "raw-response.json", raw_response_content)
+
+    # 10. model-assessment.json
+    atomic_write_json(artifact_dir / "model-assessment.json", assessment.model_dump())
+
+    # 11. enriched-assessment.json
+    atomic_write_json(artifact_dir / "enriched-assessment.json", assessment.model_dump())
+
+    # 12. evaluation.json
+    eval_dict = {
+        "metric_summary": eval_result.to_dict(),
+        "predictions": [p.to_dict() for p in predictions],
+    }
+    atomic_write_json(artifact_dir / "evaluation.json", eval_dict)
+
+    # 13. run-metadata.json
+    atomic_write_json(artifact_dir / "run-metadata.json", metadata_dict)
+
+    # 14. manifest.json (written LAST; maps filename -> SHA256 of all other 13 artifacts)
+    manifest_shas: dict[str, str] = {}
+    for fname in sorted(os.listdir(artifact_dir)):
+        if fname == "manifest.json" or fname.endswith(".tmp") or ".tmp." in fname:
+            continue
+        fpath = artifact_dir / fname
+        if fpath.is_file():
+            manifest_shas[fname] = hashlib.sha256(fpath.read_bytes()).hexdigest()
+
+    manifest = {
+        "gate": 3,
+        "run_label": run_label,
+        "timestamp": datetime.now(UTC).isoformat(),
+        "candidate_git_sha": candidate_sha,
+        "authorization_commit_sha": authorization_commit_sha,
+        "git_commit_sha": authorized_sha,
+        "gate_3_pass": eval_result.gate_3_pass,
+        "precision": eval_result.precision,
+        "recall": eval_result.recall,
+        "matched_expected_count": eval_result.matched_expected_count,
+        "expected_fact_count": eval_result.expected_fact_count,
+        "artifacts": manifest_shas,
+    }
+    atomic_write_json(artifact_dir / "manifest.json", manifest)
 
     print(
         f"Gate 3 evaluation complete. Pass: {eval_result.gate_3_pass} "
@@ -958,6 +1157,9 @@ def main() -> None:
         "--artifact-dir", default=None, help="Path to destination artifact directory"
     )
     parser.add_argument("--authorized-git-sha", default=None, help="Authorized Git commit SHA")
+    parser.add_argument(
+        "--authorization-commit-sha", default=None, help="Authorization commit Git SHA"
+    )
 
     args = parser.parse_args()
 

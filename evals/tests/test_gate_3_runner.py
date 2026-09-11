@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
 from pathlib import Path
@@ -204,22 +205,38 @@ def test_synthetic_execution_end_to_end(tmp_path: Path):
     )
     assert exit_code == 0
 
-    assert (out_dir / "assessment.json").is_file()
-    assert (out_dir / "evaluation-result.json").is_file()
-    assert (out_dir / "run-metadata.json").is_file()
-    assert (out_dir / "manifest.json").is_file()
-    assert (out_dir / "run-state.json").is_file()
+    # Blocker 10: Complete immutable artifact preservation (14 artifacts)
+    expected_artifacts = [
+        "run-state.json",
+        "authorization-spec.json",
+        "production-prompt.md",
+        "wire-schema.json",
+        "source-manifest.json",
+        "canonical-input-bundle.txt",
+        "parser-coverage-certificate.json",
+        "runtime-manifest.json",
+        "raw-response.json",
+        "model-assessment.json",
+        "enriched-assessment.json",
+        "evaluation.json",
+        "run-metadata.json",
+        "manifest.json",
+    ]
+    for art in expected_artifacts:
+        assert (out_dir / art).is_file(), f"Missing artifact: {art}"
 
-    eval_data = json.loads((out_dir / "evaluation-result.json").read_text(encoding="utf-8"))
-    assert eval_data["gate_3_pass"] is True
-    assert eval_data["matched_expected_count"] == 59
-    assert eval_data["expected_fact_count"] == 59
-    assert eval_data["precision"] == 1.0
-    assert eval_data["recall"] == 1.0
+    eval_data = json.loads((out_dir / "evaluation.json").read_text(encoding="utf-8"))
+    summary = eval_data["metric_summary"]
+    assert summary["gate_3_pass"] is True
+    assert summary["matched_expected_count"] == 59
+    assert summary["expected_fact_count"] == 59
+    assert summary["precision"] == 1.0
+    assert summary["recall"] == 1.0
 
     manifest = json.loads((out_dir / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["gate_3_pass"] is True
-    assert "assessment.json" in manifest["artifacts"]
-    assert "evaluation-result.json" in manifest["artifacts"]
-    assert "run-metadata.json" in manifest["artifacts"]
-    assert "run-state.json" in manifest["artifacts"]
+    for art in expected_artifacts:
+        if art != "manifest.json":
+            assert art in manifest["artifacts"], f"Missing artifact in manifest: {art}"
+            actual_sha = hashlib.sha256((out_dir / art).read_bytes()).hexdigest()
+            assert manifest["artifacts"][art] == actual_sha, f"SHA mismatch for {art}"
