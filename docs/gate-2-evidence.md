@@ -1,21 +1,17 @@
 # Gate 2 — COBOL Reader — Evidence
 
-## Status: V1_REPORTED_PASS / V2_PENDING
+## Status: V1_REPORTED_PASS / V2_FAILED_CONTRACT_MISMATCH / V2.4_PENDING
 
 > [!IMPORTANT]
 > **Status Clarification & Candidate Versioning:**
 > - **BASELINE V1** reported `PASS` under legacy Evaluator `v1.1.0` on 2026-09-06.
-> - Successive adversarial reviews and the Final Authorization Review identified correctness, schema, refusal handling, provenance, isolation, and soundness vulnerabilities.
-> - BASELINE V1 remains preserved immutable historical experimental evidence.
-> - **Gate 2 Candidate V2.3 Specification:**
->   - Candidate Version: **Gate 2 Candidate V2.3**
->   - `schema_version = 2.2.0` (model-visible schema unchanged)
->   - `prompt_version = gate2-baseline-v2.2` (prompt contract unchanged)
->   - `evaluator_version = 2.3.0` (semantic menu key normalization update)
->   - `golden_dataset_version = 2.2.0` (expected facts unchanged)
-> - Component versions are intentionally decoupled: model schema and prompt contracts were not altered, preserving evaluation integrity.
-> - Gate 2 final validation is **PENDING BASELINE V2**.
-> - **BASELINE V2 has NOT been executed.** Exactly zero live model calls were performed during this corrective cycle.
+> - **BASELINE V2** was executed on 2026-09-11 (`gpt-5-mini`, Git SHA `9390377b410917e3e9c62883346b299b628a0000`).
+> - **Official Result:** `FAIL` (Precision 0.0455, Recall 0.0667, 21 invalid evidence snippets).
+> - **Postmortem Classification:** `BENCHMARK_CONTRACT_FAILURE / EVIDENCE_REPRESENTATION_MISMATCH`.
+> - The model ingested line-numbered transport lines (`0002 | ...`) and emitted that exact representation in `evidence.snippet`. Slicing against raw unnumbered source lines caused all 21 positive predictions to fail evidence validation fail-closed.
+> - **Offline Diagnostic Rescore:** When the transport prefix `^[0-9]{4} \| ` is removed via a structurally verified conversion (`evals/scripts/rescore_baseline_v2_diagnostic.py`), precision becomes 1.0 (100%) and recall becomes 1.0 (100%), proving 100% semantic COBOL understanding.
+> - Full Technical Postmortem: [docs/postmortems/gate-2-baseline-v2-postmortem.md](file:///c:/Users/lucas/.gemini/antigravity-ide/scratch/agentic-legacy-modernization-poc/docs/postmortems/gate-2-baseline-v2-postmortem.md).
+> - **Candidate V2.4 Direction:** Decouple evidence snippets from model output; model generates `line_start` and `line_end` only; host derives snippet deterministically from verified source bytes.
 
 ---
 

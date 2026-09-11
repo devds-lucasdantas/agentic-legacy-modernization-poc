@@ -1,0 +1,960 @@
+{
+  "evaluator_version": "2.3.0",
+  "golden_dataset_version": "2.2.0",
+  "schema_valid": true,
+  "source_sha256_match": true,
+  "parse_complete": true,
+  "evidence_valid": false,
+  "invalid_evidence_count": 21,
+  "raw_predicted_count": 22,
+  "unique_predicted_count": 22,
+  "duplicate_prediction_count": 0,
+  "supported_predicted_count": 1,
+  "unsupported_predicted_count": 21,
+  "contradiction_count": 0,
+  "expected_fact_count": 15,
+  "matched_expected_count": 1,
+  "missing_expected_count": 14,
+  "precision": 0.0455,
+  "recall": 0.0667,
+  "gate_2_pass": false,
+  "duplicates": [],
+  "contradictions": [],
+  "supported_predictions": [],
+  "unsupported_predictions": [
+    {
+      "fact": {
+        "kind": "PROGRAM",
+        "subject": "BANK-MAIN",
+        "predicate": "DECLARES",
+        "object": "PROGRAM-ID",
+        "attributes": {}
+      },
+      "canonical_id": "PROGRAM:BANK-MAIN:DECLARES:PROGRAM-ID",
+      "reason": "Invalid evidence citation: Evidence snippet '0002 |        PROGRAM-ID. BANK-MAIN.' does not match actual source text in lines [2..2]",
+      "citation": {
+        "line_start": 2,
+        "line_end": 2,
+        "snippet": "0002 |        PROGRAM-ID. BANK-MAIN."
+      }
+    },
+    {
+      "fact": {
+        "kind": "DATA_FIELD",
+        "subject": "WS-CHOICE",
+        "predicate": "DECLARES",
+        "object": "VARIABLE",
+        "attributes": {
+          "LEVEL": "01",
+          "PICTURE": "X(1)",
+          "SECTION": "WORKING-STORAGE"
+        }
+      },
+      "canonical_id": "DATA_FIELD:WS-CHOICE:DECLARES:VARIABLE[LEVEL=01,PICTURE=X(1),SECTION=WORKING-STORAGE]",
+      "reason": "Invalid evidence citation: Evidence snippet '0008 |        01 WS-CHOICE  PIC X.' does not match actual source text in lines [8..8]",
+      "citation": {
+        "line_start": 8,
+        "line_end": 8,
+        "snippet": "0008 |        01 WS-CHOICE  PIC X."
+      }
+    },
+    {
+      "fact": {
+        "kind": "CALL",
+        "subject": "BANK-MAIN",
+        "predicate": "INVOKES",
+        "object": "INIT-DB",
+        "attributes": {}
+      },
+      "canonical_id": "CALL:BANK-MAIN:INVOKES:INIT-DB",
+      "reason": "Invalid evidence citation: Evidence snippet '0024 |                         CALL 'INIT-DB'' does not match actual source text in lines [24..24]",
+      "citation": {
+        "line_start": 24,
+        "line_end": 24,
+        "snippet": "0024 |                         CALL 'INIT-DB'"
+      }
+    },
+    {
+      "fact": {
+        "kind": "CALL",
+        "subject": "BANK-MAIN",
+        "predicate": "INVOKES",
+        "object": "TRANS-PROC",
+        "attributes": {}
+      },
+      "canonical_id": "CALL:BANK-MAIN:INVOKES:TRANS-PROC",
+      "reason": "Invalid evidence citation: Evidence snippet '0026 |                         CALL 'TRANS-PROC'' does not match actual source text in lines [26..26]",
+      "citation": {
+        "line_start": 26,
+        "line_end": 26,
+        "snippet": "0026 |                         CALL 'TRANS-PROC'"
+      }
+    },
+    {
+      "fact": {
+        "kind": "CALL",
+        "subject": "BANK-MAIN",
+        "predicate": "INVOKES",
+        "object": "REPORT-GEN",
+        "attributes": {}
+      },
+      "canonical_id": "CALL:BANK-MAIN:INVOKES:REPORT-GEN",
+      "reason": "Invalid evidence citation: Evidence snippet '0028 |                         CALL 'REPORT-GEN'' does not match actual source text in lines [28..28]",
+      "citation": {
+        "line_start": 28,
+        "line_end": 28,
+        "snippet": "0028 |                         CALL 'REPORT-GEN'"
+      }
+    },
+    {
+      "fact": {
+        "kind": "MENU_OPTION",
+        "subject": "1",
+        "predicate": "CALLS",
+        "object": "INIT-DB",
+        "attributes": {}
+      },
+      "canonical_id": "MENU_OPTION:1:CALLS:INIT-DB",
+      "reason": "Invalid evidence citation: Evidence snippet '0022 |                    EVALUATE WS-CHOICE\n0023 |                    WHEN '1'\n0024 |                         CALL 'INIT-DB'' does not match actual source text in lines [22..24]",
+      "citation": {
+        "line_start": 22,
+        "line_end": 24,
+        "snippet": "0022 |                    EVALUATE WS-CHOICE\n0023 |                    WHEN '1'\n0024 |                         CALL 'INIT-DB'"
+      }
+    },
+    {
+      "fact": {
+        "kind": "MENU_OPTION",
+        "subject": "2",
+        "predicate": "CALLS",
+        "object": "TRANS-PROC",
+        "attributes": {}
+      },
+      "canonical_id": "MENU_OPTION:2:CALLS:TRANS-PROC",
+      "reason": "Invalid evidence citation: Evidence snippet '0025 |                    WHEN '2'\n0026 |                         CALL 'TRANS-PROC'' does not match actual source text in lines [25..26]",
+      "citation": {
+        "line_start": 25,
+        "line_end": 26,
+        "snippet": "0025 |                    WHEN '2'\n0026 |                         CALL 'TRANS-PROC'"
+      }
+    },
+    {
+      "fact": {
+        "kind": "MENU_OPTION",
+        "subject": "3",
+        "predicate": "CALLS",
+        "object": "REPORT-GEN",
+        "attributes": {}
+      },
+      "canonical_id": "MENU_OPTION:3:CALLS:REPORT-GEN",
+      "reason": "Invalid evidence citation: Evidence snippet '0027 |                    WHEN '3'\n0028 |                         CALL 'REPORT-GEN'' does not match actual source text in lines [27..28]",
+      "citation": {
+        "line_start": 27,
+        "line_end": 28,
+        "snippet": "0027 |                    WHEN '3'\n0028 |                         CALL 'REPORT-GEN'"
+      }
+    },
+    {
+      "fact": {
+        "kind": "MENU_OPTION",
+        "subject": "4",
+        "predicate": "DISPLAYS",
+        "object": "Bye.",
+        "attributes": {}
+      },
+      "canonical_id": "MENU_OPTION:4:DISPLAYS:Bye.",
+      "reason": "Invalid evidence citation: Evidence snippet '0029 |                    WHEN '4'\n0030 |                         DISPLAY 'Bye.'' does not match actual source text in lines [29..30]",
+      "citation": {
+        "line_start": 29,
+        "line_end": 30,
+        "snippet": "0029 |                    WHEN '4'\n0030 |                         DISPLAY 'Bye.'"
+      }
+    },
+    {
+      "fact": {
+        "kind": "MENU_OPTION",
+        "subject": "OTHER",
+        "predicate": "DISPLAYS",
+        "object": "Invalid.",
+        "attributes": {}
+      },
+      "canonical_id": "MENU_OPTION:OTHER:DISPLAYS:Invalid.",
+      "reason": "Invalid evidence citation: Evidence snippet '0031 |                    WHEN OTHER\n0032 |                         DISPLAY 'Invalid.'' does not match actual source text in lines [31..32]",
+      "citation": {
+        "line_start": 31,
+        "line_end": 32,
+        "snippet": "0031 |                    WHEN OTHER\n0032 |                         DISPLAY 'Invalid.'"
+      }
+    },
+    {
+      "fact": {
+        "kind": "CONTROL_FLOW",
+        "subject": "PERFORM_UNTIL",
+        "predicate": "CONDITION",
+        "object": "WS-CHOICE = '4'",
+        "attributes": {}
+      },
+      "canonical_id": "CONTROL_FLOW:PERFORM_UNTIL:CONDITION:WS-CHOICE = '4'",
+      "reason": "Invalid evidence citation: Evidence snippet '0012 |            PERFORM UNTIL WS-CHOICE = '4'' does not match actual source text in lines [12..12]",
+      "citation": {
+        "line_start": 12,
+        "line_end": 12,
+        "snippet": "0012 |            PERFORM UNTIL WS-CHOICE = '4'"
+      }
+    },
+    {
+      "fact": {
+        "kind": "CONTROL_FLOW",
+        "subject": "EVALUATE",
+        "predicate": "DISPATCHES",
+        "object": "WS-CHOICE",
+        "attributes": {}
+      },
+      "canonical_id": "CONTROL_FLOW:EVALUATE:DISPATCHES:WS-CHOICE",
+      "reason": "Invalid evidence citation: Evidence snippet '0022 |                    EVALUATE WS-CHOICE' does not match actual source text in lines [22..22]",
+      "citation": {
+        "line_start": 22,
+        "line_end": 22,
+        "snippet": "0022 |                    EVALUATE WS-CHOICE"
+      }
+    },
+    {
+      "fact": {
+        "kind": "CONTROL_FLOW",
+        "subject": "STOP_RUN",
+        "predicate": "TERMINATES",
+        "object": "STOP RUN",
+        "attributes": {}
+      },
+      "canonical_id": "CONTROL_FLOW:STOP_RUN:TERMINATES:STOP RUN",
+      "reason": "Invalid evidence citation: Evidence snippet '0036 |            STOP RUN.' does not match actual source text in lines [36..36]",
+      "citation": {
+        "line_start": 36,
+        "line_end": 36,
+        "snippet": "0036 |            STOP RUN."
+      }
+    },
+    {
+      "fact": {
+        "kind": "IO_OPERATION",
+        "subject": "DISPLAY",
+        "predicate": "WRITES",
+        "object": " ",
+        "attributes": {}
+      },
+      "canonical_id": "IO_OPERATION:DISPLAY:WRITES: ",
+      "reason": "Invalid evidence citation: Evidence snippet '0013 |                    DISPLAY ' '' does not match actual source text in lines [13..13]",
+      "citation": {
+        "line_start": 13,
+        "line_end": 13,
+        "snippet": "0013 |                    DISPLAY ' '"
+      }
+    },
+    {
+      "fact": {
+        "kind": "IO_OPERATION",
+        "subject": "DISPLAY",
+        "predicate": "WRITES",
+        "object": "=== CORE BANKING SYSTEM ===",
+        "attributes": {}
+      },
+      "canonical_id": "IO_OPERATION:DISPLAY:WRITES:=== CORE BANKING SYSTEM ===",
+      "reason": "Invalid evidence citation: Evidence snippet '0014 |                    DISPLAY '=== CORE BANKING SYSTEM ==='' does not match actual source text in lines [14..14]",
+      "citation": {
+        "line_start": 14,
+        "line_end": 14,
+        "snippet": "0014 |                    DISPLAY '=== CORE BANKING SYSTEM ==='"
+      }
+    },
+    {
+      "fact": {
+        "kind": "IO_OPERATION",
+        "subject": "DISPLAY",
+        "predicate": "WRITES",
+        "object": "1. Init Database",
+        "attributes": {}
+      },
+      "canonical_id": "IO_OPERATION:DISPLAY:WRITES:1. Init Database",
+      "reason": "Invalid evidence citation: Evidence snippet '0015 |                    DISPLAY '1. Init Database'' does not match actual source text in lines [15..15]",
+      "citation": {
+        "line_start": 15,
+        "line_end": 15,
+        "snippet": "0015 |                    DISPLAY '1. Init Database'"
+      }
+    },
+    {
+      "fact": {
+        "kind": "IO_OPERATION",
+        "subject": "DISPLAY",
+        "predicate": "WRITES",
+        "object": "2. Transaction",
+        "attributes": {}
+      },
+      "canonical_id": "IO_OPERATION:DISPLAY:WRITES:2. Transaction",
+      "reason": "Invalid evidence citation: Evidence snippet '0016 |                    DISPLAY '2. Transaction'' does not match actual source text in lines [16..16]",
+      "citation": {
+        "line_start": 16,
+        "line_end": 16,
+        "snippet": "0016 |                    DISPLAY '2. Transaction'"
+      }
+    },
+    {
+      "fact": {
+        "kind": "IO_OPERATION",
+        "subject": "DISPLAY",
+        "predicate": "WRITES",
+        "object": "3. Report",
+        "attributes": {}
+      },
+      "canonical_id": "IO_OPERATION:DISPLAY:WRITES:3. Report",
+      "reason": "Invalid evidence citation: Evidence snippet '0017 |                    DISPLAY '3. Report'' does not match actual source text in lines [17..17]",
+      "citation": {
+        "line_start": 17,
+        "line_end": 17,
+        "snippet": "0017 |                    DISPLAY '3. Report'"
+      }
+    },
+    {
+      "fact": {
+        "kind": "IO_OPERATION",
+        "subject": "DISPLAY",
+        "predicate": "WRITES",
+        "object": "4. Exit",
+        "attributes": {}
+      },
+      "canonical_id": "IO_OPERATION:DISPLAY:WRITES:4. Exit",
+      "reason": "Invalid evidence citation: Evidence snippet '0018 |                    DISPLAY '4. Exit'' does not match actual source text in lines [18..18]",
+      "citation": {
+        "line_start": 18,
+        "line_end": 18,
+        "snippet": "0018 |                    DISPLAY '4. Exit'"
+      }
+    },
+    {
+      "fact": {
+        "kind": "IO_OPERATION",
+        "subject": "DISPLAY",
+        "predicate": "WRITES",
+        "object": "Option: ",
+        "attributes": {}
+      },
+      "canonical_id": "IO_OPERATION:DISPLAY:WRITES:Option: ",
+      "reason": "Invalid evidence citation: Evidence snippet '0019 |                    DISPLAY 'Option: ' WITH NO ADVANCING' does not match actual source text in lines [19..19]",
+      "citation": {
+        "line_start": 19,
+        "line_end": 19,
+        "snippet": "0019 |                    DISPLAY 'Option: ' WITH NO ADVANCING"
+      }
+    },
+    {
+      "fact": {
+        "kind": "IO_OPERATION",
+        "subject": "ACCEPT",
+        "predicate": "READS",
+        "object": "WS-CHOICE",
+        "attributes": {}
+      },
+      "canonical_id": "IO_OPERATION:ACCEPT:READS:WS-CHOICE",
+      "reason": "Invalid evidence citation: Evidence snippet '0020 |                    ACCEPT WS-CHOICE' does not match actual source text in lines [20..20]",
+      "citation": {
+        "line_start": 20,
+        "line_end": 20,
+        "snippet": "0020 |                    ACCEPT WS-CHOICE"
+      }
+    }
+  ],
+  "invalid_evidences": [
+    {
+      "fact": {
+        "kind": "PROGRAM",
+        "subject": "BANK-MAIN",
+        "predicate": "DECLARES",
+        "object": "PROGRAM-ID",
+        "attributes": {}
+      },
+      "canonical_id": "PROGRAM:BANK-MAIN:DECLARES:PROGRAM-ID",
+      "error": "Evidence snippet '0002 |        PROGRAM-ID. BANK-MAIN.' does not match actual source text in lines [2..2]",
+      "citation": {
+        "line_start": 2,
+        "line_end": 2,
+        "snippet": "0002 |        PROGRAM-ID. BANK-MAIN."
+      }
+    },
+    {
+      "fact": {
+        "kind": "DATA_FIELD",
+        "subject": "WS-CHOICE",
+        "predicate": "DECLARES",
+        "object": "VARIABLE",
+        "attributes": {
+          "LEVEL": "01",
+          "PICTURE": "X(1)",
+          "SECTION": "WORKING-STORAGE"
+        }
+      },
+      "canonical_id": "DATA_FIELD:WS-CHOICE:DECLARES:VARIABLE[LEVEL=01,PICTURE=X(1),SECTION=WORKING-STORAGE]",
+      "error": "Evidence snippet '0008 |        01 WS-CHOICE  PIC X.' does not match actual source text in lines [8..8]",
+      "citation": {
+        "line_start": 8,
+        "line_end": 8,
+        "snippet": "0008 |        01 WS-CHOICE  PIC X."
+      }
+    },
+    {
+      "fact": {
+        "kind": "CALL",
+        "subject": "BANK-MAIN",
+        "predicate": "INVOKES",
+        "object": "INIT-DB",
+        "attributes": {}
+      },
+      "canonical_id": "CALL:BANK-MAIN:INVOKES:INIT-DB",
+      "error": "Evidence snippet '0024 |                         CALL 'INIT-DB'' does not match actual source text in lines [24..24]",
+      "citation": {
+        "line_start": 24,
+        "line_end": 24,
+        "snippet": "0024 |                         CALL 'INIT-DB'"
+      }
+    },
+    {
+      "fact": {
+        "kind": "CALL",
+        "subject": "BANK-MAIN",
+        "predicate": "INVOKES",
+        "object": "TRANS-PROC",
+        "attributes": {}
+      },
+      "canonical_id": "CALL:BANK-MAIN:INVOKES:TRANS-PROC",
+      "error": "Evidence snippet '0026 |                         CALL 'TRANS-PROC'' does not match actual source text in lines [26..26]",
+      "citation": {
+        "line_start": 26,
+        "line_end": 26,
+        "snippet": "0026 |                         CALL 'TRANS-PROC'"
+      }
+    },
+    {
+      "fact": {
+        "kind": "CALL",
+        "subject": "BANK-MAIN",
+        "predicate": "INVOKES",
+        "object": "REPORT-GEN",
+        "attributes": {}
+      },
+      "canonical_id": "CALL:BANK-MAIN:INVOKES:REPORT-GEN",
+      "error": "Evidence snippet '0028 |                         CALL 'REPORT-GEN'' does not match actual source text in lines [28..28]",
+      "citation": {
+        "line_start": 28,
+        "line_end": 28,
+        "snippet": "0028 |                         CALL 'REPORT-GEN'"
+      }
+    },
+    {
+      "fact": {
+        "kind": "MENU_OPTION",
+        "subject": "1",
+        "predicate": "CALLS",
+        "object": "INIT-DB",
+        "attributes": {}
+      },
+      "canonical_id": "MENU_OPTION:1:CALLS:INIT-DB",
+      "error": "Evidence snippet '0022 |                    EVALUATE WS-CHOICE\n0023 |                    WHEN '1'\n0024 |                         CALL 'INIT-DB'' does not match actual source text in lines [22..24]",
+      "citation": {
+        "line_start": 22,
+        "line_end": 24,
+        "snippet": "0022 |                    EVALUATE WS-CHOICE\n0023 |                    WHEN '1'\n0024 |                         CALL 'INIT-DB'"
+      }
+    },
+    {
+      "fact": {
+        "kind": "MENU_OPTION",
+        "subject": "2",
+        "predicate": "CALLS",
+        "object": "TRANS-PROC",
+        "attributes": {}
+      },
+      "canonical_id": "MENU_OPTION:2:CALLS:TRANS-PROC",
+      "error": "Evidence snippet '0025 |                    WHEN '2'\n0026 |                         CALL 'TRANS-PROC'' does not match actual source text in lines [25..26]",
+      "citation": {
+        "line_start": 25,
+        "line_end": 26,
+        "snippet": "0025 |                    WHEN '2'\n0026 |                         CALL 'TRANS-PROC'"
+      }
+    },
+    {
+      "fact": {
+        "kind": "MENU_OPTION",
+        "subject": "3",
+        "predicate": "CALLS",
+        "object": "REPORT-GEN",
+        "attributes": {}
+      },
+      "canonical_id": "MENU_OPTION:3:CALLS:REPORT-GEN",
+      "error": "Evidence snippet '0027 |                    WHEN '3'\n0028 |                         CALL 'REPORT-GEN'' does not match actual source text in lines [27..28]",
+      "citation": {
+        "line_start": 27,
+        "line_end": 28,
+        "snippet": "0027 |                    WHEN '3'\n0028 |                         CALL 'REPORT-GEN'"
+      }
+    },
+    {
+      "fact": {
+        "kind": "MENU_OPTION",
+        "subject": "4",
+        "predicate": "DISPLAYS",
+        "object": "Bye.",
+        "attributes": {}
+      },
+      "canonical_id": "MENU_OPTION:4:DISPLAYS:Bye.",
+      "error": "Evidence snippet '0029 |                    WHEN '4'\n0030 |                         DISPLAY 'Bye.'' does not match actual source text in lines [29..30]",
+      "citation": {
+        "line_start": 29,
+        "line_end": 30,
+        "snippet": "0029 |                    WHEN '4'\n0030 |                         DISPLAY 'Bye.'"
+      }
+    },
+    {
+      "fact": {
+        "kind": "MENU_OPTION",
+        "subject": "OTHER",
+        "predicate": "DISPLAYS",
+        "object": "Invalid.",
+        "attributes": {}
+      },
+      "canonical_id": "MENU_OPTION:OTHER:DISPLAYS:Invalid.",
+      "error": "Evidence snippet '0031 |                    WHEN OTHER\n0032 |                         DISPLAY 'Invalid.'' does not match actual source text in lines [31..32]",
+      "citation": {
+        "line_start": 31,
+        "line_end": 32,
+        "snippet": "0031 |                    WHEN OTHER\n0032 |                         DISPLAY 'Invalid.'"
+      }
+    },
+    {
+      "fact": {
+        "kind": "CONTROL_FLOW",
+        "subject": "PERFORM_UNTIL",
+        "predicate": "CONDITION",
+        "object": "WS-CHOICE = '4'",
+        "attributes": {}
+      },
+      "canonical_id": "CONTROL_FLOW:PERFORM_UNTIL:CONDITION:WS-CHOICE = '4'",
+      "error": "Evidence snippet '0012 |            PERFORM UNTIL WS-CHOICE = '4'' does not match actual source text in lines [12..12]",
+      "citation": {
+        "line_start": 12,
+        "line_end": 12,
+        "snippet": "0012 |            PERFORM UNTIL WS-CHOICE = '4'"
+      }
+    },
+    {
+      "fact": {
+        "kind": "CONTROL_FLOW",
+        "subject": "EVALUATE",
+        "predicate": "DISPATCHES",
+        "object": "WS-CHOICE",
+        "attributes": {}
+      },
+      "canonical_id": "CONTROL_FLOW:EVALUATE:DISPATCHES:WS-CHOICE",
+      "error": "Evidence snippet '0022 |                    EVALUATE WS-CHOICE' does not match actual source text in lines [22..22]",
+      "citation": {
+        "line_start": 22,
+        "line_end": 22,
+        "snippet": "0022 |                    EVALUATE WS-CHOICE"
+      }
+    },
+    {
+      "fact": {
+        "kind": "CONTROL_FLOW",
+        "subject": "STOP_RUN",
+        "predicate": "TERMINATES",
+        "object": "STOP RUN",
+        "attributes": {}
+      },
+      "canonical_id": "CONTROL_FLOW:STOP_RUN:TERMINATES:STOP RUN",
+      "error": "Evidence snippet '0036 |            STOP RUN.' does not match actual source text in lines [36..36]",
+      "citation": {
+        "line_start": 36,
+        "line_end": 36,
+        "snippet": "0036 |            STOP RUN."
+      }
+    },
+    {
+      "fact": {
+        "kind": "IO_OPERATION",
+        "subject": "DISPLAY",
+        "predicate": "WRITES",
+        "object": " ",
+        "attributes": {}
+      },
+      "canonical_id": "IO_OPERATION:DISPLAY:WRITES: ",
+      "error": "Evidence snippet '0013 |                    DISPLAY ' '' does not match actual source text in lines [13..13]",
+      "citation": {
+        "line_start": 13,
+        "line_end": 13,
+        "snippet": "0013 |                    DISPLAY ' '"
+      }
+    },
+    {
+      "fact": {
+        "kind": "IO_OPERATION",
+        "subject": "DISPLAY",
+        "predicate": "WRITES",
+        "object": "=== CORE BANKING SYSTEM ===",
+        "attributes": {}
+      },
+      "canonical_id": "IO_OPERATION:DISPLAY:WRITES:=== CORE BANKING SYSTEM ===",
+      "error": "Evidence snippet '0014 |                    DISPLAY '=== CORE BANKING SYSTEM ==='' does not match actual source text in lines [14..14]",
+      "citation": {
+        "line_start": 14,
+        "line_end": 14,
+        "snippet": "0014 |                    DISPLAY '=== CORE BANKING SYSTEM ==='"
+      }
+    },
+    {
+      "fact": {
+        "kind": "IO_OPERATION",
+        "subject": "DISPLAY",
+        "predicate": "WRITES",
+        "object": "1. Init Database",
+        "attributes": {}
+      },
+      "canonical_id": "IO_OPERATION:DISPLAY:WRITES:1. Init Database",
+      "error": "Evidence snippet '0015 |                    DISPLAY '1. Init Database'' does not match actual source text in lines [15..15]",
+      "citation": {
+        "line_start": 15,
+        "line_end": 15,
+        "snippet": "0015 |                    DISPLAY '1. Init Database'"
+      }
+    },
+    {
+      "fact": {
+        "kind": "IO_OPERATION",
+        "subject": "DISPLAY",
+        "predicate": "WRITES",
+        "object": "2. Transaction",
+        "attributes": {}
+      },
+      "canonical_id": "IO_OPERATION:DISPLAY:WRITES:2. Transaction",
+      "error": "Evidence snippet '0016 |                    DISPLAY '2. Transaction'' does not match actual source text in lines [16..16]",
+      "citation": {
+        "line_start": 16,
+        "line_end": 16,
+        "snippet": "0016 |                    DISPLAY '2. Transaction'"
+      }
+    },
+    {
+      "fact": {
+        "kind": "IO_OPERATION",
+        "subject": "DISPLAY",
+        "predicate": "WRITES",
+        "object": "3. Report",
+        "attributes": {}
+      },
+      "canonical_id": "IO_OPERATION:DISPLAY:WRITES:3. Report",
+      "error": "Evidence snippet '0017 |                    DISPLAY '3. Report'' does not match actual source text in lines [17..17]",
+      "citation": {
+        "line_start": 17,
+        "line_end": 17,
+        "snippet": "0017 |                    DISPLAY '3. Report'"
+      }
+    },
+    {
+      "fact": {
+        "kind": "IO_OPERATION",
+        "subject": "DISPLAY",
+        "predicate": "WRITES",
+        "object": "4. Exit",
+        "attributes": {}
+      },
+      "canonical_id": "IO_OPERATION:DISPLAY:WRITES:4. Exit",
+      "error": "Evidence snippet '0018 |                    DISPLAY '4. Exit'' does not match actual source text in lines [18..18]",
+      "citation": {
+        "line_start": 18,
+        "line_end": 18,
+        "snippet": "0018 |                    DISPLAY '4. Exit'"
+      }
+    },
+    {
+      "fact": {
+        "kind": "IO_OPERATION",
+        "subject": "DISPLAY",
+        "predicate": "WRITES",
+        "object": "Option: ",
+        "attributes": {}
+      },
+      "canonical_id": "IO_OPERATION:DISPLAY:WRITES:Option: ",
+      "error": "Evidence snippet '0019 |                    DISPLAY 'Option: ' WITH NO ADVANCING' does not match actual source text in lines [19..19]",
+      "citation": {
+        "line_start": 19,
+        "line_end": 19,
+        "snippet": "0019 |                    DISPLAY 'Option: ' WITH NO ADVANCING"
+      }
+    },
+    {
+      "fact": {
+        "kind": "IO_OPERATION",
+        "subject": "ACCEPT",
+        "predicate": "READS",
+        "object": "WS-CHOICE",
+        "attributes": {}
+      },
+      "canonical_id": "IO_OPERATION:ACCEPT:READS:WS-CHOICE",
+      "error": "Evidence snippet '0020 |                    ACCEPT WS-CHOICE' does not match actual source text in lines [20..20]",
+      "citation": {
+        "line_start": 20,
+        "line_end": 20,
+        "snippet": "0020 |                    ACCEPT WS-CHOICE"
+      }
+    }
+  ],
+  "matched_expected_facts": [
+    {
+      "fact_id": "dependency.no_copybooks",
+      "description": "Confirmed explicit absence of COPY statements.",
+      "expected_fact": {
+        "kind": "DEPENDENCY_SCAN",
+        "subject": "COPY",
+        "predicate": "DEPENDENCY_COUNT",
+        "object": "0",
+        "attributes": {}
+      },
+      "matched": true,
+      "matched_prediction": {
+        "fact": {
+          "kind": "DEPENDENCY_SCAN",
+          "subject": "COPY",
+          "predicate": "DEPENDENCY_COUNT",
+          "object": "0",
+          "attributes": {}
+        },
+        "citation": {
+          "line_start": 1,
+          "line_end": 36,
+          "snippet": ""
+        }
+      },
+      "evidence_valid": true,
+      "notes": null
+    }
+  ],
+  "missing_expected_facts": [
+    {
+      "fact_id": "program.id",
+      "description": "PROGRAM-ID declaration identifying program as BANK-MAIN.",
+      "expected_fact": {
+        "kind": "PROGRAM",
+        "subject": "BANK-MAIN",
+        "predicate": "DECLARES",
+        "object": "PROGRAM-ID",
+        "attributes": {}
+      },
+      "matched": false,
+      "matched_prediction": null,
+      "evidence_valid": true,
+      "notes": "Expected fact not found among supported predictions with valid evidence"
+    },
+    {
+      "fact_id": "data.ws_choice",
+      "description": "Working-Storage menu selection variable WS-CHOICE of type PIC X(1).",
+      "expected_fact": {
+        "kind": "DATA_FIELD",
+        "subject": "WS-CHOICE",
+        "predicate": "DECLARES",
+        "object": "VARIABLE",
+        "attributes": {
+          "LEVEL": "01",
+          "PICTURE": "X(1)",
+          "SECTION": "WORKING-STORAGE"
+        }
+      },
+      "matched": false,
+      "matched_prediction": null,
+      "evidence_valid": true,
+      "notes": "Expected fact not found among supported predictions with valid evidence"
+    },
+    {
+      "fact_id": "call.init_db",
+      "description": "External invocation to subprogram INIT-DB.",
+      "expected_fact": {
+        "kind": "CALL",
+        "subject": "BANK-MAIN",
+        "predicate": "INVOKES",
+        "object": "INIT-DB",
+        "attributes": {}
+      },
+      "matched": false,
+      "matched_prediction": null,
+      "evidence_valid": true,
+      "notes": "Expected fact not found among supported predictions with valid evidence"
+    },
+    {
+      "fact_id": "call.trans_proc",
+      "description": "External invocation to subprogram TRANS-PROC.",
+      "expected_fact": {
+        "kind": "CALL",
+        "subject": "BANK-MAIN",
+        "predicate": "INVOKES",
+        "object": "TRANS-PROC",
+        "attributes": {}
+      },
+      "matched": false,
+      "matched_prediction": null,
+      "evidence_valid": true,
+      "notes": "Expected fact not found among supported predictions with valid evidence"
+    },
+    {
+      "fact_id": "call.report_gen",
+      "description": "External invocation to subprogram REPORT-GEN.",
+      "expected_fact": {
+        "kind": "CALL",
+        "subject": "BANK-MAIN",
+        "predicate": "INVOKES",
+        "object": "REPORT-GEN",
+        "attributes": {}
+      },
+      "matched": false,
+      "matched_prediction": null,
+      "evidence_valid": true,
+      "notes": "Expected fact not found among supported predictions with valid evidence"
+    },
+    {
+      "fact_id": "menu.option_1",
+      "description": "Menu option 1 triggers CALL 'INIT-DB'.",
+      "expected_fact": {
+        "kind": "MENU_OPTION",
+        "subject": "1",
+        "predicate": "CALLS",
+        "object": "INIT-DB",
+        "attributes": {}
+      },
+      "matched": false,
+      "matched_prediction": null,
+      "evidence_valid": true,
+      "notes": "Expected fact not found among supported predictions with valid evidence"
+    },
+    {
+      "fact_id": "menu.option_2",
+      "description": "Menu option 2 triggers CALL 'TRANS-PROC'.",
+      "expected_fact": {
+        "kind": "MENU_OPTION",
+        "subject": "2",
+        "predicate": "CALLS",
+        "object": "TRANS-PROC",
+        "attributes": {}
+      },
+      "matched": false,
+      "matched_prediction": null,
+      "evidence_valid": true,
+      "notes": "Expected fact not found among supported predictions with valid evidence"
+    },
+    {
+      "fact_id": "menu.option_3",
+      "description": "Menu option 3 triggers CALL 'REPORT-GEN'.",
+      "expected_fact": {
+        "kind": "MENU_OPTION",
+        "subject": "3",
+        "predicate": "CALLS",
+        "object": "REPORT-GEN",
+        "attributes": {}
+      },
+      "matched": false,
+      "matched_prediction": null,
+      "evidence_valid": true,
+      "notes": "Expected fact not found among supported predictions with valid evidence"
+    },
+    {
+      "fact_id": "menu.option_4",
+      "description": "Menu option 4 triggers exit display message 'Bye.'.",
+      "expected_fact": {
+        "kind": "MENU_OPTION",
+        "subject": "4",
+        "predicate": "DISPLAYS",
+        "object": "Bye.",
+        "attributes": {}
+      },
+      "matched": false,
+      "matched_prediction": null,
+      "evidence_valid": true,
+      "notes": "Expected fact not found among supported predictions with valid evidence"
+    },
+    {
+      "fact_id": "menu.option_other",
+      "description": "Option OTHER triggers error display message 'Invalid.'.",
+      "expected_fact": {
+        "kind": "MENU_OPTION",
+        "subject": "OTHER",
+        "predicate": "DISPLAYS",
+        "object": "Invalid.",
+        "attributes": {}
+      },
+      "matched": false,
+      "matched_prediction": null,
+      "evidence_valid": true,
+      "notes": "Expected fact not found among supported predictions with valid evidence"
+    },
+    {
+      "fact_id": "control.perform_loop",
+      "description": "Top-level PERFORM loop until WS-CHOICE = '4'.",
+      "expected_fact": {
+        "kind": "CONTROL_FLOW",
+        "subject": "PERFORM_UNTIL",
+        "predicate": "CONDITION",
+        "object": "WS-CHOICE = '4'",
+        "attributes": {}
+      },
+      "matched": false,
+      "matched_prediction": null,
+      "evidence_valid": true,
+      "notes": "Expected fact not found among supported predictions with valid evidence"
+    },
+    {
+      "fact_id": "control.evaluate_choice",
+      "description": "EVALUATE decision dispatch construct on WS-CHOICE.",
+      "expected_fact": {
+        "kind": "CONTROL_FLOW",
+        "subject": "EVALUATE",
+        "predicate": "DISPATCHES",
+        "object": "WS-CHOICE",
+        "attributes": {}
+      },
+      "matched": false,
+      "matched_prediction": null,
+      "evidence_valid": true,
+      "notes": "Expected fact not found among supported predictions with valid evidence"
+    },
+    {
+      "fact_id": "control.stop_run",
+      "description": "Program exit statement STOP RUN.",
+      "expected_fact": {
+        "kind": "CONTROL_FLOW",
+        "subject": "STOP_RUN",
+        "predicate": "TERMINATES",
+        "object": "STOP RUN",
+        "attributes": {}
+      },
+      "matched": false,
+      "matched_prediction": null,
+      "evidence_valid": true,
+      "notes": "Expected fact not found among supported predictions with valid evidence"
+    },
+    {
+      "fact_id": "io.accept_choice",
+      "description": "Interactive console input reading choice into WS-CHOICE.",
+      "expected_fact": {
+        "kind": "IO_OPERATION",
+        "subject": "ACCEPT",
+        "predicate": "READS",
+        "object": "WS-CHOICE",
+        "attributes": {}
+      },
+      "matched": false,
+      "matched_prediction": null,
+      "evidence_valid": true,
+      "notes": "Expected fact not found among supported predictions with valid evidence"
+    }
+  ],
+  "host_verifications": {
+    "copy_statements_found_count": 0,
+    "scanned_line_count": 36,
+    "source_sha256": "b03adc9592f2853006263ef67fcc6dc716b99333b84bc0198bff7b7f0af1a028",
+    "verification_method": "WHOLE_FILE_SCAN"
+  }
+}
