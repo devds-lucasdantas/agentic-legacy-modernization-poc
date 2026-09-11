@@ -603,7 +603,12 @@ class SystemCobolParser:
                 i += 1
                 continue
 
-            if stripped.endswith(".") and len(tokens) == 1 and not first.startswith("STOP"):
+            if (
+                stripped.endswith(".")
+                and len(tokens) == 1
+                and not first.startswith("STOP")
+                and first not in ("GOBACK", "EXIT")
+            ):
                 self.statements.append(
                     ClassifiedStatement(
                         target_file.relative_path,
@@ -753,9 +758,16 @@ class SystemCobolParser:
                 i += 1
                 continue
 
-            if first == "STOP" and len(tokens) > 1 and tokens[1].upper().startswith("RUN"):
+            if first in ("GOBACK", "EXIT") or (
+                first == "STOP" and len(tokens) > 1 and tokens[1].upper().startswith("RUN")
+            ):
+                term_verb = "STOP_RUN"
+                if first == "GOBACK":
+                    term_verb = "GOBACK"
+                elif first == "EXIT":
+                    term_verb = "EXIT_PROGRAM"
                 term_node = ASTTermination(
-                    verb="STOP_RUN",
+                    verb=term_verb,
                     line_start=line_num,
                     line_end=line_num,
                 )
@@ -765,10 +777,10 @@ class SystemCobolParser:
                         target_file.relative_path,
                         line_num,
                         line_num,
-                        "STOP_RUN",
+                        term_verb,
                         raw_line,
                         StatementClassification.PARSED_AND_SCORED,
-                        "Run-unit STOP RUN termination",
+                        f"Run-unit {term_verb} termination",
                     )
                 )
                 i += 1
@@ -960,22 +972,23 @@ class SystemCobolParser:
                             )
                         )
 
-                        # Caller continuation constraint (callee STOP RUN halts caller)
-                        callee_stop = next(
-                            (
-                                s
-                                for s in callee_unit.statements
-                                if isinstance(s, ASTTermination) and s.verb == "STOP_RUN"
-                            ),
+                        # Caller continuation constraint
+                        callee_term = next(
+                            (s for s in callee_unit.statements if isinstance(s, ASTTermination)),
                             None,
                         )
-                        if callee_stop:
+                        if callee_term:
+                            constraint_effect = (
+                                "PROCESS_TERMINATION_ON_CALL"
+                                if callee_term.verb == "STOP_RUN"
+                                else "RETURN_TO_CALLER"
+                            )
                             self.supported_facts.append(
                                 SupportedSystemFact(
                                     fact=CallerContinuationConstraintFact(
                                         caller_program=caller,
                                         callee_program=target,
-                                        constraint_type="PROCESS_TERMINATION_ON_CALL",
+                                        constraint_type=constraint_effect,
                                     ),
                                     proposition_id=f"prop.continuation.{caller.lower()}_{target.lower()}",
                                     evidence_spans={
@@ -984,8 +997,8 @@ class SystemCobolParser:
                                         ),
                                         "callee_termination_evidence": EvidenceSpan(
                                             callee_unit.file_path,
-                                            callee_stop.line_start,
-                                            callee_stop.line_end,
+                                            callee_term.line_start,
+                                            callee_term.line_end,
                                         ),
                                     },
                                 )
