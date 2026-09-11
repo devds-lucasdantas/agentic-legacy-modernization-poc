@@ -20,9 +20,11 @@ import time
 
 try:
     from dotenv import load_dotenv
+
     load_dotenv()
 except ImportError:
     pass
+
 
 def main() -> int:
     # --- Validate environment ---
@@ -46,6 +48,7 @@ def main() -> int:
     # --- Authenticate ---
     try:
         from azure.identity import DefaultAzureCredential
+
         credential = DefaultAzureCredential()
         print("[OK] DefaultAzureCredential created")
     except Exception as e:
@@ -55,6 +58,7 @@ def main() -> int:
     # --- Connect to Foundry project ---
     try:
         from azure.ai.projects import AIProjectClient
+
         project_client = AIProjectClient(
             endpoint=endpoint,
             credential=credential,
@@ -88,8 +92,9 @@ def main() -> int:
         if not output_text and hasattr(response, "output"):
             output_parts = []
             for item in response.output:
-                if hasattr(item, "content"):
-                    for content_part in item.content:
+                content = getattr(item, "content", None)
+                if content is not None:
+                    for content_part in content:
                         if hasattr(content_part, "text"):
                             output_parts.append(content_part.text)
             output_text = "".join(output_parts)
@@ -136,7 +141,9 @@ def main() -> int:
             print("HINT: Quota exceeded. Check your model deployment quota in Azure Portal.")
         elif "disallowed" in error_str or "policy" in error_str:
             print("HINT: Your subscription may restrict AI services in this region.")
-            print("Check Azure Portal → Policy → Assignments → 'Allowed resource deployment regions'.")
+            print(
+                "Check Azure Portal → Policy → Assignments → 'Allowed resource deployment regions'."
+            )
 
         return 1
 

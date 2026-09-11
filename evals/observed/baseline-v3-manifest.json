@@ -1,0 +1,108 @@
+{
+  "manifest_version": "1.0.0",
+  "description": "Cryptographic integrity manifest for original local Baseline V3 execution artifacts (preserved immutably in evals/observed/baseline-v3/)",
+  "execution_provenance": {
+    "official_result": "PASS",
+    "status": "COMPLETED",
+    "run_label": "baseline-v3",
+    "git_commit_sha": "922cbcb70972899f05bd71f6c9b323bd2de02466",
+    "requested_model": "gpt-5-mini",
+    "response_model_id": "gpt-5-mini",
+    "foundry_project_fingerprint": "3f0c34d730680ad8baac11d2825e120045eb19be1d9ec1c0b2a2d337096ae33f",
+    "target_file": "legacy/core-banking-system/BANK-MAIN.CBL",
+    "source_sha256": "b03adc9592f2853006263ef67fcc6dc716b99333b84bc0198bff7b7f0af1a028",
+    "baseline_authorization_spec_sha256": "73950e0f83ec29b929ab05b70fc5127b52fd515cc97f3ac7e0eaefccbfd28190",
+    "runtime_manifest_sha256": "a44d9eb8d738d260e04c215689c3b543788a72b2434b5eb04fcb062061d1efac",
+    "dependency_lock_sha256": "732cb9370e90af2d0972eeda7fc18fd5745f17cb301f359b268df228fe7f18be",
+    "interpreter_binary_sha256": "e50d468e8b0adfb05733f5b87b3cff34829c4a8c1aea50c865aa8bdfe4bb150f",
+    "timestamp": "2026-09-11T15:42:59.207228+00:00",
+    "schema_version": "2.3.0",
+    "prompt_version": "gate2-baseline-v2.3",
+    "evaluator_version": "2.4.0",
+    "golden_dataset_version": "2.2.0",
+    "gate_2_pass": true,
+    "response_id": "resp_0bd7edd91961b1ce006aa4218dc64c81908a01696d36ae76f6",
+    "latency": {
+      "elapsed_seconds": 25.14
+    },
+    "tokens": {
+      "input_tokens": 3352,
+      "output_tokens": 1469,
+      "total_tokens": 4821
+    },
+    "python_runtime": {
+      "python_version": "3.12.3",
+      "python_implementation": "CPython",
+      "python_cache_tag": "cpython-312",
+      "python_build": "main Aug 31 2026 10:18:26",
+      "isolated_mode": true,
+      "dont_write_bytecode": true
+    }
+  },
+  "official_metrics": {
+    "raw_predicted_count": 24,
+    "unique_predicted_count": 24,
+    "supported_predicted_count": 24,
+    "unsupported_predicted_count": 0,
+    "invalid_evidence_count": 0,
+    "duplicate_prediction_count": 0,
+    "contradiction_count": 0,
+    "matched_expected_count": 15,
+    "missing_expected_count": 0,
+    "expected_fact_count": 15,
+    "precision": 1.0,
+    "recall": 1.0,
+    "gate_2_pass": true
+  },
+  "artifacts": [
+    {
+      "filename": "assessment-schema.json",
+      "sha256": "02f1b1ddfd3d511e53540759e420e1bb69687e8b57ef66b6a28e4beff58fb7ca",
+      "bytes": 12153,
+      "description": "Local Pydantic V2 JSON schema exported for LegacyAssessment (Schema V2.3.0)"
+    },
+    {
+      "filename": "bank-main-assessment.json",
+      "sha256": "2949df27589224079b947c13bd58b02ed953f84dd926b9ef44798c003ea02d6f",
+      "bytes": 3785,
+      "description": "Raw model-generated structured output from gpt-5-mini in baseline-v3 execution (line coordinates only, no raw snippets)"
+    },
+    {
+      "filename": "bank-main-assessment-enriched.json",
+      "sha256": "54d04a077e3f9ec60811e6964c22b9f2278b34c958e544ec2ee306bfd37d5ad5",
+      "bytes": 6678,
+      "description": "Host-enriched assessment with deterministically derived verified source snippets"
+    },
+    {
+      "filename": "evaluation.json",
+      "sha256": "0d071ba1d0e9cf67c3625bad8cacf86922695fd1faa1a6f77eaa567024b00488",
+      "bytes": 13482,
+      "description": "Official evaluation report produced by Evaluator V2.4.0 recording PASS"
+    },
+    {
+      "filename": "openai-wire-schema.json",
+      "sha256": "6d46ee2a63f5bc9ee4bc78867bb7d514bdccf88f5785d5388eec5bece15f5155",
+      "bytes": 21504,
+      "description": "OpenAI 3.8.0 SDK wire schema sent to Responses API for Structured Outputs (V2.3.0 model schema)"
+    },
+    {
+      "filename": "run-metadata.json",
+      "sha256": "8d20af10c328263a3b9f7297dcb52db6ceb2a1a8c6038b731b6c3c7b6ff5882a",
+      "bytes": 1616,
+      "description": "Execution metadata containing token usage, latency, attested runtime, and spec provenance"
+    },
+    {
+      "filename": "run-state.json",
+      "sha256": "745586500115575ee19345a73d35d60dad4703e4c97929ad17d31214142795af",
+      "bytes": 369,
+      "description": "Run state recording final COMPLETED state and gate_2_pass=true"
+    },
+    {
+      "filename": "runtime-manifest.json",
+      "sha256": "7e86cdb1348fcda5c1f4e3cf105a52964814c9f0d5f370bf3ace9c5e275773e9",
+      "bytes": 2375,
+      "internal_manifest_sha256": "a44d9eb8d738d260e04c215689c3b543788a72b2434b5eb04fcb062061d1efac",
+      "description": "Pre-attested runtime environment lock manifest containing 42 packages"
+    }
+  ]
+}

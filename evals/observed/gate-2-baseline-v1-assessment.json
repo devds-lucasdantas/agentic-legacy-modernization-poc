@@ -1,0 +1,309 @@
+{
+  "schema_version": "1.0",
+  "scope": {
+    "analyzed_file": "legacy/core-banking-system/BANK-MAIN.CBL",
+    "source_sha256": "b03adc9592f2853006263ef67fcc6dc716b99333b84bc0198bff7b7f0af1a028",
+    "has_external_callees_analyzed": false,
+    "copybook_dependencies_found": []
+  },
+  "program": {
+    "program_id": "BANK-MAIN",
+    "evidence": {
+      "source_file": "legacy/core-banking-system/BANK-MAIN.CBL",
+      "line_start": 1,
+      "line_end": 2,
+      "snippet": "IDENTIFICATION DIVISION.\nPROGRAM-ID. BANK-MAIN."
+    }
+  },
+  "data_fields": [
+    {
+      "name": "WS-CHOICE",
+      "level": "01",
+      "picture": "PIC X",
+      "section": "WORKING-STORAGE",
+      "evidence": {
+        "source_file": "legacy/core-banking-system/BANK-MAIN.CBL",
+        "line_start": 7,
+        "line_end": 9,
+        "snippet": "DATA DIVISION.\nWORKING-STORAGE SECTION.\n01 WS-CHOICE  PIC X."
+      }
+    }
+  ],
+  "call_dependencies": [
+    {
+      "target_program": "INIT-DB",
+      "call_type": "DYNAMIC",
+      "evidence": {
+        "source_file": "legacy/core-banking-system/BANK-MAIN.CBL",
+        "line_start": 24,
+        "line_end": 24,
+        "snippet": "CALL 'INIT-DB'"
+      }
+    },
+    {
+      "target_program": "TRANS-PROC",
+      "call_type": "DYNAMIC",
+      "evidence": {
+        "source_file": "legacy/core-banking-system/BANK-MAIN.CBL",
+        "line_start": 26,
+        "line_end": 26,
+        "snippet": "CALL 'TRANS-PROC'"
+      }
+    },
+    {
+      "target_program": "REPORT-GEN",
+      "call_type": "DYNAMIC",
+      "evidence": {
+        "source_file": "legacy/core-banking-system/BANK-MAIN.CBL",
+        "line_start": 28,
+        "line_end": 28,
+        "snippet": "CALL 'REPORT-GEN'"
+      }
+    }
+  ],
+  "menu_options": [
+    {
+      "option_key": "1",
+      "description": "Init Database",
+      "action_type": "CALL",
+      "action_target": "INIT-DB",
+      "evidence": {
+        "source_file": "legacy/core-banking-system/BANK-MAIN.CBL",
+        "line_start": 15,
+        "line_end": 24,
+        "snippet": "DISPLAY '1. Init Database'\n...\nWHEN '1'\n     CALL 'INIT-DB'"
+      }
+    },
+    {
+      "option_key": "2",
+      "description": "Transaction",
+      "action_type": "CALL",
+      "action_target": "TRANS-PROC",
+      "evidence": {
+        "source_file": "legacy/core-banking-system/BANK-MAIN.CBL",
+        "line_start": 16,
+        "line_end": 26,
+        "snippet": "DISPLAY '2. Transaction'\n...\nWHEN '2'\n     CALL 'TRANS-PROC'"
+      }
+    },
+    {
+      "option_key": "3",
+      "description": "Report",
+      "action_type": "CALL",
+      "action_target": "REPORT-GEN",
+      "evidence": {
+        "source_file": "legacy/core-banking-system/BANK-MAIN.CBL",
+        "line_start": 17,
+        "line_end": 28,
+        "snippet": "DISPLAY '3. Report'\n...\nWHEN '3'\n     CALL 'REPORT-GEN'"
+      }
+    },
+    {
+      "option_key": "4",
+      "description": "Exit",
+      "action_type": "DISPLAY_EXIT",
+      "action_target": "DISPLAY 'Bye.'",
+      "evidence": {
+        "source_file": "legacy/core-banking-system/BANK-MAIN.CBL",
+        "line_start": 18,
+        "line_end": 30,
+        "snippet": "DISPLAY '4. Exit'\n...\nWHEN '4'\n     DISPLAY 'Bye.'"
+      }
+    },
+    {
+      "option_key": "OTHER",
+      "description": "Invalid selection handler",
+      "action_type": "DISPLAY_ERROR",
+      "action_target": "DISPLAY 'Invalid.'",
+      "evidence": {
+        "source_file": "legacy/core-banking-system/BANK-MAIN.CBL",
+        "line_start": 31,
+        "line_end": 32,
+        "snippet": "WHEN OTHER\n     DISPLAY 'Invalid.'"
+      }
+    }
+  ],
+  "control_flow": [
+    {
+      "construct_type": "PERFORM_UNTIL",
+      "condition_or_target": "WS-CHOICE = '4'",
+      "evidence": {
+        "source_file": "legacy/core-banking-system/BANK-MAIN.CBL",
+        "line_start": 12,
+        "line_end": 34,
+        "snippet": "PERFORM UNTIL WS-CHOICE = '4'\n    ...\nEND-PERFORM."
+      }
+    },
+    {
+      "construct_type": "EVALUATE",
+      "condition_or_target": "EVALUATE WS-CHOICE (branches: '1','2','3','4', OTHER)",
+      "evidence": {
+        "source_file": "legacy/core-banking-system/BANK-MAIN.CBL",
+        "line_start": 22,
+        "line_end": 33,
+        "snippet": "EVALUATE WS-CHOICE\nWHEN '1' ...\nWHEN '2' ...\nWHEN '3' ...\nWHEN '4' ...\nWHEN OTHER ...\nEND-EVALUATE"
+      }
+    },
+    {
+      "construct_type": "STOP_RUN",
+      "condition_or_target": "STOP RUN",
+      "evidence": {
+        "source_file": "legacy/core-banking-system/BANK-MAIN.CBL",
+        "line_start": 36,
+        "line_end": 36,
+        "snippet": "STOP RUN."
+      }
+    }
+  ],
+  "io_operations": [
+    {
+      "operation_type": "DISPLAY",
+      "target_or_content": "' '",
+      "evidence": {
+        "source_file": "legacy/core-banking-system/BANK-MAIN.CBL",
+        "line_start": 13,
+        "line_end": 13,
+        "snippet": "DISPLAY ' '"
+      }
+    },
+    {
+      "operation_type": "DISPLAY",
+      "target_or_content": "'=== CORE BANKING SYSTEM ==='",
+      "evidence": {
+        "source_file": "legacy/core-banking-system/BANK-MAIN.CBL",
+        "line_start": 14,
+        "line_end": 14,
+        "snippet": "DISPLAY '=== CORE BANKING SYSTEM ==='"
+      }
+    },
+    {
+      "operation_type": "DISPLAY",
+      "target_or_content": "'1. Init Database'",
+      "evidence": {
+        "source_file": "legacy/core-banking-system/BANK-MAIN.CBL",
+        "line_start": 15,
+        "line_end": 15,
+        "snippet": "DISPLAY '1. Init Database'"
+      }
+    },
+    {
+      "operation_type": "DISPLAY",
+      "target_or_content": "'2. Transaction'",
+      "evidence": {
+        "source_file": "legacy/core-banking-system/BANK-MAIN.CBL",
+        "line_start": 16,
+        "line_end": 16,
+        "snippet": "DISPLAY '2. Transaction'"
+      }
+    },
+    {
+      "operation_type": "DISPLAY",
+      "target_or_content": "'3. Report'",
+      "evidence": {
+        "source_file": "legacy/core-banking-system/BANK-MAIN.CBL",
+        "line_start": 17,
+        "line_end": 17,
+        "snippet": "DISPLAY '3. Report'"
+      }
+    },
+    {
+      "operation_type": "DISPLAY",
+      "target_or_content": "'4. Exit'",
+      "evidence": {
+        "source_file": "legacy/core-banking-system/BANK-MAIN.CBL",
+        "line_start": 18,
+        "line_end": 18,
+        "snippet": "DISPLAY '4. Exit'"
+      }
+    },
+    {
+      "operation_type": "DISPLAY",
+      "target_or_content": "'Option: ' WITH NO ADVANCING",
+      "evidence": {
+        "source_file": "legacy/core-banking-system/BANK-MAIN.CBL",
+        "line_start": 19,
+        "line_end": 19,
+        "snippet": "DISPLAY 'Option: ' WITH NO ADVANCING"
+      }
+    },
+    {
+      "operation_type": "ACCEPT",
+      "target_or_content": "WS-CHOICE",
+      "evidence": {
+        "source_file": "legacy/core-banking-system/BANK-MAIN.CBL",
+        "line_start": 20,
+        "line_end": 20,
+        "snippet": "ACCEPT WS-CHOICE"
+      }
+    },
+    {
+      "operation_type": "DISPLAY",
+      "target_or_content": "'Bye.'",
+      "evidence": {
+        "source_file": "legacy/core-banking-system/BANK-MAIN.CBL",
+        "line_start": 30,
+        "line_end": 30,
+        "snippet": "DISPLAY 'Bye.'"
+      }
+    },
+    {
+      "operation_type": "DISPLAY",
+      "target_or_content": "'Invalid.'",
+      "evidence": {
+        "source_file": "legacy/core-banking-system/BANK-MAIN.CBL",
+        "line_start": 32,
+        "line_end": 32,
+        "snippet": "DISPLAY 'Invalid.'"
+      }
+    }
+  ],
+  "observations": [
+    {
+      "category": "CONTROL_FLOW",
+      "observation": "Program implements a simple interactive menu loop driven by WS-CHOICE and a PERFORM UNTIL that exits when WS-CHOICE = '4'.",
+      "evidence": {
+        "source_file": "legacy/core-banking-system/BANK-MAIN.CBL",
+        "line_start": 12,
+        "line_end": 14,
+        "snippet": "PERFORM UNTIL WS-CHOICE = '4'\n    DISPLAY ' '\n    DISPLAY '=== CORE BANKING SYSTEM ==='"
+      }
+    },
+    {
+      "category": "COUPLING",
+      "observation": "Functionality is delegated to external subprograms via CALL statements (INIT-DB, TRANS-PROC, REPORT-GEN), indicating runtime coupling to separate modules whose implementations are not present in this file.",
+      "evidence": {
+        "source_file": "legacy/core-banking-system/BANK-MAIN.CBL",
+        "line_start": 22,
+        "line_end": 28,
+        "snippet": "EVALUATE WS-CHOICE\nWHEN '1'\n     CALL 'INIT-DB'\nWHEN '2'\n     CALL 'TRANS-PROC'\nWHEN '3'\n     CALL 'REPORT-GEN'"
+      }
+    },
+    {
+      "category": "PORTABILITY",
+      "observation": "Terminal-oriented I/O (DISPLAY/ACCEPT and WITH NO ADVANCING) suggests dependence on character-terminal behavior and may require adaptation for non-interactive or web-based front ends.",
+      "evidence": {
+        "source_file": "legacy/core-banking-system/BANK-MAIN.CBL",
+        "line_start": 19,
+        "line_end": 20,
+        "snippet": "DISPLAY 'Option: ' WITH NO ADVANCING\nACCEPT WS-CHOICE"
+      }
+    },
+    {
+      "category": "ARCHITECTURE",
+      "observation": "No COPY statements or file declarations are present in this file; the file acts as a menu/dispatcher rather than performing file or database operations directly.",
+      "evidence": {
+        "source_file": "legacy/core-banking-system/BANK-MAIN.CBL",
+        "line_start": 4,
+        "line_end": 11,
+        "snippet": "ENVIRONMENT DIVISION.\n\nDATA DIVISION.\nWORKING-STORAGE SECTION.\n01 WS-CHOICE  PIC X.\n\nPROCEDURE DIVISION."
+      }
+    }
+  ],
+  "unsupported_assumptions": [
+    "The internal implementation, side effects, parameters, and return behavior of called subprogram INIT-DB are unknown (source not provided).",
+    "The internal implementation, side effects, parameters, and return behavior of called subprogram TRANS-PROC are unknown (source not provided).",
+    "The internal implementation, side effects, parameters, and return behavior of called subprogram REPORT-GEN are unknown (source not provided).",
+    "Whether the CALLs expect linkage parameters, use shared files, or rely on specific runtime environment settings cannot be determined from this single file.",
+    "Any persistence layer, database schema, or file I/O performed by external subprograms is not visible in this file and cannot be inferred."
+  ]
+}

@@ -43,7 +43,7 @@ A versioned snapshot is in `legacy/core-banking-system/`.
 |------|------|--------|
 | 0 | Baseline COBOL | **PASS** (9/9 checks, GnuCOBOL 3.1.2.0) |
 | 1 | Hello Foundry | **PASS** (gpt-5-mini, Responses API) |
-| 2 | COBOL Reader | NOT_RUN |
+| 2 | COBOL Reader | **V1_REPORTED_PASS / V2_PENDING** (V1 historical pass under evaluator v1.1.0; Gate 2 V2 candidate architecture prepared; final validation pending BASELINE V2) |
 | 3 | Legacy Analyzer | NOT_RUN |
 | 4 | GitHub Actions | NOT_RUN |
 | 5 | Draft PR | NOT_RUN |

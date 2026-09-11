@@ -1,0 +1,510 @@
+{
+  "disclaimer": "NON_AUTHORITATIVE_POST_HOC_DIAGNOSTIC",
+  "status": "NOT_A_BASELINE_RESULT",
+  "model_call": "NO_MODEL_CALL",
+  "target_run_label": "baseline-v2",
+  "git_commit_sha": "9390377b410917e3e9c62883346b299b628a0000",
+  "target_file": "legacy/core-banking-system/BANK-MAIN.CBL",
+  "source_sha256": "b03adc9592f2853006263ef67fcc6dc716b99333b84bc0198bff7b7f0af1a028",
+  "semantic_hash_before_conversion": "a2a41674058dbb8a20d962300c276e62ec617aab08f9b5641bc174b0bed74ce3",
+  "semantic_hash_after_conversion": "a2a41674058dbb8a20d962300c276e62ec617aab08f9b5641bc174b0bed74ce3",
+  "semantic_hash_identical": true,
+  "converted_evidence_objects_count": 21,
+  "structural_prefix_verification": "PASSED (all 21 spans verified line-by-line)",
+  "exact_raw_source_match_verification": "PASSED (all 21 transformed snippets match source bytes)",
+  "official_baseline_v2_metrics": {
+    "raw_predicted_count": 22,
+    "unique_predicted_count": 22,
+    "supported_predicted_count": 1,
+    "unsupported_predicted_count": 21,
+    "invalid_evidence_count": 21,
+    "matched_expected_count": 1,
+    "missing_expected_count": 14,
+    "precision": 0.0455,
+    "recall": 0.0667,
+    "gate_2_pass": false
+  },
+  "diagnostic_metrics": {
+    "raw_predicted_count": 22,
+    "unique_predicted_count": 22,
+    "supported_predicted_count": 22,
+    "unsupported_predicted_count": 0,
+    "invalid_evidence_count": 0,
+    "matched_expected_count": 15,
+    "missing_expected_count": 0,
+    "precision": 1.0,
+    "recall": 1.0,
+    "gate_2_pass": true
+  },
+  "delta": {
+    "invalid_evidence": "21 -> 0 (-21)",
+    "supported_predictions": "1 -> 22 (+21)",
+    "matched_expected_facts": "1/15 -> 15/15 (+14)",
+    "precision": "0.0455 -> 1.0 (+0.9545)",
+    "recall": "0.0667 -> 1.0 (+0.9333)",
+    "gate_2_pass": "False -> True"
+  },
+  "evaluation_report": {
+    "evaluator_version": "2.3.0",
+    "golden_dataset_version": "2.2.0",
+    "schema_valid": true,
+    "source_sha256_match": true,
+    "parse_complete": true,
+    "evidence_valid": true,
+    "invalid_evidence_count": 0,
+    "raw_predicted_count": 22,
+    "unique_predicted_count": 22,
+    "duplicate_prediction_count": 0,
+    "supported_predicted_count": 22,
+    "unsupported_predicted_count": 0,
+    "contradiction_count": 0,
+    "expected_fact_count": 15,
+    "matched_expected_count": 15,
+    "missing_expected_count": 0,
+    "precision": 1.0,
+    "recall": 1.0,
+    "gate_2_pass": true,
+    "duplicates": [],
+    "contradictions": [],
+    "supported_predictions": [],
+    "unsupported_predictions": [],
+    "invalid_evidences": [],
+    "matched_expected_facts": [
+      {
+        "fact_id": "program.id",
+        "description": "PROGRAM-ID declaration identifying program as BANK-MAIN.",
+        "expected_fact": {
+          "kind": "PROGRAM",
+          "subject": "BANK-MAIN",
+          "predicate": "DECLARES",
+          "object": "PROGRAM-ID",
+          "attributes": {}
+        },
+        "matched": true,
+        "matched_prediction": {
+          "fact": {
+            "kind": "PROGRAM",
+            "subject": "BANK-MAIN",
+            "predicate": "DECLARES",
+            "object": "PROGRAM-ID",
+            "attributes": {}
+          },
+          "citation": {
+            "line_start": 2,
+            "line_end": 2,
+            "snippet": "PROGRAM-ID. BANK-MAIN."
+          }
+        },
+        "evidence_valid": true,
+        "notes": null
+      },
+      {
+        "fact_id": "data.ws_choice",
+        "description": "Working-Storage menu selection variable WS-CHOICE of type PIC X(1).",
+        "expected_fact": {
+          "kind": "DATA_FIELD",
+          "subject": "WS-CHOICE",
+          "predicate": "DECLARES",
+          "object": "VARIABLE",
+          "attributes": {
+            "LEVEL": "01",
+            "PICTURE": "X(1)",
+            "SECTION": "WORKING-STORAGE"
+          }
+        },
+        "matched": true,
+        "matched_prediction": {
+          "fact": {
+            "kind": "DATA_FIELD",
+            "subject": "WS-CHOICE",
+            "predicate": "DECLARES",
+            "object": "VARIABLE",
+            "attributes": {
+              "LEVEL": "01",
+              "PICTURE": "X(1)",
+              "SECTION": "WORKING-STORAGE"
+            }
+          },
+          "citation": {
+            "line_start": 8,
+            "line_end": 8,
+            "snippet": "01 WS-CHOICE  PIC X."
+          }
+        },
+        "evidence_valid": true,
+        "notes": null
+      },
+      {
+        "fact_id": "call.init_db",
+        "description": "External invocation to subprogram INIT-DB.",
+        "expected_fact": {
+          "kind": "CALL",
+          "subject": "BANK-MAIN",
+          "predicate": "INVOKES",
+          "object": "INIT-DB",
+          "attributes": {}
+        },
+        "matched": true,
+        "matched_prediction": {
+          "fact": {
+            "kind": "CALL",
+            "subject": "BANK-MAIN",
+            "predicate": "INVOKES",
+            "object": "INIT-DB",
+            "attributes": {}
+          },
+          "citation": {
+            "line_start": 24,
+            "line_end": 24,
+            "snippet": "CALL 'INIT-DB'"
+          }
+        },
+        "evidence_valid": true,
+        "notes": null
+      },
+      {
+        "fact_id": "call.trans_proc",
+        "description": "External invocation to subprogram TRANS-PROC.",
+        "expected_fact": {
+          "kind": "CALL",
+          "subject": "BANK-MAIN",
+          "predicate": "INVOKES",
+          "object": "TRANS-PROC",
+          "attributes": {}
+        },
+        "matched": true,
+        "matched_prediction": {
+          "fact": {
+            "kind": "CALL",
+            "subject": "BANK-MAIN",
+            "predicate": "INVOKES",
+            "object": "TRANS-PROC",
+            "attributes": {}
+          },
+          "citation": {
+            "line_start": 26,
+            "line_end": 26,
+            "snippet": "CALL 'TRANS-PROC'"
+          }
+        },
+        "evidence_valid": true,
+        "notes": null
+      },
+      {
+        "fact_id": "call.report_gen",
+        "description": "External invocation to subprogram REPORT-GEN.",
+        "expected_fact": {
+          "kind": "CALL",
+          "subject": "BANK-MAIN",
+          "predicate": "INVOKES",
+          "object": "REPORT-GEN",
+          "attributes": {}
+        },
+        "matched": true,
+        "matched_prediction": {
+          "fact": {
+            "kind": "CALL",
+            "subject": "BANK-MAIN",
+            "predicate": "INVOKES",
+            "object": "REPORT-GEN",
+            "attributes": {}
+          },
+          "citation": {
+            "line_start": 28,
+            "line_end": 28,
+            "snippet": "CALL 'REPORT-GEN'"
+          }
+        },
+        "evidence_valid": true,
+        "notes": null
+      },
+      {
+        "fact_id": "menu.option_1",
+        "description": "Menu option 1 triggers CALL 'INIT-DB'.",
+        "expected_fact": {
+          "kind": "MENU_OPTION",
+          "subject": "1",
+          "predicate": "CALLS",
+          "object": "INIT-DB",
+          "attributes": {}
+        },
+        "matched": true,
+        "matched_prediction": {
+          "fact": {
+            "kind": "MENU_OPTION",
+            "subject": "1",
+            "predicate": "CALLS",
+            "object": "INIT-DB",
+            "attributes": {}
+          },
+          "citation": {
+            "line_start": 22,
+            "line_end": 24,
+            "snippet": "EVALUATE WS-CHOICE\n                   WHEN '1'\n                        CALL 'INIT-DB'"
+          }
+        },
+        "evidence_valid": true,
+        "notes": null
+      },
+      {
+        "fact_id": "menu.option_2",
+        "description": "Menu option 2 triggers CALL 'TRANS-PROC'.",
+        "expected_fact": {
+          "kind": "MENU_OPTION",
+          "subject": "2",
+          "predicate": "CALLS",
+          "object": "TRANS-PROC",
+          "attributes": {}
+        },
+        "matched": true,
+        "matched_prediction": {
+          "fact": {
+            "kind": "MENU_OPTION",
+            "subject": "2",
+            "predicate": "CALLS",
+            "object": "TRANS-PROC",
+            "attributes": {}
+          },
+          "citation": {
+            "line_start": 25,
+            "line_end": 26,
+            "snippet": "WHEN '2'\n                        CALL 'TRANS-PROC'"
+          }
+        },
+        "evidence_valid": true,
+        "notes": null
+      },
+      {
+        "fact_id": "menu.option_3",
+        "description": "Menu option 3 triggers CALL 'REPORT-GEN'.",
+        "expected_fact": {
+          "kind": "MENU_OPTION",
+          "subject": "3",
+          "predicate": "CALLS",
+          "object": "REPORT-GEN",
+          "attributes": {}
+        },
+        "matched": true,
+        "matched_prediction": {
+          "fact": {
+            "kind": "MENU_OPTION",
+            "subject": "3",
+            "predicate": "CALLS",
+            "object": "REPORT-GEN",
+            "attributes": {}
+          },
+          "citation": {
+            "line_start": 27,
+            "line_end": 28,
+            "snippet": "WHEN '3'\n                        CALL 'REPORT-GEN'"
+          }
+        },
+        "evidence_valid": true,
+        "notes": null
+      },
+      {
+        "fact_id": "menu.option_4",
+        "description": "Menu option 4 triggers exit display message 'Bye.'.",
+        "expected_fact": {
+          "kind": "MENU_OPTION",
+          "subject": "4",
+          "predicate": "DISPLAYS",
+          "object": "Bye.",
+          "attributes": {}
+        },
+        "matched": true,
+        "matched_prediction": {
+          "fact": {
+            "kind": "MENU_OPTION",
+            "subject": "4",
+            "predicate": "DISPLAYS",
+            "object": "Bye.",
+            "attributes": {}
+          },
+          "citation": {
+            "line_start": 29,
+            "line_end": 30,
+            "snippet": "WHEN '4'\n                        DISPLAY 'Bye.'"
+          }
+        },
+        "evidence_valid": true,
+        "notes": null
+      },
+      {
+        "fact_id": "menu.option_other",
+        "description": "Option OTHER triggers error display message 'Invalid.'.",
+        "expected_fact": {
+          "kind": "MENU_OPTION",
+          "subject": "OTHER",
+          "predicate": "DISPLAYS",
+          "object": "Invalid.",
+          "attributes": {}
+        },
+        "matched": true,
+        "matched_prediction": {
+          "fact": {
+            "kind": "MENU_OPTION",
+            "subject": "OTHER",
+            "predicate": "DISPLAYS",
+            "object": "Invalid.",
+            "attributes": {}
+          },
+          "citation": {
+            "line_start": 31,
+            "line_end": 32,
+            "snippet": "WHEN OTHER\n                        DISPLAY 'Invalid.'"
+          }
+        },
+        "evidence_valid": true,
+        "notes": null
+      },
+      {
+        "fact_id": "control.perform_loop",
+        "description": "Top-level PERFORM loop until WS-CHOICE = '4'.",
+        "expected_fact": {
+          "kind": "CONTROL_FLOW",
+          "subject": "PERFORM_UNTIL",
+          "predicate": "CONDITION",
+          "object": "WS-CHOICE = '4'",
+          "attributes": {}
+        },
+        "matched": true,
+        "matched_prediction": {
+          "fact": {
+            "kind": "CONTROL_FLOW",
+            "subject": "PERFORM_UNTIL",
+            "predicate": "CONDITION",
+            "object": "WS-CHOICE = '4'",
+            "attributes": {}
+          },
+          "citation": {
+            "line_start": 12,
+            "line_end": 12,
+            "snippet": "PERFORM UNTIL WS-CHOICE = '4'"
+          }
+        },
+        "evidence_valid": true,
+        "notes": null
+      },
+      {
+        "fact_id": "control.evaluate_choice",
+        "description": "EVALUATE decision dispatch construct on WS-CHOICE.",
+        "expected_fact": {
+          "kind": "CONTROL_FLOW",
+          "subject": "EVALUATE",
+          "predicate": "DISPATCHES",
+          "object": "WS-CHOICE",
+          "attributes": {}
+        },
+        "matched": true,
+        "matched_prediction": {
+          "fact": {
+            "kind": "CONTROL_FLOW",
+            "subject": "EVALUATE",
+            "predicate": "DISPATCHES",
+            "object": "WS-CHOICE",
+            "attributes": {}
+          },
+          "citation": {
+            "line_start": 22,
+            "line_end": 22,
+            "snippet": "EVALUATE WS-CHOICE"
+          }
+        },
+        "evidence_valid": true,
+        "notes": null
+      },
+      {
+        "fact_id": "control.stop_run",
+        "description": "Program exit statement STOP RUN.",
+        "expected_fact": {
+          "kind": "CONTROL_FLOW",
+          "subject": "STOP_RUN",
+          "predicate": "TERMINATES",
+          "object": "STOP RUN",
+          "attributes": {}
+        },
+        "matched": true,
+        "matched_prediction": {
+          "fact": {
+            "kind": "CONTROL_FLOW",
+            "subject": "STOP_RUN",
+            "predicate": "TERMINATES",
+            "object": "STOP RUN",
+            "attributes": {}
+          },
+          "citation": {
+            "line_start": 36,
+            "line_end": 36,
+            "snippet": "STOP RUN."
+          }
+        },
+        "evidence_valid": true,
+        "notes": null
+      },
+      {
+        "fact_id": "io.accept_choice",
+        "description": "Interactive console input reading choice into WS-CHOICE.",
+        "expected_fact": {
+          "kind": "IO_OPERATION",
+          "subject": "ACCEPT",
+          "predicate": "READS",
+          "object": "WS-CHOICE",
+          "attributes": {}
+        },
+        "matched": true,
+        "matched_prediction": {
+          "fact": {
+            "kind": "IO_OPERATION",
+            "subject": "ACCEPT",
+            "predicate": "READS",
+            "object": "WS-CHOICE",
+            "attributes": {}
+          },
+          "citation": {
+            "line_start": 20,
+            "line_end": 20,
+            "snippet": "ACCEPT WS-CHOICE"
+          }
+        },
+        "evidence_valid": true,
+        "notes": null
+      },
+      {
+        "fact_id": "dependency.no_copybooks",
+        "description": "Confirmed explicit absence of COPY statements.",
+        "expected_fact": {
+          "kind": "DEPENDENCY_SCAN",
+          "subject": "COPY",
+          "predicate": "DEPENDENCY_COUNT",
+          "object": "0",
+          "attributes": {}
+        },
+        "matched": true,
+        "matched_prediction": {
+          "fact": {
+            "kind": "DEPENDENCY_SCAN",
+            "subject": "COPY",
+            "predicate": "DEPENDENCY_COUNT",
+            "object": "0",
+            "attributes": {}
+          },
+          "citation": {
+            "line_start": 1,
+            "line_end": 36,
+            "snippet": ""
+          }
+        },
+        "evidence_valid": true,
+        "notes": null
+      }
+    ],
+    "missing_expected_facts": [],
+    "host_verifications": {
+      "copy_statements_found_count": 0,
+      "scanned_line_count": 36,
+      "source_sha256": "b03adc9592f2853006263ef67fcc6dc716b99333b84bc0198bff7b7f0af1a028",
+      "verification_method": "WHOLE_FILE_SCAN"
+    }
+  }
+}

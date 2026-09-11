@@ -11,6 +11,8 @@ venv/
 
 # Environment
 .env
+.env.*
+!.env.example
 
 # COBOL build artifacts
 *.exe
@@ -32,9 +34,8 @@ ACCOUNTS.TMP
 .DS_Store
 Thumbs.db
 
-# Artifacts (generated, not versioned — uploaded as CI artifacts)
-artifacts/*.json
-artifacts/*.md
+# Artifacts (generated local runs — sanitized evidence is committed to docs/)
+artifacts/
 
 # Do NOT ignore these:
 # legacy/core-banking-system/ACCOUNTS.DAT  — this is the seed fixture, not a build artifact

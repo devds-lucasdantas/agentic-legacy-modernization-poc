@@ -1,0 +1,413 @@
+{
+  "$defs": {
+    "AcceptIO": {
+      "additionalProperties": false,
+      "description": "Terminal input operation (ACCEPT).",
+      "properties": {
+        "evidence": {
+          "$ref": "#/$defs/SourceEvidence",
+          "description": "Source citation for the ACCEPT statement."
+        },
+        "operation_type": {
+          "const": "ACCEPT",
+          "description": "I/O operation discriminant type 'ACCEPT'.",
+          "title": "Operation Type",
+          "type": "string"
+        },
+        "target_identifier": {
+          "description": "Field or identifier into which input is accepted.",
+          "title": "Target Identifier",
+          "type": "string"
+        }
+      },
+      "required": [
+        "operation_type",
+        "target_identifier",
+        "evidence"
+      ],
+      "title": "AcceptIO",
+      "type": "object"
+    },
+    "CallDependency": {
+      "additionalProperties": false,
+      "description": "External subprogram invocation found in the source code.",
+      "properties": {
+        "evidence": {
+          "$ref": "#/$defs/SourceEvidence",
+          "description": "Source citation for the CALL statement."
+        },
+        "target_program": {
+          "description": "The name of the external program invoked by the CALL statement.",
+          "title": "Target Program",
+          "type": "string"
+        }
+      },
+      "required": [
+        "target_program",
+        "evidence"
+      ],
+      "title": "CallDependency",
+      "type": "object"
+    },
+    "CallMenuOption": {
+      "additionalProperties": false,
+      "description": "Menu choice or evaluation branch that invokes an external subprogram.",
+      "properties": {
+        "action_type": {
+          "const": "CALL",
+          "description": "Action discriminant type 'CALL'.",
+          "title": "Action Type",
+          "type": "string"
+        },
+        "evidence": {
+          "$ref": "#/$defs/SourceEvidence",
+          "description": "Source citation for this option's branch condition and CALL invocation."
+        },
+        "option_key": {
+          "description": "The selection key or branch condition literal (e.g. '1', '2').",
+          "title": "Option Key",
+          "type": "string"
+        },
+        "target_program": {
+          "description": "The name of the external subprogram invoked by this menu branch.",
+          "title": "Target Program",
+          "type": "string"
+        }
+      },
+      "required": [
+        "action_type",
+        "option_key",
+        "target_program",
+        "evidence"
+      ],
+      "title": "CallMenuOption",
+      "type": "object"
+    },
+    "DataField": {
+      "additionalProperties": false,
+      "description": "Variable or data item declared in the DATA DIVISION.",
+      "properties": {
+        "evidence": {
+          "$ref": "#/$defs/SourceEvidence",
+          "description": "Source citation for the variable declaration."
+        },
+        "level": {
+          "description": "COBOL level number, such as '01', '05', or '77'.",
+          "title": "Level",
+          "type": "string"
+        },
+        "name": {
+          "description": "The name of the declared data field.",
+          "title": "Name",
+          "type": "string"
+        },
+        "picture": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "PICTURE clause string if declared, without PIC keyword, or null if unpictured.",
+          "title": "Picture"
+        },
+        "section": {
+          "description": "Data division section where declared (e.g. 'WORKING-STORAGE', 'FILE').",
+          "title": "Section",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "level",
+        "picture",
+        "section",
+        "evidence"
+      ],
+      "title": "DataField",
+      "type": "object"
+    },
+    "DisplayIO": {
+      "additionalProperties": false,
+      "description": "Terminal output operation (DISPLAY).",
+      "properties": {
+        "evidence": {
+          "$ref": "#/$defs/SourceEvidence",
+          "description": "Source citation for the DISPLAY statement."
+        },
+        "literal": {
+          "description": "Literal text or variable content displayed to the terminal.",
+          "title": "Literal",
+          "type": "string"
+        },
+        "operation_type": {
+          "const": "DISPLAY",
+          "description": "I/O operation discriminant type 'DISPLAY'.",
+          "title": "Operation Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "operation_type",
+        "literal",
+        "evidence"
+      ],
+      "title": "DisplayIO",
+      "type": "object"
+    },
+    "DisplayMenuOption": {
+      "additionalProperties": false,
+      "description": "Menu choice or evaluation branch that displays a message to the user.",
+      "properties": {
+        "action_type": {
+          "const": "DISPLAY",
+          "description": "Action discriminant type 'DISPLAY'.",
+          "title": "Action Type",
+          "type": "string"
+        },
+        "display_literal": {
+          "description": "Literal message displayed when this menu branch is selected.",
+          "title": "Display Literal",
+          "type": "string"
+        },
+        "evidence": {
+          "$ref": "#/$defs/SourceEvidence",
+          "description": "Source citation for this option's branch condition and DISPLAY statement."
+        },
+        "option_key": {
+          "description": "The selection key or branch condition literal (e.g. '4', 'OTHER').",
+          "title": "Option Key",
+          "type": "string"
+        }
+      },
+      "required": [
+        "action_type",
+        "option_key",
+        "display_literal",
+        "evidence"
+      ],
+      "title": "DisplayMenuOption",
+      "type": "object"
+    },
+    "EvaluateConstruct": {
+      "additionalProperties": false,
+      "description": "Multi-way branch or decision table construct (EVALUATE).",
+      "properties": {
+        "construct_type": {
+          "const": "EVALUATE",
+          "description": "Construct discriminant type 'EVALUATE'.",
+          "title": "Construct Type",
+          "type": "string"
+        },
+        "evidence": {
+          "$ref": "#/$defs/SourceEvidence",
+          "description": "Source citation for the EVALUATE statement header and subject."
+        },
+        "subject": {
+          "description": "The expression or identifier evaluated in the EVALUATE statement.",
+          "title": "Subject",
+          "type": "string"
+        }
+      },
+      "required": [
+        "construct_type",
+        "subject",
+        "evidence"
+      ],
+      "title": "EvaluateConstruct",
+      "type": "object"
+    },
+    "PerformUntilConstruct": {
+      "additionalProperties": false,
+      "description": "Loop construct executed until a termination condition is met.",
+      "properties": {
+        "condition": {
+          "description": "The loop termination condition expression following the UNTIL keyword.",
+          "title": "Condition",
+          "type": "string"
+        },
+        "construct_type": {
+          "const": "PERFORM_UNTIL",
+          "description": "Construct discriminant type 'PERFORM_UNTIL'.",
+          "title": "Construct Type",
+          "type": "string"
+        },
+        "evidence": {
+          "$ref": "#/$defs/SourceEvidence",
+          "description": "Source citation for the PERFORM UNTIL loop construct."
+        }
+      },
+      "required": [
+        "construct_type",
+        "condition",
+        "evidence"
+      ],
+      "title": "PerformUntilConstruct",
+      "type": "object"
+    },
+    "ProgramIdentity": {
+      "additionalProperties": false,
+      "description": "Identification information for the analyzed COBOL program.",
+      "properties": {
+        "evidence": {
+          "$ref": "#/$defs/SourceEvidence",
+          "description": "Source citation for the PROGRAM-ID declaration."
+        },
+        "program_id": {
+          "description": "The PROGRAM-ID identifier declared in the source.",
+          "title": "Program Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "program_id",
+        "evidence"
+      ],
+      "title": "ProgramIdentity",
+      "type": "object"
+    },
+    "SourceEvidence": {
+      "additionalProperties": false,
+      "description": "Traceable line and snippet citation in the analyzed source code.",
+      "properties": {
+        "line_end": {
+          "description": "1-indexed ending line number in the source file.",
+          "title": "Line End",
+          "type": "integer"
+        },
+        "line_start": {
+          "description": "1-indexed starting line number in the source file.",
+          "title": "Line Start",
+          "type": "integer"
+        },
+        "snippet": {
+          "description": "Exact source code line or text snippet evidencing this fact.",
+          "title": "Snippet",
+          "type": "string"
+        }
+      },
+      "required": [
+        "line_start",
+        "line_end",
+        "snippet"
+      ],
+      "title": "SourceEvidence",
+      "type": "object"
+    },
+    "StopRunConstruct": {
+      "additionalProperties": false,
+      "description": "Program termination statement (STOP RUN).",
+      "properties": {
+        "construct_type": {
+          "const": "STOP_RUN",
+          "description": "Construct discriminant type 'STOP_RUN'.",
+          "title": "Construct Type",
+          "type": "string"
+        },
+        "evidence": {
+          "$ref": "#/$defs/SourceEvidence",
+          "description": "Source citation for the STOP RUN statement."
+        }
+      },
+      "required": [
+        "construct_type",
+        "evidence"
+      ],
+      "title": "StopRunConstruct",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Top-level canonical assessment for a single COBOL source module (Version 2.1.0).\n\nHost execution metadata (schema_version, git_commit_sha, prompt_version) is tracked\nexternally in ExecutionMetadata.",
+  "properties": {
+    "call_dependencies": {
+      "description": "External programs invoked via CALL statements.",
+      "items": {
+        "$ref": "#/$defs/CallDependency"
+      },
+      "title": "Call Dependencies",
+      "type": "array"
+    },
+    "control_flow": {
+      "description": "Control flow statements including loops, evaluations, and STOP RUN.",
+      "items": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/PerformUntilConstruct"
+          },
+          {
+            "$ref": "#/$defs/EvaluateConstruct"
+          },
+          {
+            "$ref": "#/$defs/StopRunConstruct"
+          }
+        ]
+      },
+      "title": "Control Flow",
+      "type": "array"
+    },
+    "copybook_dependencies": {
+      "description": "List of copybook names imported via COPY statements. Must be explicitly empty list if none exist.",
+      "items": {
+        "type": "string"
+      },
+      "title": "Copybook Dependencies",
+      "type": "array"
+    },
+    "data_fields": {
+      "description": "Key variables declared in Working-Storage or other data sections.",
+      "items": {
+        "$ref": "#/$defs/DataField"
+      },
+      "title": "Data Fields",
+      "type": "array"
+    },
+    "io_operations": {
+      "description": "Input and output statements directly visible in source (ACCEPT, DISPLAY).",
+      "items": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/AcceptIO"
+          },
+          {
+            "$ref": "#/$defs/DisplayIO"
+          }
+        ]
+      },
+      "title": "Io Operations",
+      "type": "array"
+    },
+    "menu_options": {
+      "description": "User menu options and branches handled in this program.",
+      "items": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/CallMenuOption"
+          },
+          {
+            "$ref": "#/$defs/DisplayMenuOption"
+          }
+        ]
+      },
+      "title": "Menu Options",
+      "type": "array"
+    },
+    "program": {
+      "$ref": "#/$defs/ProgramIdentity",
+      "description": "Identity of the analyzed COBOL program."
+    }
+  },
+  "required": [
+    "program",
+    "data_fields",
+    "call_dependencies",
+    "menu_options",
+    "control_flow",
+    "io_operations",
+    "copybook_dependencies"
+  ],
+  "title": "LegacyAssessment",
+  "type": "object"
+}
