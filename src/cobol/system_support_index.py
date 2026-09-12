@@ -187,6 +187,20 @@ class SystemSupportIndex:
                             None,
                         )
 
+                    # 1b. If candidate fact provides resource_name, it must match
+                    # target_record.internal_file_name
+                    if (
+                        candidate_fact.resource_name
+                        and candidate_fact.resource_name.upper()
+                        != target_record.internal_file_name.upper()
+                    ):
+                        return (
+                            False,
+                            f"Resource name '{candidate_fact.resource_name}' does not match "
+                            f"identified file binding '{target_record.internal_file_name}'",
+                            None,
+                        )
+
                     # 2. Certificate must contain that exact binding
                     if not self.file_status_certificate.binding_exists(
                         candidate_fact.program_id, target_record.internal_file_name

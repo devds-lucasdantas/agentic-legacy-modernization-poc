@@ -552,6 +552,7 @@ class BehavioralRiskFact(SystemAtomicFact):
     impact_category: (
         str  # AVAILABILITY, ERROR_VISIBILITY, CONTROL_FLOW, DATA_INTEGRITY, PORTABILITY
     )
+    resource_name: str | None = None
     fact_category: str = field(default="BEHAVIORAL_RISK", init=False)
 
     def __post_init__(self) -> None:
@@ -566,8 +567,17 @@ class BehavioralRiskFact(SystemAtomicFact):
         object.__setattr__(self, "risk_category", rc)
         object.__setattr__(self, "risk_basis_kind", canonicalize_token(self.risk_basis_kind))
         object.__setattr__(self, "impact_category", canonicalize_token(self.impact_category))
+        if self.resource_name:
+            object.__setattr__(self, "resource_name", normalize_identifier(self.resource_name))
+        else:
+            object.__setattr__(self, "resource_name", None)
 
     def get_semantic_key(self) -> str:
+        if self.resource_name:
+            return (
+                f"RISK:{self.program_id}:{self.risk_category}:"
+                f"{self.risk_basis_kind}:{self.impact_category}:{self.resource_name}"
+            )
         return (
             f"RISK:{self.program_id}:{self.risk_category}:"
             f"{self.risk_basis_kind}:{self.impact_category}"

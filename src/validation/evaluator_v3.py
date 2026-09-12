@@ -42,7 +42,7 @@ from src.cobol.system_atomic_facts import (
 )
 from src.cobol.system_support_index import SystemSupportIndex
 
-EVALUATOR_VERSION: str = "3.3.0"
+EVALUATOR_VERSION: str = "3.4.0"
 
 
 def _single_span(ev: Any) -> dict[str, EvidenceSpan]:
@@ -384,6 +384,7 @@ class SystemEvaluatorV3:
                 risk_category=br.risk_category,
                 risk_basis_kind=br.risk_basis_kind,
                 impact_category=br.impact_category,
+                resource_name=br.resource_name,
             )
             spans = {
                 "operation_evidence": EvidenceSpan(
@@ -424,6 +425,7 @@ class SystemEvaluatorV3:
         # Evaluation counters
         evaluated_predictions: list[EvaluatedPrediction] = []
         seen_assertions: set[str] = set()
+        seen_supported_assertions: set[str] = set()
         matched_golden_ids: set[str] = set()
         supported_count = 0
         unsupported_count = 0
@@ -475,6 +477,7 @@ class SystemEvaluatorV3:
 
             if is_supp and matched_sf:
                 supported_count += 1
+                seen_supported_assertions.add(span_sig)
                 matched_id = matched_sf.proposition_id
                 cand_sig = tuple(
                     sorted(
@@ -484,9 +487,6 @@ class SystemEvaluatorV3:
                 )
                 if (key, cand_sig) in self.golden_by_key_and_spans:
                     matched_id = self.golden_by_key_and_spans[(key, cand_sig)]
-                    matched_golden_ids.add(matched_id)
-                elif key in self.golden_by_semantic_key:
-                    matched_id = self.golden_by_semantic_key[key]["id"]
                     matched_golden_ids.add(matched_id)
                 elif matched_id in self.golden_by_id:
                     matched_golden_ids.add(matched_id)
@@ -523,12 +523,15 @@ class SystemEvaluatorV3:
                 )
 
         unique_predicted_count = len(seen_assertions)
+        supported_unique_count = len(seen_supported_assertions)
         required_golden_ids = {p["id"] for p in self.required_golden_propositions}
         matched_required_golden_ids = matched_golden_ids & required_golden_ids
         matched_expected_count = len(matched_required_golden_ids)
         missing_expected_count = self.expected_fact_count - matched_expected_count
 
-        precision = supported_count / unique_predicted_count if unique_predicted_count > 0 else 1.0
+        precision = (
+            supported_unique_count / unique_predicted_count if unique_predicted_count > 0 else 1.0
+        )
         recall = (
             matched_expected_count / self.expected_fact_count
             if self.expected_fact_count > 0
@@ -541,12 +544,13 @@ class SystemEvaluatorV3:
             and unsupported_count == 0
             and invalid_evidence_count == 0
             and contradiction_count == 0
+            and duplicate_count == 0
         )
 
         metrics = EvaluationMetricSummary(
             raw_predicted_count=raw_predicted_count,
             unique_predicted_count=unique_predicted_count,
-            supported_predicted_count=supported_count,
+            supported_predicted_count=supported_unique_count,
             unsupported_predicted_count=unsupported_count,
             invalid_evidence_count=invalid_evidence_count,
             duplicate_prediction_count=duplicate_count,
@@ -823,12 +827,14 @@ def load_golden_assessment(golden_dataset_path: Path | None = None) -> SystemAss
             cat_risk = parts[2]
             basis_kind = parts[3]
             impact = parts[4]
+            res_name = parts[5] if len(parts) > 5 else None
             assessment.behavioral_risks.append(
                 BehavioralRisk(
                     program_id=prog,
                     risk_category=cat_risk,
                     risk_basis_kind=basis_kind,
                     impact_category=impact,
+                    resource_name=res_name,
                     operation_evidence=make_ev(spans["operation_evidence"]),
                     affected_resource_evidence=make_ev(spans["affected_resource_evidence"]),
                 )

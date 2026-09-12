@@ -9,7 +9,7 @@ Strictly adheres to:
 
 from pydantic import BaseModel, ConfigDict, Field
 
-SCHEMA_VERSION: str = "3.3.0"
+SCHEMA_VERSION: str = "3.4.0"
 
 
 class SourceEvidence(BaseModel):
@@ -268,22 +268,33 @@ class BehavioralRisk(BaseModel):
     program_id: str = Field(description="Affected program identifier")
     risk_category: str = Field(
         description=(
-            "Risk category classification: IO_ERROR_HANDLING, "
-            "DATA_INTEGRITY, CONTROL_FLOW, PORTABILITY, RESOURCE_LIFECYCLE"
+            "Standardized risk category classification representing system fault domain: "
+            "IO_ERROR_HANDLING, DATA_INTEGRITY, CONTROL_FLOW, PORTABILITY, "
+            "RESOURCE_LIFECYCLE, CONCURRENCY_ERROR, DATA_CORRUPTION, CONFIGURATION"
         )
     )
     risk_basis_kind: str = Field(
         description=(
-            "Underlying risk basis kind: MISSING_ERROR_STATUS, "
+            "Standardized underlying risk basis kind: MISSING_ERROR_STATUS, "
             "NON_ATOMIC_EXTERNAL_MUTATION, NON_RETURNING_TERMINATION, "
-            "UNCHECKED_EXTERNAL_RESULT, INVALID_INPUT_HANDLING, RESOURCE_LIFECYCLE_FAILURE"
+            "UNCHECKED_EXTERNAL_RESULT, INVALID_INPUT_HANDLING, RESOURCE_LIFECYCLE_FAILURE, "
+            "RESOURCE_LEAK, DEADLOCK_RISK, INCORRECT_PRECISION, INCOMPLETE_INITIALIZATION"
         )
     )
     impact_category: str = Field(
         description=(
             "System impact classification: AVAILABILITY, "
-            "ERROR_VISIBILITY, CONTROL_FLOW, DATA_INTEGRITY, PORTABILITY"
+            "ERROR_VISIBILITY, CONTROL_FLOW, DATA_INTEGRITY, PORTABILITY, "
+            "SECURITY_INTEGRITY, PERFORMANCE"
         )
+    )
+    resource_name: str | None = Field(
+        default=None,
+        description=(
+            "Internal resource or dataset name associated with the risk (e.g. internal file name "
+            "for file-scoped risks, target canonical dataset for external mutation risks, "
+            "or null if not resource-scoped)"
+        ),
     )
     operation_evidence: SourceEvidence = Field(description="Evidence for unhandled operation")
     affected_resource_evidence: SourceEvidence = Field(

@@ -284,6 +284,48 @@ def parse_cobol_picture(pic: str | None) -> tuple[int, int]:
     return (int_len + dec_len, dec_len)
 
 
+def classify_command_operation(cmd_text: str) -> tuple[str, str | None, str | None]:
+    """Classify a shell/system command generically into:
+    (operation_kind, source_resource, target_resource).
+
+    Unnests shell wrappers (e.g. 'cmd /c', '/bin/sh -c', 'sh -c', 'bash -c').
+    Recognizes operations:
+    - DELETE: target is file being deleted
+    - RENAME: source is old file, target is new file
+    - COPY: source is from file, target is to file
+    - MOVE: source is old location, target is new location
+    - EXECUTE: fallback
+    """
+    clean = cmd_text.strip().strip("'\"")
+    unwrapped = re.sub(
+        r"^(?:cmd(?:\.exe)?\s+/c|/(?:usr/)?bin/(?:ba)?sh\s+-c|(?:ba)?sh\s+-c)\s+",
+        "",
+        clean,
+        flags=re.IGNORECASE,
+    ).strip()
+
+    tokens = unwrapped.split()
+    if not tokens:
+        return ("EXECUTE", None, None)
+
+    verb = tokens[0].lower()
+    args = tokens[1:]
+
+    if verb in ("del", "delete", "erase", "rm"):
+        target = args[0].strip("'\"") if args else None
+        return ("DELETE", None, target)
+    elif verb in ("ren", "rename", "mv", "move"):
+        source = args[0].strip("'\"") if len(args) > 0 else None
+        target = args[1].strip("'\"") if len(args) > 1 else None
+        return ("RENAME", source, target)
+    elif verb in ("copy", "cp"):
+        source = args[0].strip("'\"") if len(args) > 0 else None
+        target = args[1].strip("'\"") if len(args) > 1 else None
+        return ("COPY", source, target)
+    else:
+        return ("EXECUTE", None, None)
+
+
 # ---------------------------------------------------------------------------
 # Generic System COBOL Parser
 # ---------------------------------------------------------------------------
@@ -533,10 +575,16 @@ class SystemCobolParser:
 
                 end_l = i + 1
 
-                # Parse assign target
-                m_assign = re.search(r"ASSIGN\s+TO\s+(['\"]?[^'\s.]+['\"]?)", clause_text, re.I)
+                # Parse assign target with generic quote-aware regex
+                m_assign = re.search(
+                    r"ASSIGN\s+(?:TO\s+)?(?:'([^']*)'|\"([^\"]*)\"|([^\s.]+))",
+                    clause_text,
+                    re.I,
+                )
                 if m_assign:
-                    assign_target = m_assign.group(1).strip("'\"")
+                    assign_target = (
+                        m_assign.group(1) or m_assign.group(2) or m_assign.group(3) or ""
+                    ).strip()
 
                 if re.search(r"LINE\s+SEQUENTIAL", clause_text, re.I):
                     org_val = "LINE_SEQUENTIAL"
@@ -914,14 +962,45 @@ class SystemCobolParser:
                 i += 1
                 continue
 
-            if first in ("GOBACK", "EXIT") or (
+            if first == "EXIT":
+                if len(tokens) > 1 and tokens[1].upper().startswith("PROGRAM"):
+                    term_verb = "EXIT_PROGRAM"
+                    term_node = ASTTermination(
+                        verb=term_verb,
+                        line_start=line_num,
+                        line_end=line_num,
+                    )
+                    unit.statements.append(term_node)
+                    self.statements.append(
+                        ClassifiedStatement(
+                            target_file.relative_path,
+                            line_num,
+                            line_num,
+                            term_verb,
+                            raw_line,
+                            StatementClassification.PARSED_AND_SCORED,
+                            f"Run-unit {term_verb} termination",
+                        )
+                    )
+                else:
+                    self.statements.append(
+                        ClassifiedStatement(
+                            target_file.relative_path,
+                            line_num,
+                            line_num,
+                            "EXIT",
+                            raw_line,
+                            StatementClassification.RECOGNIZED_BUT_UNSCORED,
+                            "Common procedure end point EXIT statement",
+                        )
+                    )
+                i += 1
+                continue
+
+            if first == "GOBACK" or (
                 first == "STOP" and len(tokens) > 1 and tokens[1].upper().startswith("RUN")
             ):
-                term_verb = "STOP_RUN"
-                if first == "GOBACK":
-                    term_verb = "GOBACK"
-                elif first == "EXIT":
-                    term_verb = "EXIT_PROGRAM"
+                term_verb = "GOBACK" if first == "GOBACK" else "STOP_RUN"
                 term_node = ASTTermination(
                     verb=term_verb,
                     line_start=line_num,
@@ -1340,15 +1419,18 @@ class SystemCobolParser:
                                 )
                             )
 
-            # Operation sequence: delete before rename
+            # Operation sequence and non-atomic risk: generic operand-aware
             if len(commands_in_unit) >= 2:
                 for c_idx in range(len(commands_in_unit) - 1):
                     m1, c1 = commands_in_unit[c_idx]
                     m2, c2 = commands_in_unit[c_idx + 1]
-                    cmd1_clean = m1.source_operand.strip("'\"").lower()
-                    cmd2_clean = m2.source_operand.strip("'\"").lower()
+                    cmd1_clean = m1.source_operand.strip("'\"")
+                    cmd2_clean = m2.source_operand.strip("'\"")
 
-                    if "del" in cmd1_clean and "ren" in cmd2_clean:
+                    op1_kind, op1_src, op1_tgt = classify_command_operation(cmd1_clean)
+                    op2_kind, op2_src, op2_tgt = classify_command_operation(cmd2_clean)
+
+                    if op1_kind == "DELETE" and op2_kind == "RENAME":
                         self.supported_facts.append(
                             SupportedSystemFact(
                                 fact=OperationSequenceFact(
@@ -1373,26 +1455,32 @@ class SystemCobolParser:
                                 },
                             )
                         )
-                        # Risk: non-atomic file update
-                        self.supported_facts.append(
-                            SupportedSystemFact(
-                                fact=BehavioralRiskFact(
-                                    program_id=caller,
-                                    risk_category="DATA_INTEGRITY",
-                                    risk_basis_kind="NON_ATOMIC_EXTERNAL_MUTATION",
-                                    impact_category="DATA_INTEGRITY",
-                                ),
-                                proposition_id=f"prop.risk.{caller.lower()}_non_atomic_update",
-                                evidence_spans={
-                                    "operation_evidence": EvidenceSpan(
-                                        unit.file_path, c1.line_start, c2.line_end
-                                    ),
-                                    "affected_resource_evidence": EvidenceSpan(
-                                        unit.file_path, m2.line_start, m2.line_end
-                                    ),
-                                },
+                        # Risk: non-atomic file update derived ONLY when delete target matches
+                        # rename target
+                        if op1_tgt and op2_tgt and op1_tgt.upper() == op2_tgt.upper():
+                            prop_id = (
+                                f"prop.risk.{caller.lower().replace('-', '_')}_non_atomic_update"
                             )
-                        )
+                            self.supported_facts.append(
+                                SupportedSystemFact(
+                                    fact=BehavioralRiskFact(
+                                        program_id=caller,
+                                        risk_category="DATA_INTEGRITY",
+                                        risk_basis_kind="NON_ATOMIC_EXTERNAL_MUTATION",
+                                        impact_category="DATA_INTEGRITY",
+                                        resource_name=op2_tgt.upper(),
+                                    ),
+                                    proposition_id=prop_id,
+                                    evidence_spans={
+                                        "operation_evidence": EvidenceSpan(
+                                            unit.file_path, c1.line_start, c2.line_end
+                                        ),
+                                        "affected_resource_evidence": EvidenceSpan(
+                                            unit.file_path, m2.line_start, m2.line_end
+                                        ),
+                                    },
+                                )
+                            )
 
         # 7. Record-to-Record Data Transfer Relations
         for unit in self.compilation_units:
@@ -1421,17 +1509,20 @@ class SystemCobolParser:
                             )
                         )
 
-        # Build mapping of record name -> owning FD
-        record_to_fd: dict[str, str] = {}
+        # Build mapping of record name -> owning FD scoped per compilation unit
+        unit_record_to_fd: dict[str, dict[str, str]] = {}
         for unit in self.compilation_units:
+            unit_map: dict[str, str] = {}
             for rec in unit.record_declarations:
                 if rec.owning_fd:
-                    record_to_fd[rec.container_name.upper()] = rec.owning_fd.upper()
+                    unit_map[rec.container_name.upper()] = rec.owning_fd.upper()
+            unit_record_to_fd[unit.file_path] = unit_map
 
         # Build FileStatusCertificate
         binding_records: dict[tuple[str, str], FileBindingStatusRecord] = {}
         for unit in self.compilation_units:
             p_id = unit.program_id or Path(unit.file_path).stem
+            rec_to_fd = unit_record_to_fd.get(unit.file_path, {})
             for fb in unit.file_bindings:
                 f_name = fb.internal_file_name
                 ops_in_file = [
@@ -1440,7 +1531,7 @@ class SystemCobolParser:
                     if isinstance(s, ASTFileOp)
                     and (
                         s.internal_file_name.upper() == f_name.upper()
-                        or record_to_fd.get(s.internal_file_name.upper()) == f_name.upper()
+                        or rec_to_fd.get(s.internal_file_name.upper()) == f_name.upper()
                     )
                 ]
                 res_span = EvidenceSpan(unit.file_path, fb.line_start, fb.line_end)
@@ -1463,12 +1554,13 @@ class SystemCobolParser:
         # 8. File Operations & Resource Lifecycles & Missing Status Risks
         for unit in self.compilation_units:
             caller = unit.program_id or "UNKNOWN"
+            rec_to_fd = unit_record_to_fd.get(unit.file_path, {})
             # Emit discrete FileOperationFacts
             for op_idx, stmt in enumerate(unit.statements):
                 if isinstance(stmt, ASTFileOp):
                     target_res = stmt.internal_file_name
-                    if stmt.verb == "WRITE" and target_res.upper() in record_to_fd:
-                        target_res = record_to_fd[target_res.upper()]
+                    if stmt.verb == "WRITE" and target_res.upper() in rec_to_fd:
+                        target_res = rec_to_fd[target_res.upper()]
                     if stmt.verb == "OPEN":
                         op_verb = (
                             f"OPEN_{stmt.access_mode}"
@@ -1504,7 +1596,7 @@ class SystemCobolParser:
                     if isinstance(s, ASTFileOp)
                     and (
                         s.internal_file_name.upper() == f_name.upper()
-                        or record_to_fd.get(s.internal_file_name.upper()) == f_name.upper()
+                        or rec_to_fd.get(s.internal_file_name.upper()) == f_name.upper()
                     )
                 ]
                 if ops_in_file:
@@ -1538,11 +1630,12 @@ class SystemCobolParser:
 
                     # Missing File Status Risk
                     if not fb.has_file_status:
+                        caller_tag = caller.lower().replace("-", "_")
                         f_tag = f_name.lower().replace("-", "_")
                         prop_risk_id = (
-                            f"prop.risk.{caller.lower()}_missing_status"
+                            f"prop.risk.{caller_tag}_missing_status"
                             if f_name == "ACCOUNT-FILE"
-                            else f"prop.risk.{caller.lower()}_{f_tag}_missing_status"
+                            else f"prop.risk.{caller_tag}_{f_tag}_missing_status"
                         )
                         self.supported_facts.append(
                             SupportedSystemFact(
@@ -1551,6 +1644,7 @@ class SystemCobolParser:
                                     risk_category="IO_ERROR_HANDLING",
                                     risk_basis_kind="MISSING_ERROR_STATUS",
                                     impact_category="ERROR_VISIBILITY",
+                                    resource_name=f_name,
                                 ),
                                 proposition_id=prop_risk_id,
                                 evidence_spans={

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Gate 3 — Multi-File System Analysis Runner (Version 3.0.0)
+"""Gate 3 — Multi-File System Analysis Runner (Version 3.4.0)
 
 Executes multi-file system analysis across all six files of the core banking
 system bundle using structured schemas, Responses API Structured Outputs,
@@ -14,14 +14,20 @@ Enforces:
 4. Runner bootstrap self-verification against committed runner blob in authorized Git SHA.
 5. Snapshot byte identity verified against Git object blobs (git cat-file blob <object-id>).
 6. Child-derived multi-source bundle identity recomputed from verified snapshot bytes (6 files).
-7. Deterministic artifact destination binding (provenance_repo/artifacts/gate-3/run_label).
+7. Deterministic canonical artifact destination binding
+   (provenance_repo/artifacts/gate-3/run_label).
 8. Canonical runtime/lock attestation strictly before model invocation.
 9. Prompt, wire schema, and bundle manifest SHA256 integrity verification.
 10. Strict child verification ordering guaranteeing zero model calls on preflight failure.
 11. Host-owned Python runtime provenance persistence in run-metadata.json.
 12. Exact single-attempt execution contract: openai_client_max_retries=0, max_attempts=1.
 13. Safe offline synthetic / dry-run mode guaranteeing zero model calls when requested.
-14. Deterministic evaluation using SystemEvaluatorV3 and Golden Dataset V3.0 (54 units).
+14. Deterministic evaluation using SystemEvaluatorV3 and Golden Dataset V3.4 (60 units).
+15. Two-layer state model: mutable reservation coordination file (reservation-state.json)
+    separated from immutable terminal execution record (terminal-result.json).
+16. Raw provider boundary: raw response serialized and persisted before
+    status/refusal/Pydantic validation.
+17. Evidence-based exact model match: response_model == requested_model (gpt-5-mini).
 
 Exit codes:
     0 = PASS
@@ -47,6 +53,12 @@ from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
+SPEC_VERSION = "3.4.0"
+SCHEMA_VERSION = "3.4.0"
+PROMPT_VERSION = "3.4.0"
+EVALUATOR_VERSION = "3.4.0"
+GOLDEN_DATASET_VERSION = "3.4.0"
+
 SAFE_RUN_LABEL_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 HEX_64_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 HEX_40_PATTERN = re.compile(r"^[0-9a-f]{40}$")
@@ -59,8 +71,11 @@ EXCLUDED_DISTRIBUTIONS = {
 }
 
 AUTHORIZED_BRANCH = "feat/gate-3-system-analysis"
-DEFAULT_AUTH_SPEC_PATH = "evals/baselines/gate-3-baseline-v1.json"
+CANONICAL_BASELINE_SPEC = "evals/baselines/gate-3-baseline-v1.json"
+DEFAULT_AUTH_SPEC_PATH = CANONICAL_BASELINE_SPEC
 DEFAULT_GOLDEN_PATH = "evals/expected/system-understanding-v3.json"
+RESERVATION_STATE_FILE = "reservation-state.json"
+TERMINAL_RESULT_FILE = "terminal-result.json"
 
 
 def get_sanitized_git_env() -> dict[str, str]:
@@ -126,13 +141,24 @@ def get_canonical_runtime_manifest() -> dict[str, str]:
     return dict(sorted(runtime.items()))
 
 
-def verify_runtime_environment(lock_file: Path) -> tuple[dict[str, str], str]:
+def verify_runtime_environment(
+    lock_file: Path, spec: dict[str, Any] | None = None
+) -> tuple[dict[str, str], str]:
     """Verify runtime environment strictly matches requirements-lock.txt."""
     if not lock_file.is_file():
         raise RuntimeError(f"Lock file not found: {lock_file}")
 
+    lock_bytes = lock_file.read_bytes()
+    if spec and "dependency_lock_sha256" in spec:
+        actual_lock_sha = hashlib.sha256(lock_bytes).hexdigest()
+        if actual_lock_sha.lower() != spec["dependency_lock_sha256"].lower():
+            raise RuntimeError(
+                f"Dependency lock SHA mismatch: actual={actual_lock_sha}, "
+                f"expected={spec['dependency_lock_sha256']}"
+            )
+
     locked: dict[str, str] = {}
-    for line in lock_file.read_text(encoding="utf-8").splitlines():
+    for line in lock_bytes.decode("utf-8").splitlines():
         line = line.strip()
         if not line or line.startswith("#"):
             continue
@@ -144,6 +170,7 @@ def verify_runtime_environment(lock_file: Path) -> tuple[dict[str, str], str]:
 
     runtime = get_canonical_runtime_manifest()
     missing = set(locked.keys()) - set(runtime.keys())
+    extra = set(runtime.keys()) - set(locked.keys())
     mismatched = {
         k: (runtime[k], locked[k]) for k in locked if k in runtime and runtime[k] != locked[k]
     }
@@ -151,6 +178,8 @@ def verify_runtime_environment(lock_file: Path) -> tuple[dict[str, str], str]:
     errors = []
     if missing:
         errors.append(f"Missing packages: {sorted(missing)}")
+    if extra:
+        errors.append(f"Unauthorized extra packages: {sorted(extra)}")
     if mismatched:
         formatted = [
             f"{k} (installed={v[0]}, locked={v[1]})" for k, v in sorted(mismatched.items())
@@ -411,7 +440,6 @@ def create_git_snapshot_archive(
         raise RuntimeError(f"git archive failed (exit {returncode}): {stderr_msg}")
 
     if allow_dirty:
-        # For testing with uncommitted changes, overlay working tree files onto snapshot
         excluded_dirs = {
             ".git",
             ".venv",
@@ -501,15 +529,20 @@ def load_authorization_spec(spec_path: Path) -> tuple[dict[str, Any], str]:
     spec["candidate_git_sha"] = spec.get("candidate_git_sha", "")
     if spec.get("gate") != 3:
         raise ValueError(f"Authorization spec gate must be 3, got: {spec.get('gate')}")
-    if spec.get("spec_version") != "3.3.0":
-        raise ValueError(f"spec_version must be '3.3.0', got: {spec.get('spec_version')}")
-    if spec.get("schema_version") != "3.3.0":
-        raise ValueError(f"schema_version must be '3.3.0', got: {spec.get('schema_version')}")
-    if spec.get("evaluator_version") != "3.3.0":
-        raise ValueError(f"evaluator_version must be '3.3.0', got: {spec.get('evaluator_version')}")
-    if spec.get("golden_dataset_version") != "3.3.0":
+    if spec.get("spec_version") != SPEC_VERSION:
+        raise ValueError(f"spec_version must be '{SPEC_VERSION}', got: {spec.get('spec_version')}")
+    if spec.get("schema_version") != SCHEMA_VERSION:
         raise ValueError(
-            f"golden_dataset_version must be '3.3.0', got: {spec.get('golden_dataset_version')}"
+            f"schema_version must be '{SCHEMA_VERSION}', got: {spec.get('schema_version')}"
+        )
+    if spec.get("evaluator_version") != EVALUATOR_VERSION:
+        raise ValueError(
+            f"evaluator_version must be '{EVALUATOR_VERSION}', got: {spec.get('evaluator_version')}"
+        )
+    if spec.get("golden_dataset_version") != GOLDEN_DATASET_VERSION:
+        raise ValueError(
+            f"golden_dataset_version must be '{GOLDEN_DATASET_VERSION}', "
+            f"got: {spec.get('golden_dataset_version')}"
         )
     if spec.get("openai_client_max_retries") != 0:
         raise ValueError("openai_client_max_retries must be 0")
@@ -523,6 +556,72 @@ def load_authorization_spec(spec_path: Path) -> tuple[dict[str, Any], str]:
         raise ValueError("reasoning_effort must be 'low'")
 
     return spec, spec_sha256
+
+
+def validate_authorization_contract(
+    repo_root: Path,
+    candidate_sha: str,
+    authorization_commit_sha: str,
+    auth_spec_path: Path,
+    allow_dirty: bool = False,
+    is_live: bool = False,
+) -> None:
+    """Validate strict authorization contract shared across parent and child paths."""
+    if is_live and not candidate_sha:
+        raise RuntimeError(
+            "Candidate commit is not frozen: candidate_git_sha is empty in authorization spec. "
+            "Refusing live execution on un-frozen candidate."
+        )
+
+    if is_live and allow_dirty:
+        raise RuntimeError("Live execution with --allow-dirty is strictly prohibited.")
+
+    if (
+        not allow_dirty
+        and auth_spec_path.resolve() != (repo_root / CANONICAL_BASELINE_SPEC).resolve()
+    ):
+        raise ValueError(
+            f"Authorization specification must use canonical path '{CANONICAL_BASELINE_SPEC}'. "
+            f"Got: '{auth_spec_path}'"
+        )
+
+    if candidate_sha and authorization_commit_sha and not allow_dirty:
+        env = get_sanitized_git_env()
+        # Direct child parentage verification: A^ == C
+        parent_proc = subprocess.run(
+            ["git", "rev-parse", "--verify", f"{authorization_commit_sha}^"],
+            cwd=repo_root,
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if parent_proc.returncode != 0:
+            raise RuntimeError(
+                f"Failed to resolve parent commit of auth commit '{authorization_commit_sha}'"
+            )
+        parent_sha = parent_proc.stdout.strip()
+        if parent_sha != candidate_sha:
+            raise RuntimeError(
+                f"Authorization commit '{authorization_commit_sha}' must be a direct child of "
+                f"candidate commit '{candidate_sha}'. Resolved parent is '{parent_sha}'."
+            )
+
+        # Diff must strictly touch ONLY evals/baselines/gate-3-baseline-v1.json
+        diff_proc = subprocess.run(
+            ["git", "diff", "--name-only", candidate_sha, authorization_commit_sha],
+            cwd=repo_root,
+            env=env,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        changed_files = [f.strip() for f in diff_proc.stdout.splitlines() if f.strip()]
+        if changed_files != [CANONICAL_BASELINE_SPEC]:
+            raise RuntimeError(
+                f"Authorization commit '{authorization_commit_sha}' modified files outside "
+                f"canonical baseline spec '{CANONICAL_BASELINE_SPEC}': {changed_files}"
+            )
 
 
 def verify_bundle_integrity(
@@ -584,7 +683,6 @@ def verify_schema_and_prompt_hashes(snapshot_dir: Path, spec: dict[str, Any]) ->
             f"Prompt SHA mismatch: actual={actual_prompt_sha}, expected={spec['prompt_sha256']}"
         )
 
-    # Verify wire schema SHA
     from agents.legacy_analyzer.schemas.system_export import get_system_openai_wire_schema
 
     wire = get_system_openai_wire_schema()
@@ -605,6 +703,34 @@ def atomic_write_json(destination: Path, data: Any) -> None:
     temp_file.replace(destination)
 
 
+def check_existing_reservation(out_dir: Path, run_label: str) -> None:
+    """Check both reservation-state.json and run-state.json for irrevocable reservations."""
+    state_candidates = [
+        out_dir / RESERVATION_STATE_FILE,
+        out_dir / "run-state.json",
+    ]
+    for state_file in state_candidates:
+        if state_file.exists():
+            try:
+                st_data = json.loads(state_file.read_text(encoding="utf-8"))
+                st = st_data.get("status", "UNKNOWN")
+            except Exception:
+                st = "UNKNOWN"
+            if st in (
+                "RESERVED",
+                "MODEL_INVOCATION",
+                "POST_MODEL_RESPONSE",
+                "FINALIZING",
+                "FAILED",
+                "COMPLETED",
+            ):
+                raise RuntimeError(
+                    f"Irrevocable reservation error: Run label '{run_label}' in '{out_dir}' "
+                    f"is already permanently reserved with status '{st}'. "
+                    f"Re-entry is strictly refused."
+                )
+
+
 def execute_gate_3(
     repo_root: Path,
     auth_spec_path: Path,
@@ -617,6 +743,16 @@ def execute_gate_3(
 ) -> int:
     """Parent execution path: orchestrate preflight and execute isolated child."""
     validate_run_label(run_label)
+
+    is_live = not (synthetic or dry_run)
+    canonical_out = (repo_root / "artifacts" / "gate-3" / run_label).resolve()
+
+    if run_label.startswith("baseline-") and not allow_dirty and not synthetic:
+        if output_dir and output_dir.resolve() != canonical_out:
+            raise ValueError(
+                f"Baseline run '{run_label}' must write to canonical directory '{canonical_out}', "
+                f"got '{output_dir}'"
+            )
 
     # 1. Verify worktree cleanliness and overlays
     verify_clean_worktree(repo_root, allow_dirty=allow_dirty)
@@ -635,72 +771,39 @@ def execute_gate_3(
     head_sha = rev_res.stdout.strip()
 
     # 3. Load auth spec
-    if (
-        not allow_dirty
-        and auth_spec_path.resolve() != (repo_root / DEFAULT_AUTH_SPEC_PATH).resolve()
-    ):
-        raise ValueError(
-            f"Authorization specification must use canonical path '{DEFAULT_AUTH_SPEC_PATH}'. "
-            f"Got: '{auth_spec_path}'"
-        )
     spec, spec_sha = load_authorization_spec(auth_spec_path)
     if spec["run_label"] != run_label:
         raise ValueError(f"Run label mismatch: CLI={run_label}, spec={spec['run_label']}")
 
     candidate_sha = spec["candidate_git_sha"].strip()
 
-    if not candidate_sha and not synthetic and not dry_run:
-        raise RuntimeError(
-            "Candidate commit is not frozen: candidate_git_sha is empty in authorization spec. "
-            "Refusing live execution on un-frozen candidate."
-        )
-
-    if candidate_sha and not allow_dirty:
-        diff_res = subprocess.run(
-            ["git", "diff", "--name-only", candidate_sha, head_sha],
-            cwd=repo_root,
-            env=env,
-            capture_output=True,
-            text=True,
-            check=True,
-        )
-        changed_files = [f.strip() for f in diff_res.stdout.splitlines() if f.strip()]
-        disallowed = [f for f in changed_files if not f.startswith("evals/baselines/")]
-        if disallowed:
-            raise RuntimeError(
-                f"Authorization commit {head_sha} modifies files outside evals/baselines/ "
-                f"relative to candidate {candidate_sha}: {disallowed}"
-            )
+    validate_authorization_contract(
+        repo_root=repo_root,
+        candidate_sha=candidate_sha,
+        authorization_commit_sha=head_sha,
+        auth_spec_path=auth_spec_path,
+        allow_dirty=allow_dirty,
+        is_live=is_live,
+    )
 
     # 4. Determine artifact destination & enforce irrevocable reservation
-    out_dir = output_dir or (repo_root / "artifacts" / "gate-3" / run_label)
-    run_state_file = out_dir / "run-state.json"
+    out_dir = output_dir or canonical_out
+    check_existing_reservation(out_dir, run_label)
 
-    if out_dir.exists():
-        if run_state_file.exists():
-            try:
-                existing_state = json.loads(run_state_file.read_text(encoding="utf-8"))
-                st = existing_state.get("status", "UNKNOWN")
-            except Exception:
-                st = "UNKNOWN"
-            if st in ("RESERVED", "MODEL_INVOCATION", "FAILED", "COMPLETED"):
-                raise RuntimeError(
-                    f"Irrevocable reservation error: Run label '{run_label}' in '{out_dir}' "
-                    f"is already permanently reserved with status '{st}'. "
-                    f"Re-entry is strictly refused."
-                )
-        if not allow_dirty and run_label.startswith("baseline-"):
+    if not allow_dirty and run_label.startswith("baseline-") and out_dir.exists():
+        if any(out_dir.iterdir()):
             raise RuntimeError(
                 f"Irrevocable reservation error: Artifact directory '{out_dir}' "
-                f"already exists for baseline run. "
+                f"already exists and is non-empty for baseline run. "
                 f"Re-use of official baseline label/directory is strictly forbidden."
             )
-    else:
-        out_dir.mkdir(parents=True, exist_ok=False)
 
-    # 5. Write RESERVED state
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    # 5. Write RESERVED state to mutable reservation file
+    reservation_file = out_dir / RESERVATION_STATE_FILE
     atomic_write_json(
-        run_state_file,
+        reservation_file,
         {
             "status": "RESERVED",
             "run_label": run_label,
@@ -770,7 +873,6 @@ def execute_gate_3(
 
 def execute_internal_child(args: argparse.Namespace) -> int:
     """Child execution path: self-authorizing trust verification and execution."""
-    # Step 1: Verify isolated Python and no bytecode
     if not is_isolated_python() or not is_bytecode_writing_disabled():
         print(
             "ERROR: Child execution must be invoked with isolated Python (-I) "
@@ -787,29 +889,46 @@ def execute_internal_child(args: argparse.Namespace) -> int:
     authorized_sha = args.authorized_git_sha
     authorization_commit_sha = getattr(args, "authorization_commit_sha", "") or authorized_sha
     candidate_sha = authorized_sha
+    is_live = not (args.synthetic or args.dry_run)
 
-    # Verify irrevocable reservation state: abort before any model/credential access
-    run_state_file = artifact_dir / "run-state.json"
-    if run_state_file.exists():
-        try:
-            cur_state = json.loads(run_state_file.read_text(encoding="utf-8"))
-            st = cur_state.get("status")
-            if st in ("MODEL_INVOCATION", "FAILED", "COMPLETED"):
-                print(
-                    f"ERROR: Irrevocable reservation error: Run label '{run_label}' already in "
-                    f"state '{st}'. Refusing re-entry.",
-                    file=sys.stderr,
-                )
-                return 1
-        except Exception:
-            pass
+    if run_label.startswith("baseline-") and not args.allow_dirty and not args.synthetic:
+        canonical_out = (provenance_repo / "artifacts" / "gate-3" / run_label).resolve()
+        if artifact_dir != canonical_out:
+            print(
+                f"ERROR: Baseline run '{run_label}' must write to canonical directory "
+                f"'{canonical_out}', got '{artifact_dir}'",
+                file=sys.stderr,
+            )
+            return 1
+
+    reservation_file = artifact_dir / RESERVATION_STATE_FILE
+    for state_path in (reservation_file, artifact_dir / "run-state.json"):
+        if state_path.exists():
+            try:
+                cur_state = json.loads(state_path.read_text(encoding="utf-8"))
+                st = cur_state.get("status")
+                if st in (
+                    "MODEL_INVOCATION",
+                    "POST_MODEL_RESPONSE",
+                    "FINALIZING",
+                    "FAILED",
+                    "COMPLETED",
+                ):
+                    print(
+                        f"ERROR: Irrevocable reservation error: Run label '{run_label}' already in "
+                        f"state '{st}'. Refusing re-entry.",
+                        file=sys.stderr,
+                    )
+                    return 1
+            except Exception:
+                pass
 
     # Ensure controlled sys.path: snapshot_dir is at sys.path[0] and provenance_repo is excluded
     sys.path = [p for p in sys.path if Path(p).resolve() != provenance_repo.resolve()]
     if not sys.path or sys.path[0] != str(snapshot_dir):
         sys.path.insert(0, str(snapshot_dir))
 
-    # Step 2: Bootstrap verification of executing runner against committed runner
+    # Bootstrap verification of executing runner against committed runner
     try:
         verify_trusted_runner_bootstrap(provenance_repo, authorized_sha, Path(__file__))
     except Exception as e:
@@ -822,7 +941,7 @@ def execute_internal_child(args: argparse.Namespace) -> int:
             print(f"ERROR: Runner bootstrap verification failed: {e}", file=sys.stderr)
             return 1
 
-    # Step 3: Verify snapshot against Git objects
+    # Verify snapshot against Git objects
     try:
         verify_snapshot_against_git_objects(provenance_repo, authorized_sha, snapshot_dir)
     except Exception as e:
@@ -835,18 +954,7 @@ def execute_internal_child(args: argparse.Namespace) -> int:
             print(f"ERROR: Snapshot byte verification failed: {e}", file=sys.stderr)
             return 1
 
-    # Step 4: Load and verify authorization spec
-    if (
-        not args.allow_dirty
-        and auth_spec_path.resolve() != (provenance_repo / DEFAULT_AUTH_SPEC_PATH).resolve()
-    ):
-        print(
-            "ERROR: Authorization specification must use canonical path "
-            f"'{DEFAULT_AUTH_SPEC_PATH}'.",
-            file=sys.stderr,
-        )
-        return 1
-
+    # Load and verify authorization spec
     try:
         if authorization_commit_sha and not args.allow_dirty:
             spec, spec_sha = load_authorization_spec_from_git(
@@ -856,6 +964,20 @@ def execute_internal_child(args: argparse.Namespace) -> int:
             spec, spec_sha = load_authorization_spec(auth_spec_path)
     except Exception as e:
         print(f"ERROR: Failed to load authorization spec: {e}", file=sys.stderr)
+        return 1
+
+    # Validate authorization contract in child
+    try:
+        validate_authorization_contract(
+            repo_root=provenance_repo,
+            candidate_sha=candidate_sha,
+            authorization_commit_sha=authorization_commit_sha,
+            auth_spec_path=auth_spec_path,
+            allow_dirty=args.allow_dirty,
+            is_live=is_live,
+        )
+    except Exception as e:
+        print(f"ERROR: Child authorization contract validation failed: {e}", file=sys.stderr)
         return 1
 
     golden_file = (
@@ -875,7 +997,7 @@ def execute_internal_child(args: argparse.Namespace) -> int:
         )
         return 1
 
-    # Step 4.5: Version contract checks
+    # Version contract checks
     golden_json = json.loads(golden_file.read_text(encoding="utf-8"))
     actual_golden_version = golden_json.get("version")
     if actual_golden_version != spec["golden_dataset_version"]:
@@ -886,59 +1008,61 @@ def execute_internal_child(args: argparse.Namespace) -> int:
         )
         return 1
 
-    from agents.legacy_analyzer.schemas.system_assessment import SCHEMA_VERSION
+    from agents.legacy_analyzer.schemas.system_assessment import (
+        SCHEMA_VERSION as AGENT_SCHEMA_VERSION,
+    )
 
-    if SCHEMA_VERSION != spec["schema_version"]:
+    if AGENT_SCHEMA_VERSION != spec["schema_version"]:
         print(
-            f"ERROR: Schema version mismatch: actual={SCHEMA_VERSION}, "
+            f"ERROR: Schema version mismatch: actual={AGENT_SCHEMA_VERSION}, "
             f"expected={spec['schema_version']}",
             file=sys.stderr,
         )
         return 1
 
-    from src.validation.evaluator_v3 import EVALUATOR_VERSION
+    from src.validation.evaluator_v3 import EVALUATOR_VERSION as RUNTIME_EVAL_VERSION
 
-    if EVALUATOR_VERSION != spec["evaluator_version"]:
+    if RUNTIME_EVAL_VERSION != spec["evaluator_version"]:
         print(
-            f"ERROR: Evaluator version mismatch: actual={EVALUATOR_VERSION}, "
+            f"ERROR: Evaluator version mismatch: actual={RUNTIME_EVAL_VERSION}, "
             f"expected={spec['evaluator_version']}",
             file=sys.stderr,
         )
         return 1
 
-    from agents.legacy_analyzer.system_agent import PROMPT_VERSION
+    from agents.legacy_analyzer.system_agent import PROMPT_VERSION as RUNTIME_PROMPT_VERSION
 
-    if PROMPT_VERSION != spec["prompt_version"]:
+    if RUNTIME_PROMPT_VERSION != spec["prompt_version"]:
         print(
-            f"ERROR: Prompt version mismatch: actual={PROMPT_VERSION}, "
+            f"ERROR: Prompt version mismatch: actual={RUNTIME_PROMPT_VERSION}, "
             f"expected={spec['prompt_version']}",
             file=sys.stderr,
         )
         return 1
 
-    # Step 5: Verify multi-source bundle integrity
+    # Verify multi-source bundle integrity
     try:
         verify_bundle_integrity(snapshot_dir, spec)
     except Exception as e:
         print(f"ERROR: Bundle integrity verification failed: {e}", file=sys.stderr)
         return 1
 
-    # Step 6: Verify prompt and wire schema hashes
+    # Verify prompt and wire schema hashes
     try:
         verify_schema_and_prompt_hashes(snapshot_dir, spec)
     except Exception as e:
         print(f"ERROR: Schema / prompt verification failed: {e}", file=sys.stderr)
         return 1
 
-    # Step 7: Verify runtime environment against lockfile
+    # Verify runtime environment against lockfile
     lock_file = snapshot_dir / "requirements-lock.txt"
     try:
-        runtime_manifest, runtime_manifest_sha = verify_runtime_environment(lock_file)
+        runtime_manifest, runtime_manifest_sha = verify_runtime_environment(lock_file, spec=spec)
     except Exception as e:
         print(f"ERROR: Runtime environment verification failed: {e}", file=sys.stderr)
         return 1
 
-    # Step 8: Check controlled cwd and sys.path
+    # Check controlled cwd and sys.path
     if Path.cwd().resolve() != snapshot_dir:
         print(
             f"ERROR: Child execution cwd must be snapshot directory. Got: {Path.cwd()}",
@@ -946,9 +1070,7 @@ def execute_internal_child(args: argparse.Namespace) -> int:
         )
         return 1
 
-    run_state_file = artifact_dir / "run-state.json"
-
-    # Step 8.5: Bundle parsing and fail-closed preflight check
+    # Bundle parsing and fail-closed preflight check
     try:
         from src.cobol.multi_source_reader import read_system_bundle
         from src.cobol.system_cobol_parser import SystemCobolParser
@@ -966,7 +1088,7 @@ def execute_internal_child(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         atomic_write_json(
-            run_state_file,
+            reservation_file,
             {
                 "status": "FAILED",
                 "error_phase": "FAIL_CLOSED_PARSER_CHECK",
@@ -981,11 +1103,11 @@ def execute_internal_child(args: argparse.Namespace) -> int:
         )
         return 1
 
-    # Step 9: If dry-run, report success without live call or credentials
+    # If dry-run, report success without live call or credentials
     if args.dry_run:
         print("[OK] Dry-run preflight verification complete. All authorization checks PASSED.")
         atomic_write_json(
-            run_state_file,
+            reservation_file,
             {
                 "status": "DRY_RUN_PASSED",
                 "run_label": run_label,
@@ -999,7 +1121,7 @@ def execute_internal_child(args: argparse.Namespace) -> int:
         )
         return 0
 
-    # Step 10: Import application modules strictly from snapshot
+    # Import application modules strictly from snapshot
     try:
         from agents.legacy_analyzer.system_agent import SystemAnalyzerAgent
         from src.cobol.system_support_index import SystemSupportIndex
@@ -1008,19 +1130,24 @@ def execute_internal_child(args: argparse.Namespace) -> int:
         print(f"ERROR: Application module import failed: {e}", file=sys.stderr)
         return 1
 
-    # Step 11: Execute Synthetic or Live
     if args.synthetic:
         if not golden_file.is_file():
             print(f"ERROR: Golden dataset not found: {golden_file}", file=sys.stderr)
             return 1
         assessment = load_golden_assessment(golden_file)
 
+        raw_response_content: Any = {
+            "mock": True,
+            "source": "synthetic-golden-v3",
+            "model": "synthetic-golden-v3",
+        }
         metadata_dict = {
             "gate": "3",
             "run_label": run_label,
             "timestamp": datetime.now(UTC).isoformat(),
             "model": "synthetic-golden-v3",
             "requested_model": spec["requested_model"],
+            "response_model_id": spec["requested_model"],
             "git_commit_sha": authorized_sha,
             "schema_version": spec["schema_version"],
             "prompt_version": spec["prompt_version"],
@@ -1031,6 +1158,8 @@ def execute_internal_child(args: argparse.Namespace) -> int:
             "auth_spec_sha256": spec_sha,
             "bundle_sha256": spec["bundle_sha256"],
             "runtime_manifest_sha256": runtime_manifest_sha,
+            "candidate_git_sha": candidate_sha,
+            "authorization_commit_sha": authorization_commit_sha,
         }
     else:
         # Live path: preflight verification before obtaining client or persisting MODEL_INVOCATION
@@ -1077,9 +1206,9 @@ def execute_internal_child(args: argparse.Namespace) -> int:
             )
             return 1
 
-        # Only after all preflight checks pass: persist MODEL_INVOCATION state
+        # Preflight passed: persist MODEL_INVOCATION state
         atomic_write_json(
-            run_state_file,
+            reservation_file,
             {
                 "status": "MODEL_INVOCATION",
                 "run_label": run_label,
@@ -1093,45 +1222,20 @@ def execute_internal_child(args: argparse.Namespace) -> int:
             },
         )
 
+        agent = SystemAnalyzerAgent(config=cfg, reasoning_effort=spec["reasoning_effort"])
+
+        # Call invoke_raw(): returns provider response BEFORE any parsing
         try:
-            agent = SystemAnalyzerAgent(config=cfg, reasoning_effort=spec["reasoning_effort"])
-            assessment, metadata = agent.analyze_system(
+            response, metadata, raw_response_text = agent.invoke_raw(
                 bundle=bundle,
                 run_label=run_label,
                 repo_root=snapshot_dir,
                 git_commit_sha=authorized_sha,
             )
-            metadata_dict = metadata.to_dict()
-            metadata_dict["auth_spec_sha256"] = spec_sha
-            metadata_dict["bundle_sha256"] = spec["bundle_sha256"]
-            metadata_dict["runtime_manifest_sha256"] = runtime_manifest_sha
-            metadata_dict["candidate_git_sha"] = candidate_sha
-            metadata_dict["authorization_commit_sha"] = authorization_commit_sha
-
-            resp_model = metadata.response_model_id or ""
-            if not resp_model.lower().startswith(spec["requested_model"].lower()):
-                print(
-                    f"ERROR: Response model compatibility violation: got '{resp_model}', "
-                    f"expected compatible with '{spec['requested_model']}'",
-                    file=sys.stderr,
-                )
-                atomic_write_json(
-                    run_state_file,
-                    {
-                        "status": "FAILED",
-                        "error_phase": "RESPONSE_MODEL_COMPATIBILITY",
-                        "error_message": f"Response model mismatch: {resp_model}",
-                        "timestamp": datetime.now(UTC).isoformat(),
-                        "candidate_git_sha": candidate_sha,
-                        "authorization_commit_sha": authorization_commit_sha,
-                        "git_commit_sha": authorized_sha,
-                    },
-                )
-                return 1
         except Exception as e:
-            print(f"ERROR: Model invocation failed: {e}", file=sys.stderr)
+            print(f"ERROR: Raw model invocation failed: {e}", file=sys.stderr)
             atomic_write_json(
-                run_state_file,
+                reservation_file,
                 {
                     "status": "FAILED",
                     "error_phase": "MODEL_INVOCATION",
@@ -1144,7 +1248,68 @@ def execute_internal_child(args: argparse.Namespace) -> int:
             )
             return 1
 
-    # Step 12: Deterministic evaluation using SystemEvaluatorV3
+        # IMMEDIATELY serialize and durably persist raw provider response on disk
+        raw_response_content = raw_response_text
+        try:
+            raw_obj = json.loads(raw_response_text)
+            atomic_write_json(artifact_dir / "raw-response.json", raw_obj)
+        except Exception:
+            (artifact_dir / "raw-response.json").write_text(raw_response_text, encoding="utf-8")
+
+        metadata_dict = metadata.to_dict()
+        metadata_dict["auth_spec_sha256"] = spec_sha
+        metadata_dict["bundle_sha256"] = spec["bundle_sha256"]
+        metadata_dict["runtime_manifest_sha256"] = runtime_manifest_sha
+        metadata_dict["candidate_git_sha"] = candidate_sha
+        metadata_dict["authorization_commit_sha"] = authorization_commit_sha
+        atomic_write_json(artifact_dir / "run-metadata.json", metadata_dict)
+
+        # Transition to POST_MODEL_RESPONSE
+        atomic_write_json(
+            reservation_file,
+            {
+                "status": "POST_MODEL_RESPONSE",
+                "run_label": run_label,
+                "gate": 3,
+                "timestamp": datetime.now(UTC).isoformat(),
+                "candidate_git_sha": candidate_sha,
+                "authorization_commit_sha": authorization_commit_sha,
+                "git_commit_sha": authorized_sha,
+                "response_id": metadata.response_id,
+                "response_model_id": metadata.response_model_id,
+            },
+        )
+
+        # Post-call validation: status, refusal, exact model equality, Pydantic parsing
+        try:
+            assessment = agent.validate_and_parse_response(
+                response=response,
+                metadata=metadata,
+                requested_model=spec["requested_model"],
+            )
+            metadata_dict = metadata.to_dict()
+            metadata_dict["auth_spec_sha256"] = spec_sha
+            metadata_dict["bundle_sha256"] = spec["bundle_sha256"]
+            metadata_dict["runtime_manifest_sha256"] = runtime_manifest_sha
+            metadata_dict["candidate_git_sha"] = candidate_sha
+            metadata_dict["authorization_commit_sha"] = authorization_commit_sha
+        except Exception as e:
+            print(f"ERROR: Post-invocation response validation failed: {e}", file=sys.stderr)
+            atomic_write_json(
+                reservation_file,
+                {
+                    "status": "FAILED",
+                    "error_phase": "RESPONSE_VALIDATION",
+                    "error_message": str(e),
+                    "timestamp": datetime.now(UTC).isoformat(),
+                    "candidate_git_sha": candidate_sha,
+                    "authorization_commit_sha": authorization_commit_sha,
+                    "git_commit_sha": authorized_sha,
+                },
+            )
+            return 1
+
+    # Deterministic evaluation using SystemEvaluatorV3
     parser = SystemCobolParser(bundle)
     facts = parser.get_supported_facts()
     index = SystemSupportIndex(
@@ -1153,16 +1318,11 @@ def execute_internal_child(args: argparse.Namespace) -> int:
     evaluator = SystemEvaluatorV3(index, golden_dataset_path=golden_file)
     eval_result, predictions = evaluator.evaluate_assessment(assessment)
 
-    # Step 13: Complete immutable artifact preservation (14 distinct artifacts)
-    from agents.legacy_analyzer.schemas.system_export import get_system_openai_wire_schema
-    from agents.legacy_analyzer.system_agent import load_system_v3_prompt
-
-    # 1. Update run-state.json to final COMPLETED status before manifest
+    # Transition to FINALIZING
     atomic_write_json(
-        run_state_file,
+        reservation_file,
         {
-            "status": "COMPLETED",
-            "gate_3_pass": eval_result.gate_3_pass,
+            "status": "FINALIZING",
             "run_label": run_label,
             "gate": 3,
             "timestamp": datetime.now(UTC).isoformat(),
@@ -1172,18 +1332,22 @@ def execute_internal_child(args: argparse.Namespace) -> int:
         },
     )
 
-    # 2. authorization-spec.json
+    # Complete immutable artifact preservation (13 distinct artifacts + manifest.json)
+    from agents.legacy_analyzer.schemas.system_export import get_system_openai_wire_schema
+    from agents.legacy_analyzer.system_agent import load_system_v3_prompt
+
+    # 1. authorization-spec.json
     atomic_write_json(artifact_dir / "authorization-spec.json", spec)
 
-    # 3. production-prompt.md
+    # 2. production-prompt.md
     prompt_text = load_system_v3_prompt()
     (artifact_dir / "production-prompt.md").write_text(prompt_text, encoding="utf-8")
 
-    # 4. wire-schema.json
+    # 3. wire-schema.json
     wire_schema = get_system_openai_wire_schema()
     atomic_write_json(artifact_dir / "wire-schema.json", wire_schema)
 
-    # 5. source-manifest.json
+    # 4. source-manifest.json
     source_manifest = {
         rel_path: {
             "size": len(f.raw_content.encode("utf-8")),
@@ -1194,46 +1358,75 @@ def execute_internal_child(args: argparse.Namespace) -> int:
     }
     atomic_write_json(artifact_dir / "source-manifest.json", source_manifest)
 
-    # 6. canonical-input-bundle.txt
+    # 5. canonical-input-bundle.txt
     (artifact_dir / "canonical-input-bundle.txt").write_text(
         bundle.formatted_prompt_payload, encoding="utf-8"
     )
 
-    # 7. parser-coverage-certificate.json
+    # 6. parser-coverage-certificate.json
     coverage_cert = parser.get_parser_coverage_certificate()
     atomic_write_json(artifact_dir / "parser-coverage-certificate.json", coverage_cert.to_dict())
 
-    # 8. runtime-manifest.json
+    # 7. runtime-manifest.json
     atomic_write_json(artifact_dir / "runtime-manifest.json", runtime_manifest)
 
-    # 9. raw-response.json
-    raw_response_content = (
-        {"mock": True, "source": "synthetic-golden-v3"}
-        if args.synthetic
-        else (metadata_dict.get("raw_response_text") or {})
-    )
-    atomic_write_json(artifact_dir / "raw-response.json", raw_response_content)
+    # 8. raw-response.json
+    if isinstance(raw_response_content, (dict, list)):
+        atomic_write_json(artifact_dir / "raw-response.json", raw_response_content)
+    else:
+        try:
+            parsed_raw = json.loads(raw_response_content)
+            atomic_write_json(artifact_dir / "raw-response.json", parsed_raw)
+        except Exception:
+            (artifact_dir / "raw-response.json").write_text(
+                str(raw_response_content), encoding="utf-8"
+            )
 
-    # 10. model-assessment.json
+    # 9. model-assessment.json
     atomic_write_json(artifact_dir / "model-assessment.json", assessment.model_dump())
 
-    # 11. enriched-assessment.json
+    # 10. enriched-assessment.json
     atomic_write_json(artifact_dir / "enriched-assessment.json", assessment.model_dump())
 
-    # 12. evaluation.json
+    # 11. evaluation.json
     eval_dict = {
         "metric_summary": eval_result.to_dict(),
         "predictions": [p.to_dict() for p in predictions],
     }
     atomic_write_json(artifact_dir / "evaluation.json", eval_dict)
 
-    # 13. run-metadata.json
+    # 12. run-metadata.json
     atomic_write_json(artifact_dir / "run-metadata.json", metadata_dict)
 
-    # 14. manifest.json (written LAST; maps filename -> SHA256 of all other 13 artifacts)
+    # 13. terminal-result.json (immutable scientific outcome, written before manifest)
+    terminal_result = {
+        "gate": 3,
+        "run_label": run_label,
+        "status": "COMPLETED",
+        "gate_3_pass": eval_result.gate_3_pass,
+        "timestamp": datetime.now(UTC).isoformat(),
+        "candidate_git_sha": candidate_sha,
+        "authorization_commit_sha": authorization_commit_sha,
+        "git_commit_sha": authorized_sha,
+        "precision": eval_result.precision,
+        "recall": eval_result.recall,
+        "matched_expected_count": eval_result.matched_expected_count,
+        "expected_fact_count": eval_result.expected_fact_count,
+        "duplicate_count": eval_result.duplicate_prediction_count,
+        "supported_unique_count": eval_result.supported_predicted_count,
+        "unsupported_count": eval_result.unsupported_predicted_count,
+    }
+    atomic_write_json(artifact_dir / TERMINAL_RESULT_FILE, terminal_result)
+
+    # 14. manifest.json (written LAST; maps filename -> SHA256 of all 13 immutable artifacts)
+    excluded_from_manifest = {
+        "manifest.json",
+        RESERVATION_STATE_FILE,
+        "run-state.json",
+    }
     manifest_shas: dict[str, str] = {}
     for fname in sorted(os.listdir(artifact_dir)):
-        if fname == "manifest.json" or fname.endswith(".tmp") or ".tmp." in fname:
+        if fname in excluded_from_manifest or fname.endswith(".tmp") or ".tmp." in fname:
             continue
         fpath = artifact_dir / fname
         if fpath.is_file():
@@ -1254,6 +1447,21 @@ def execute_internal_child(args: argparse.Namespace) -> int:
         "artifacts": manifest_shas,
     }
     atomic_write_json(artifact_dir / "manifest.json", manifest)
+
+    # Finally: transition mutable reservation file to COMPLETED
+    atomic_write_json(
+        reservation_file,
+        {
+            "status": "COMPLETED",
+            "gate_3_pass": eval_result.gate_3_pass,
+            "run_label": run_label,
+            "gate": 3,
+            "timestamp": datetime.now(UTC).isoformat(),
+            "candidate_git_sha": candidate_sha,
+            "authorization_commit_sha": authorization_commit_sha,
+            "git_commit_sha": authorized_sha,
+        },
+    )
 
     print(
         f"Gate 3 evaluation complete. Pass: {eval_result.gate_3_pass} "

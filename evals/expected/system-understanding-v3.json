@@ -1,9 +1,9 @@
 {
-  "version": "3.3.0",
+  "version": "3.4.0",
   "benchmark_design": "GATE_3_SYSTEM_UNDERSTANDING_APPROVED_CONTRACT",
   "golden_authoring_method": "INDEPENDENT_STATIC_SOURCE_AUDIT",
   "provenance_notes": "Authored directly from independent static source audit of the six legacy repository artifacts without runtime parser dependencies.",
-  "total_expected_facts": 59,
+  "total_expected_facts": 60,
   "category_policies": {
     "PROGRAM_DECLARATION": "REQUIRED_EXHAUSTIVE",
     "CALL_OCCURRENCE": "REQUIRED_EXHAUSTIVE",
@@ -25,7 +25,7 @@
     "FILE_OPERATION": "OPTIONAL_SUPPLEMENTARY"
   },
   "group_counts": {
-    "BEHAVIORAL_RISK": 4,
+    "BEHAVIORAL_RISK": 5,
     "CALLER_CONTINUATION_CONSTRAINT": 3,
     "CALL_EDGE": 4,
     "CALL_OCCURRENCE": 6,
@@ -283,7 +283,7 @@
     {
       "id": "prop.binding.init_db_account_file",
       "category": "FILE_BINDING",
-      "semantic_key": "FILE_BINDING:INIT-DB:ACCOUNT-FILE:ACCOUNTS:LINE_SEQUENTIAL",
+      "semantic_key": "FILE_BINDING:INIT-DB:ACCOUNT-FILE:ACCOUNTS.DAT:LINE_SEQUENTIAL",
       "evidence_spans": {
         "evidence": {
           "file_path": "legacy/core-banking-system/INIT-DB.CBL",
@@ -296,7 +296,7 @@
     {
       "id": "prop.binding.report_gen_account_file",
       "category": "FILE_BINDING",
-      "semantic_key": "FILE_BINDING:REPORT-GEN:ACCOUNT-FILE:ACCOUNTS:LINE_SEQUENTIAL",
+      "semantic_key": "FILE_BINDING:REPORT-GEN:ACCOUNT-FILE:ACCOUNTS.DAT:LINE_SEQUENTIAL",
       "evidence_spans": {
         "evidence": {
           "file_path": "legacy/core-banking-system/REPORT-GEN.CBL",
@@ -309,7 +309,7 @@
     {
       "id": "prop.binding.trans_proc_account_file",
       "category": "FILE_BINDING",
-      "semantic_key": "FILE_BINDING:TRANS-PROC:ACCOUNT-FILE:ACCOUNTS:LINE_SEQUENTIAL",
+      "semantic_key": "FILE_BINDING:TRANS-PROC:ACCOUNT-FILE:ACCOUNTS.DAT:LINE_SEQUENTIAL",
       "evidence_spans": {
         "evidence": {
           "file_path": "legacy/core-banking-system/TRANS-PROC.CBL",
@@ -322,7 +322,7 @@
     {
       "id": "prop.binding.trans_proc_temp_file",
       "category": "FILE_BINDING",
-      "semantic_key": "FILE_BINDING:TRANS-PROC:TEMP-FILE:ACCOUNTS:LINE_SEQUENTIAL",
+      "semantic_key": "FILE_BINDING:TRANS-PROC:TEMP-FILE:ACCOUNTS.TMP:LINE_SEQUENTIAL",
       "evidence_spans": {
         "evidence": {
           "file_path": "legacy/core-banking-system/TRANS-PROC.CBL",
@@ -1045,7 +1045,7 @@
     {
       "id": "prop.risk.trans_proc_non_atomic_update",
       "category": "BEHAVIORAL_RISK",
-      "semantic_key": "RISK:TRANS-PROC:DATA_INTEGRITY:NON_ATOMIC_EXTERNAL_MUTATION:DATA_INTEGRITY",
+      "semantic_key": "RISK:TRANS-PROC:DATA_INTEGRITY:NON_ATOMIC_EXTERNAL_MUTATION:DATA_INTEGRITY:ACCOUNTS.DAT",
       "evidence_spans": {
         "operation_evidence": {
           "file_path": "legacy/core-banking-system/TRANS-PROC.CBL",
@@ -1058,12 +1058,12 @@
           "line_end": 88
         }
       },
-      "auditor_rationale": "Static source audit: Non-atomic external mutation between del (line 87) and ren (line 89) causes data loss if interrupted."
+      "auditor_rationale": "Static source audit: Non-atomic external mutation between del (line 87) and ren (line 89) exposes the system to potential data loss or inconsistent state if interrupted prior to rename completion."
     },
     {
       "id": "prop.risk.init_db_missing_status",
       "category": "BEHAVIORAL_RISK",
-      "semantic_key": "RISK:INIT-DB:IO_ERROR_HANDLING:MISSING_ERROR_STATUS:ERROR_VISIBILITY",
+      "semantic_key": "RISK:INIT-DB:IO_ERROR_HANDLING:MISSING_ERROR_STATUS:ERROR_VISIBILITY:ACCOUNT-FILE",
       "evidence_spans": {
         "operation_evidence": {
           "file_path": "legacy/core-banking-system/INIT-DB.CBL",
@@ -1081,7 +1081,7 @@
     {
       "id": "prop.risk.report_gen_missing_status",
       "category": "BEHAVIORAL_RISK",
-      "semantic_key": "RISK:REPORT-GEN:IO_ERROR_HANDLING:MISSING_ERROR_STATUS:ERROR_VISIBILITY",
+      "semantic_key": "RISK:REPORT-GEN:IO_ERROR_HANDLING:MISSING_ERROR_STATUS:ERROR_VISIBILITY:ACCOUNT-FILE",
       "evidence_spans": {
         "operation_evidence": {
           "file_path": "legacy/core-banking-system/REPORT-GEN.CBL",
@@ -1099,7 +1099,7 @@
     {
       "id": "prop.risk.trans_proc_missing_status",
       "category": "BEHAVIORAL_RISK",
-      "semantic_key": "RISK:TRANS-PROC:IO_ERROR_HANDLING:MISSING_ERROR_STATUS:ERROR_VISIBILITY",
+      "semantic_key": "RISK:TRANS-PROC:IO_ERROR_HANDLING:MISSING_ERROR_STATUS:ERROR_VISIBILITY:ACCOUNT-FILE",
       "evidence_spans": {
         "operation_evidence": {
           "file_path": "legacy/core-banking-system/TRANS-PROC.CBL",
@@ -1113,6 +1113,24 @@
         }
       },
       "auditor_rationale": "Static source audit: TRANS-PROC SELECT ACCOUNT-FILE lacks FILE STATUS clause, leaving file I/O operations unhandled."
+    },
+    {
+      "id": "prop.risk.trans_proc_temp_file_missing_status",
+      "category": "BEHAVIORAL_RISK",
+      "semantic_key": "RISK:TRANS-PROC:IO_ERROR_HANDLING:MISSING_ERROR_STATUS:ERROR_VISIBILITY:TEMP-FILE",
+      "evidence_spans": {
+        "operation_evidence": {
+          "file_path": "legacy/core-banking-system/TRANS-PROC.CBL",
+          "line_start": 47,
+          "line_end": 82
+        },
+        "affected_resource_evidence": {
+          "file_path": "legacy/core-banking-system/TRANS-PROC.CBL",
+          "line_start": 9,
+          "line_end": 10
+        }
+      },
+      "auditor_rationale": "Static source audit: TRANS-PROC SELECT TEMP-FILE lacks FILE STATUS clause, leaving file I/O operations unhandled."
     },
     {
       "id": "prop.state_cmp.1000000003",

@@ -31,7 +31,7 @@ from agents.legacy_analyzer.schemas.system_assessment import (
 from src.cobol.multi_source_reader import MultiSourceBundle, read_system_bundle
 from src.validation.evaluator_v3 import EVALUATOR_VERSION
 
-PROMPT_VERSION: str = "gate3-system-v3.3"
+PROMPT_VERSION: str = "3.4.0"
 
 ReasoningEffort = Literal[
     "none",
@@ -130,9 +130,7 @@ class SystemAnalyzerAgent:
                 endpoint=self.config.foundry_project_endpoint,
                 credential=credential,
             )
-            # Retrieve OpenAI client with 0 retries enforced
             client = project_client.get_openai_client()
-            # Enforce 0 retries
             client.max_retries = 0
             self._openai_client = client
         return self._openai_client
@@ -141,17 +139,22 @@ class SystemAnalyzerAgent:
         """Format the multi-file bundle into input text for the Responses API."""
         return bundle.formatted_prompt_payload
 
-    def analyze_system(
+    def invoke_raw(
         self,
         bundle: MultiSourceBundle | None = None,
         run_label: str = "baseline-v1",
         repo_root: Path | None = None,
         git_commit_sha: str = "",
-    ) -> tuple[SystemAssessment, SystemExecutionMetadata]:
-        """Execute live Responses API analysis across all files in the system bundle.
+    ) -> tuple[Any, SystemExecutionMetadata, str]:
+        """Execute live Responses API analysis using create-style method before any parsing.
 
-        Strictly single-attempt, zero automatic retry.
+        Uses exact frozen Structured Outputs wire schema via text_format.
+        Returns (raw_response_object, metadata, raw_response_json_str).
         """
+        import json
+
+        from agents.legacy_analyzer.schemas.system_export import get_system_openai_wire_schema
+
         repo_dir = repo_root or Path.cwd()
         effective_bundle = bundle or read_system_bundle(repo_dir)
 
@@ -168,46 +171,102 @@ class SystemAnalyzerAgent:
 
         user_input = self.format_bundle_prompt(effective_bundle)
         openai_client = self._get_openai_client()
+        wire_schema = get_system_openai_wire_schema()
 
         start_time = time.time()
         reasoning: Reasoning = {"effort": self.reasoning_effort}
 
-        parsed_response = openai_client.responses.parse(
+        response = openai_client.responses.create(  # type: ignore[call-overload]
             model=self.config.foundry_model,
             instructions=self.system_prompt,
             input=user_input,
-            text_format=SystemAssessment,
+            text={"format": wire_schema},
             reasoning=reasoning,
         )
 
         elapsed = time.time() - start_time
         metadata.elapsed_seconds = round(elapsed, 2)
+        metadata.response_id = getattr(response, "id", None)
+        metadata.response_model_id = getattr(response, "model", None)
 
-        status = getattr(parsed_response, "status", None)
+        if hasattr(response, "usage") and response.usage is not None:
+            metadata.input_tokens = getattr(response.usage, "input_tokens", None)
+            metadata.output_tokens = getattr(response.usage, "output_tokens", None)
+            metadata.total_tokens = getattr(response.usage, "total_tokens", None)
+
+        try:
+            raw_response_text = response.model_dump_json(indent=2)
+        except Exception:
+            raw_response_text = json.dumps(response, default=str, indent=2)
+
+        metadata.raw_response_text = raw_response_text
+        return response, metadata, raw_response_text
+
+    def validate_and_parse_response(
+        self,
+        response: Any,
+        metadata: SystemExecutionMetadata,
+        requested_model: str,
+    ) -> SystemAssessment:
+        """Validate status, refusal, response-model, and parse structured output into
+        SystemAssessment.
+        """
+        status = getattr(response, "status", None)
         if status != "completed":
             raise ValueError(f"Model response did not complete successfully: status='{status}'")
 
-        inspect_response_for_refusal(parsed_response)
+        inspect_response_for_refusal(response)
 
-        assessment: SystemAssessment | None = getattr(parsed_response, "output_parsed", None)
-        if not isinstance(assessment, SystemAssessment):
+        response_model = getattr(response, "model", None)
+        if response_model != requested_model:
             raise ValueError(
-                "Responses API response did not contain a valid parsed SystemAssessment."
+                f"Response model ID '{response_model}' does not match "
+                f"requested model '{requested_model}'"
             )
 
+        output_text = None
+        output = getattr(response, "output", None)
+        if isinstance(output, list):
+            for item in output:
+                content = getattr(item, "content", None)
+                if isinstance(content, list):
+                    for c in content:
+                        text_val = getattr(c, "text", None)
+                        if text_val:
+                            output_text = text_val
+                            break
+                elif getattr(item, "text", None):
+                    output_text = getattr(item, "text")
+                if output_text:
+                    break
+
+        if not output_text:
+            raise ValueError("Responses API response did not contain structured output text.")
+
+        assessment = SystemAssessment.model_validate_json(output_text)
         metadata.schema_valid = True
-        metadata.response_id = getattr(parsed_response, "id", None)
-        metadata.response_model_id = getattr(parsed_response, "model", None)
+        return assessment
 
-        if hasattr(parsed_response, "usage") and parsed_response.usage is not None:
-            metadata.input_tokens = getattr(parsed_response.usage, "input_tokens", None)
-            metadata.output_tokens = getattr(parsed_response.usage, "output_tokens", None)
-            metadata.total_tokens = getattr(parsed_response.usage, "total_tokens", None)
+    def analyze_system(
+        self,
+        bundle: MultiSourceBundle | None = None,
+        run_label: str = "baseline-v1",
+        repo_root: Path | None = None,
+        git_commit_sha: str = "",
+    ) -> tuple[SystemAssessment, SystemExecutionMetadata]:
+        """Execute live Responses API analysis across all files in the system bundle.
 
-        # Preserve raw JSON output
-        try:
-            metadata.raw_response_text = parsed_response.model_dump_json(indent=2)
-        except Exception:
-            metadata.raw_response_text = str(parsed_response)
-
+        Strictly single-attempt, zero automatic retry.
+        """
+        response, metadata, _raw_text = self.invoke_raw(
+            bundle=bundle,
+            run_label=run_label,
+            repo_root=repo_root,
+            git_commit_sha=git_commit_sha,
+        )
+        assessment = self.validate_and_parse_response(
+            response=response,
+            metadata=metadata,
+            requested_model=metadata.requested_model,
+        )
         return assessment, metadata

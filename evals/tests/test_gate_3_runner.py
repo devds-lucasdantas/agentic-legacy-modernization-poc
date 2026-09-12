@@ -50,9 +50,9 @@ def test_load_authorization_spec_valid():
     assert spec["gate"] == 3
     assert spec["run_label"] == "baseline-v1"
     assert spec["requested_model"] == "gpt-5-mini"
-    assert spec["schema_version"] == "3.3.0"
-    assert spec["evaluator_version"] == "3.3.0"
-    assert spec["golden_dataset_version"] == "3.3.0"
+    assert spec["schema_version"] == "3.4.0"
+    assert spec["evaluator_version"] == "3.4.0"
+    assert spec["golden_dataset_version"] == "3.4.0"
     assert len(spec["target_bundle"]) == 6
     assert len(sha256) == 64
 
@@ -183,7 +183,7 @@ def test_dry_run_preflight_passes(tmp_path: Path):
         allow_dirty=True,
     )
     assert exit_code == 0
-    state_file = out_dir / "run-state.json"
+    state_file = out_dir / mod.RESERVATION_STATE_FILE
     assert state_file.is_file()
     state = json.loads(state_file.read_text(encoding="utf-8"))
     assert state["status"] == "DRY_RUN_PASSED"
@@ -206,9 +206,13 @@ def test_synthetic_execution_end_to_end(tmp_path: Path):
     )
     assert exit_code == 0
 
-    # Blocker 10: Complete immutable artifact preservation (14 artifacts)
-    expected_artifacts = [
-        "run-state.json",
+    # Two-layer state model: mutable coordination file exists
+    assert (out_dir / mod.RESERVATION_STATE_FILE).is_file()
+    res_state = json.loads((out_dir / mod.RESERVATION_STATE_FILE).read_text(encoding="utf-8"))
+    assert res_state["status"] == "COMPLETED"
+
+    # 13 immutable artifacts + manifest.json
+    expected_immutable_artifacts = [
         "authorization-spec.json",
         "production-prompt.md",
         "wire-schema.json",
@@ -221,23 +225,25 @@ def test_synthetic_execution_end_to_end(tmp_path: Path):
         "enriched-assessment.json",
         "evaluation.json",
         "run-metadata.json",
-        "manifest.json",
+        "terminal-result.json",
     ]
-    for art in expected_artifacts:
+    for art in expected_immutable_artifacts:
         assert (out_dir / art).is_file(), f"Missing artifact: {art}"
+    assert (out_dir / "manifest.json").is_file()
 
     eval_data = json.loads((out_dir / "evaluation.json").read_text(encoding="utf-8"))
     summary = eval_data["metric_summary"]
     assert summary["gate_3_pass"] is True
-    assert summary["matched_expected_count"] == 59
-    assert summary["expected_fact_count"] == 59
+    assert summary["matched_expected_count"] == 60
+    assert summary["expected_fact_count"] == 60
     assert summary["precision"] == 1.0
     assert summary["recall"] == 1.0
 
     manifest = json.loads((out_dir / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["gate_3_pass"] is True
-    for art in expected_artifacts:
-        if art != "manifest.json":
-            assert art in manifest["artifacts"], f"Missing artifact in manifest: {art}"
-            actual_sha = hashlib.sha256((out_dir / art).read_bytes()).hexdigest()
-            assert manifest["artifacts"][art] == actual_sha, f"SHA mismatch for {art}"
+    assert len(manifest["artifacts"]) == 13
+    assert mod.RESERVATION_STATE_FILE not in manifest["artifacts"]
+    for art in expected_immutable_artifacts:
+        assert art in manifest["artifacts"], f"Missing artifact in manifest: {art}"
+        actual_sha = hashlib.sha256((out_dir / art).read_bytes()).hexdigest()
+        assert manifest["artifacts"][art] == actual_sha, f"SHA mismatch for {art}"

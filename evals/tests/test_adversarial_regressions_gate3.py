@@ -86,8 +86,8 @@ def test_independent_golden_positive_oracle_pass():
     metrics, predictions = evaluator.evaluate_assessment(golden_assessment)
 
     assert metrics.gate_3_pass is True
-    assert metrics.expected_fact_count == 59
-    assert metrics.matched_expected_count == 59
+    assert metrics.expected_fact_count == 60
+    assert metrics.matched_expected_count == 60
     assert metrics.missing_expected_count == 0
     assert metrics.precision == 1.0
     assert metrics.recall == 1.0
@@ -95,7 +95,7 @@ def test_independent_golden_positive_oracle_pass():
     assert metrics.invalid_evidence_count == 0
     assert metrics.duplicate_prediction_count == 0
     assert metrics.contradiction_count == 0
-    assert len(predictions) == 59
+    assert len(predictions) == 60
     assert all(p.is_supported for p in predictions)
 
 
@@ -322,10 +322,11 @@ def test_duplicate_propositions_flagged_without_inflating_recall():
 
     metrics, _ = evaluator.evaluate_assessment(assessment)
     assert metrics.duplicate_prediction_count == 1
-    assert metrics.raw_predicted_count == 60
-    assert metrics.unique_predicted_count == 59
-    assert metrics.matched_expected_count == 59
+    assert metrics.raw_predicted_count == 61
+    assert metrics.unique_predicted_count == 60
+    assert metrics.matched_expected_count == 60
     assert metrics.recall == 1.0
+    assert metrics.gate_3_pass is False
 
 
 # ===========================================================================
@@ -604,7 +605,7 @@ def test_cf7_changed_select_assign(tmp_path: Path):
     bindings = [f.fact for f in facts if isinstance(f.fact, FileBindingFact)]
     b = next((x for x in bindings if x.program_id == "REPORT-GEN"), None)
     assert b is not None
-    assert b.external_file_name == "BANK-ACCTS"
+    assert b.external_file_name == "BANK-ACCTS.DAT"
 
 
 def test_cf8_changed_pic_usage(tmp_path: Path):
@@ -661,14 +662,18 @@ def test_cf10_changed_delete_rename_ordering(tmp_path: Path):
     Verifies source facts update to reflect the swapped operation.
     """
     orig = (REPO_ROOT / "legacy/core-banking-system/TRANS-PROC.CBL").read_text(encoding="utf-8")
-    del_cmd = "MOVE 'cmd /c del ACCOUNTS.DAT' TO WS-CMD\n               CALL 'SYSTEM' USING WS-CMD"
+    del_cmd = (
+        "              MOVE 'cmd /c del ACCOUNTS.DAT' TO WS-CMD\n"
+        "              CALL 'SYSTEM' USING WS-CMD"
+    )
     ren_cmd = (
-        "MOVE 'cmd /c ren ACCOUNTS.TMP ACCOUNTS.DAT' TO WS-CMD\n               CALL 'SYSTEM' USING"
-        " WS-CMD"
+        "              MOVE 'cmd /c ren ACCOUNTS.TMP ACCOUNTS.DAT' TO WS-CMD\n"
+        "              CALL 'SYSTEM' USING WS-CMD"
     )
-    mutated = orig.replace(
-        f"{del_cmd}\n               {ren_cmd}", f"{ren_cmd}\n               {del_cmd}"
-    )
+    assert del_cmd in orig
+    assert ren_cmd in orig
+    mutated = orig.replace(f"{del_cmd}\n{ren_cmd}", f"{ren_cmd}\n{del_cmd}")
+    assert mutated != orig
 
     bundle = _create_mutated_source_bundle(
         {"legacy/core-banking-system/TRANS-PROC.CBL": mutated}, tmp_path
@@ -676,6 +681,14 @@ def test_cf10_changed_delete_rename_ordering(tmp_path: Path):
     parser = SystemCobolParser(bundle)
     cert = parser.parse_system()
     assert cert.unsupported_relevant_count == 0
+    facts = parser.get_supported_facts()
+    non_atomic_risks = [
+        f.fact
+        for f in facts
+        if f.fact.fact_category == "BEHAVIORAL_RISK"
+        and "NON_ATOMIC_EXTERNAL_MUTATION" in f.fact.get_semantic_key()
+    ]
+    assert len(non_atomic_risks) == 0
 
 
 def test_cf11_bob_state_aligned_with_initializer(tmp_path: Path):

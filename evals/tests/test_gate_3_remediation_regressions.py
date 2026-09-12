@@ -28,6 +28,7 @@ from src.cobol.multi_source_reader import (
     TargetFile,
     read_system_bundle,
 )
+from src.cobol.system_atomic_facts import FileOperationFact
 from src.cobol.system_cobol_parser import SystemCobolParser
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -60,8 +61,8 @@ def test_independent_golden_provenance():
     data = json.loads(golden_path.read_text(encoding="utf-8"))
 
     assert data.get("golden_authoring_method") == "INDEPENDENT_STATIC_SOURCE_AUDIT"
-    assert data.get("total_expected_facts") == 59
-    assert len(data["propositions"]) == 59
+    assert data.get("total_expected_facts") == 60
+    assert len(data["propositions"]) == 60
 
     for prop in data["propositions"]:
         assert "auditor_rationale" in prop, f"Proposition {prop['id']} missing auditor_rationale"
@@ -397,7 +398,9 @@ def test_preflight_identity_checks_refusal(tmp_path: Path):
 
 
 def test_complete_immutable_artifact_preservation(tmp_path: Path):
-    """Verify all 14 required artifacts are produced and hashed in manifest.json."""
+    """Verify all 13 immutable artifacts + terminal-result are produced and hashed
+    in manifest.json.
+    """
     mod = get_run_gate_3_module()
     spec_path = REPO_ROOT / mod.DEFAULT_AUTH_SPEC_PATH
     out_dir = tmp_path / "immut_out"
@@ -413,8 +416,10 @@ def test_complete_immutable_artifact_preservation(tmp_path: Path):
     )
     assert exit_code == 0
 
-    required_artifacts = [
-        "run-state.json",
+    # Coordination reservation file exists
+    assert (out_dir / mod.RESERVATION_STATE_FILE).is_file()
+
+    required_immutable_artifacts = [
         "authorization-spec.json",
         "production-prompt.md",
         "wire-schema.json",
@@ -427,17 +432,174 @@ def test_complete_immutable_artifact_preservation(tmp_path: Path):
         "enriched-assessment.json",
         "evaluation.json",
         "run-metadata.json",
-        "manifest.json",
+        "terminal-result.json",
     ]
 
-    for name in required_artifacts:
+    for name in required_immutable_artifacts:
         fpath = out_dir / name
         assert fpath.is_file(), f"Missing required artifact: {name}"
+    assert (out_dir / "manifest.json").is_file()
 
     manifest = json.loads((out_dir / "manifest.json").read_text(encoding="utf-8"))
     assert "artifacts" in manifest
-    assert len(manifest["artifacts"]) == 13  # All artifacts except manifest.json itself
+    assert len(manifest["artifacts"]) == 13
+    assert mod.RESERVATION_STATE_FILE not in manifest["artifacts"]
 
     for name, expected_sha in manifest["artifacts"].items():
         actual_sha = hashlib.sha256((out_dir / name).read_bytes()).hexdigest()
         assert actual_sha == expected_sha, f"SHA mismatch for artifact {name}"
+
+
+# ======================================================================
+# 11. DIRECT CHILD AUTHORIZATION CONTRACT AND SCOPED RECORD ISOLATION
+# ======================================================================
+
+
+def test_authorization_contract_rejects_non_direct_child(monkeypatch):
+    """Verify validate_authorization_contract rejects commit that is not direct child A^ == C."""
+    mod = get_run_gate_3_module()
+    spec_path = REPO_ROOT / mod.DEFAULT_AUTH_SPEC_PATH
+
+    import subprocess
+
+    orig_run = subprocess.run
+
+    def mock_run(cmd, *args, **kwargs):
+        if len(cmd) >= 3 and cmd[0] == "git" and cmd[1] == "rev-parse" and "--verify" in cmd:
+            # Return a different parent SHA than candidate
+            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="other_parent_sha\n")
+        return orig_run(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", mock_run)
+
+    with pytest.raises(RuntimeError, match="must be a direct child of candidate commit"):
+        mod.validate_authorization_contract(
+            repo_root=REPO_ROOT,
+            candidate_sha="candidate_c_sha",
+            authorization_commit_sha="auth_commit_a_sha",
+            auth_spec_path=spec_path,
+            allow_dirty=False,
+            is_live=True,
+        )
+
+
+def test_authorization_contract_rejects_diff_outside_canonical_spec(monkeypatch):
+    """Verify validate_authorization_contract rejects diff touching files outside canonical spec."""
+    mod = get_run_gate_3_module()
+    spec_path = REPO_ROOT / mod.DEFAULT_AUTH_SPEC_PATH
+
+    import subprocess
+
+    orig_run = subprocess.run
+
+    def mock_run(cmd, *args, **kwargs):
+        if len(cmd) >= 3 and cmd[0] == "git" and cmd[1] == "rev-parse" and "--verify" in cmd:
+            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="candidate_c_sha\n")
+        if len(cmd) >= 3 and cmd[0] == "git" and cmd[1] == "diff":
+            return subprocess.CompletedProcess(
+                args=cmd,
+                returncode=0,
+                stdout="evals/baselines/gate-3-baseline-v1.json\nsrc/cobol/system_cobol_parser.py\n",
+            )
+        return orig_run(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", mock_run)
+
+    with pytest.raises(RuntimeError, match="modified files outside canonical baseline spec"):
+        mod.validate_authorization_contract(
+            repo_root=REPO_ROOT,
+            candidate_sha="candidate_c_sha",
+            authorization_commit_sha="auth_commit_a_sha",
+            auth_spec_path=spec_path,
+            allow_dirty=False,
+            is_live=True,
+        )
+
+
+def test_unit_scoped_record_to_fd_isolation():
+    """Verify that record definitions are strictly scoped per compilation unit and do not leak."""
+    from src.cobol.multi_source_reader import MultiSourceBundle, TargetFile
+
+    cbl1 = (
+        "       IDENTIFICATION DIVISION.\n"
+        "       PROGRAM-ID. PROG-A.\n"
+        "       ENVIRONMENT DIVISION.\n"
+        "       INPUT-OUTPUT SECTION.\n"
+        "       FILE-CONTROL.\n"
+        "           SELECT FILE-A ASSIGN TO 'DATA-A.DAT'.\n"
+        "       DATA DIVISION.\n"
+        "       FILE SECTION.\n"
+        "       FD  FILE-A.\n"
+        "       01  SHARED-RECORD-NAME.\n"
+        "           05 REC-FIELD-A  PIC X(10).\n"
+        "       PROCEDURE DIVISION.\n"
+        "           WRITE SHARED-RECORD-NAME.\n"
+        "           STOP RUN.\n"
+    )
+    cbl2 = (
+        "       IDENTIFICATION DIVISION.\n"
+        "       PROGRAM-ID. PROG-B.\n"
+        "       ENVIRONMENT DIVISION.\n"
+        "       INPUT-OUTPUT SECTION.\n"
+        "       FILE-CONTROL.\n"
+        "           SELECT FILE-B ASSIGN TO 'DATA-B.DAT'.\n"
+        "       DATA DIVISION.\n"
+        "       FILE SECTION.\n"
+        "       FD  FILE-B.\n"
+        "       01  SHARED-RECORD-NAME.\n"
+        "           05 REC-FIELD-B  PIC X(20).\n"
+        "       PROCEDURE DIVISION.\n"
+        "           WRITE SHARED-RECORD-NAME.\n"
+        "           STOP RUN.\n"
+    )
+
+    files = {
+        "PROG-A.CBL": TargetFile(
+            relative_path="PROG-A.CBL",
+            file_type="COBOL",
+            raw_content=cbl1,
+            numbered_content=cbl1,
+            sha256=hashlib.sha256(cbl1.encode("utf-8")).hexdigest(),
+            line_count=len(cbl1.splitlines()),
+        ),
+        "PROG-B.CBL": TargetFile(
+            relative_path="PROG-B.CBL",
+            file_type="COBOL",
+            raw_content=cbl2,
+            numbered_content=cbl2,
+            sha256=hashlib.sha256(cbl2.encode("utf-8")).hexdigest(),
+            line_count=len(cbl2.splitlines()),
+        ),
+    }
+    bundle = MultiSourceBundle(
+        files=files,
+        total_physical_lines=len(cbl1.splitlines()) + len(cbl2.splitlines()),
+        bundle_sha256="test_isolation_bundle",
+        formatted_prompt_payload="test_payload",
+    )
+    parser = SystemCobolParser(bundle)
+    facts = parser.get_supported_facts()
+
+    # Verify PROG-A WRITE resolves to FILE-A and PROG-B WRITE resolves to FILE-B
+    ops = [f.fact for f in facts if isinstance(f.fact, FileOperationFact)]
+    op_a = next((o for o in ops if o.program_id == "PROG-A"), None)
+    op_b = next((o for o in ops if o.program_id == "PROG-B"), None)
+    assert op_a is not None and op_a.internal_file_name == "FILE-A"
+    assert op_b is not None and op_b.internal_file_name == "FILE-B"
+
+
+def test_exact_evidence_based_model_match():
+    """Verify that response_model must match requested_model (gpt-5-mini) with exact equality."""
+    from agents.legacy_analyzer.system_agent import SystemAnalyzerAgent, SystemExecutionMetadata
+
+    agent = SystemAnalyzerAgent()
+    meta = SystemExecutionMetadata(requested_model="gpt-5-mini")
+
+    class MockResponse:
+        status = "completed"
+        model = "gpt-5-mini-2025-08-07"  # unverified versioned alias
+        refusal = None
+        output = []
+
+    with pytest.raises(ValueError, match="does not match requested model"):
+        agent.validate_and_parse_response(MockResponse(), meta, requested_model="gpt-5-mini")

@@ -409,7 +409,7 @@ def test_certificate_correct_absence_supported():
         for p in preds
         if p.fact_category == "BEHAVIORAL_RISK" and "MISSING_ERROR_STATUS" in p.semantic_key
     ]
-    assert len(missing_status_preds) == 3
+    assert len(missing_status_preds) == 4
     for p in missing_status_preds:
         assert p.is_supported is True, f"Expected {p.semantic_key} to be supported"
 
