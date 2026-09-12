@@ -902,7 +902,7 @@ def validate_authorization_contract(
                 f"candidate commit '{candidate_sha}'. Resolved parent is '{parent_sha}'."
             )
 
-        # Diff must strictly touch ONLY evals/baselines/gate-3-baseline-v1.json
+        # Diff must strictly touch ONLY the exact selected canonical authorization spec
         diff_proc = subprocess.run(
             ["git", "diff", "--name-only", candidate_sha, authorization_commit_sha],
             cwd=repo_root,
@@ -912,10 +912,15 @@ def validate_authorization_contract(
             check=True,
         )
         changed_files = [f.strip() for f in diff_proc.stdout.splitlines() if f.strip()]
-        if changed_files not in [[p] for p in CANONICAL_BASELINE_SPECS]:
+        try:
+            rel_spec_path = auth_spec_path.resolve().relative_to(repo_root.resolve()).as_posix()
+        except ValueError:
+            rel_spec_path = auth_spec_path.as_posix()
+
+        if changed_files != [rel_spec_path]:
             raise RuntimeError(
-                f"Authorization commit '{authorization_commit_sha}' modified files outside "
-                f"canonical baseline spec {sorted(CANONICAL_BASELINE_SPECS)}: {changed_files}"
+                f"Authorization commit '{authorization_commit_sha}' must modify strictly and only "
+                f"the selected authorization spec '{rel_spec_path}'. Got: {changed_files}"
             )
 
 
@@ -1032,13 +1037,22 @@ def execute_gate_3(
     repo_root: Path,
     auth_spec_path: Path,
     output_dir: Path | None = None,
-    run_label: str = "baseline-v1",
+    run_label: str | None = None,
     synthetic: bool = False,
     dry_run: bool = False,
     allow_dirty: bool = False,
     golden_path: Path | None = None,
 ) -> int:
     """Parent execution path: orchestrate preflight and execute isolated child."""
+    # 1. Load authorization spec early so run_label can be derived if omitted
+    spec, spec_sha = load_authorization_spec(auth_spec_path)
+
+    # Derive effective run_label if omitted, or enforce matching if provided
+    if run_label is None:
+        run_label = spec.get("run_label", "baseline-v2")
+    elif spec.get("run_label") != run_label:
+        raise ValueError(f"Run label mismatch: CLI={run_label}, spec={spec.get('run_label')}")
+
     validate_run_label(run_label)
 
     is_live = not (synthetic or dry_run)
@@ -1051,11 +1065,11 @@ def execute_gate_3(
                 f"got '{output_dir}'"
             )
 
-    # 1. Verify worktree cleanliness and overlays
+    # 2. Verify worktree cleanliness and overlays
     verify_clean_worktree(repo_root, allow_dirty=allow_dirty)
     verify_no_executable_overlays(repo_root, allow_dirty=allow_dirty)
 
-    # 2. Get git HEAD SHA
+    # 3. Get git HEAD SHA
     env = get_sanitized_git_env()
     rev_res = subprocess.run(
         ["git", "rev-parse", "HEAD"],
@@ -1066,11 +1080,6 @@ def execute_gate_3(
         check=True,
     )
     head_sha = rev_res.stdout.strip()
-
-    # 3. Load auth spec
-    spec, spec_sha = load_authorization_spec(auth_spec_path)
-    if spec["run_label"] != run_label:
-        raise ValueError(f"Run label mismatch: CLI={run_label}, spec={spec['run_label']}")
 
     candidate_sha = spec["candidate_git_sha"].strip()
 
@@ -1473,6 +1482,13 @@ def execute_internal_child(args: argparse.Namespace) -> int:
     artifact_dir = Path(args.artifact_dir).resolve()
     auth_spec_path = Path(args.auth_spec).resolve()
     run_label = args.run_label
+    if not run_label and auth_spec_path.is_file():
+        try:
+            with open(auth_spec_path) as f:
+                s = json.load(f)
+                run_label = s.get("run_label")
+        except Exception:
+            pass
     authorized_sha = args.authorized_git_sha
     authorization_commit_sha = getattr(args, "authorization_commit_sha", "") or authorized_sha
     candidate_sha = authorized_sha
@@ -2298,7 +2314,11 @@ def execute_internal_child(args: argparse.Namespace) -> int:
 def main() -> None:
     """CLI entrypoint for Gate 3 runner."""
     parser = argparse.ArgumentParser(description="Gate 3 Multi-File System Analysis Runner")
-    parser.add_argument("--run-label", default="baseline-v1", help="Identifier for analysis run")
+    parser.add_argument(
+        "--run-label",
+        default=None,
+        help="Identifier for analysis run (defaults to run_label in authorization spec)",
+    )
     parser.add_argument(
         "--auth-spec", default=DEFAULT_AUTH_SPEC_PATH, help="Path to authorization specification"
     )

@@ -519,7 +519,9 @@ def test_authorization_contract_rejects_diff_outside_canonical_spec(monkeypatch)
 
     monkeypatch.setattr(subprocess, "run", mock_run)
 
-    with pytest.raises(RuntimeError, match="modified files outside canonical baseline spec"):
+    with pytest.raises(
+        RuntimeError, match="must modify strictly and only the selected authorization spec"
+    ):
         mod.validate_authorization_contract(
             repo_root=REPO_ROOT,
             candidate_sha="candidate_c_sha",

@@ -6,6 +6,7 @@ import hashlib
 import importlib.util
 import json
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -249,3 +250,165 @@ def test_synthetic_execution_end_to_end(tmp_path: Path):
         assert art in manifest["artifacts"], f"Missing artifact in manifest: {art}"
         actual_sha = hashlib.sha256((out_dir / art).read_bytes()).hexdigest()
         assert manifest["artifacts"][art] == actual_sha, f"SHA mismatch for {art}"
+
+
+def test_f1_cli_default_coherence():
+    """Verify F1 CLI default coherence and run-label resolution.
+
+    1. Default CLI configuration resolves to baseline-v2 + v2 spec;
+    2. Explicit mismatched run-label/spec fails closed;
+    3. Explicit v1 spec + baseline-v1 remains supported for offline historical validation.
+    """
+    mod = get_run_gate_3_module()
+    v1_spec = REPO_ROOT / mod.CANONICAL_BASELINE_SPEC_V1
+    v2_spec = REPO_ROOT / mod.CANONICAL_BASELINE_SPEC_V2
+
+    # 1. Default CLI configuration
+    import argparse
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--run-label",
+        default=None,
+        help="Identifier for analysis run (defaults to run_label in authorization spec)",
+    )
+    parser.add_argument("--auth-spec", default=mod.DEFAULT_AUTH_SPEC_PATH, help="Path to auth spec")
+    args = parser.parse_args([])
+    assert args.auth_spec == mod.CANONICAL_BASELINE_SPEC_V2
+    assert args.run_label is None
+
+    spec_v2, _ = mod.load_authorization_spec(REPO_ROOT / args.auth_spec)
+    effective_run_label = args.run_label or spec_v2["run_label"]
+    assert effective_run_label == "baseline-v2"
+    assert spec_v2["run_label"] == effective_run_label
+
+    # 2. Explicit mismatched run-label/spec fails closed
+    with pytest.raises(ValueError, match="Run label mismatch"):
+        mod.execute_gate_3(
+            repo_root=REPO_ROOT,
+            auth_spec_path=v2_spec,
+            run_label="baseline-v1",
+            dry_run=True,
+            allow_dirty=True,
+        )
+
+    with pytest.raises(ValueError, match="Run label mismatch"):
+        mod.execute_gate_3(
+            repo_root=REPO_ROOT,
+            auth_spec_path=v1_spec,
+            run_label="baseline-v2",
+            dry_run=True,
+            allow_dirty=True,
+        )
+
+    # 3. Explicit v1 spec + baseline-v1 remains supported for offline historical validation
+    spec_v1, _ = mod.load_authorization_spec(v1_spec)
+    assert spec_v1["run_label"] == "baseline-v1"
+    entries, b_sha, m_sha = mod.verify_bundle_integrity(REPO_ROOT, spec_v1)
+    assert len(entries) == 6
+    assert b_sha == spec_v1["bundle_sha256"]
+    assert m_sha == spec_v1["source_manifest_sha256"]
+
+
+def test_f2_authorization_diff_bound_to_selected_spec():
+    """Verify F2 authorization diff is strictly bound to the selected auth spec.
+
+    - selected v2 / A changes v1 -> REFUSE
+    - selected v1 / A changes v2 -> REFUSE
+    - selected v2 / A changes v2 only -> PASS trust check
+    - selected v2 / A changes v2 + another file -> REFUSE
+    """
+    mod = get_run_gate_3_module()
+    v1_spec = REPO_ROOT / mod.CANONICAL_BASELINE_SPEC_V1
+    v2_spec = REPO_ROOT / mod.CANONICAL_BASELINE_SPEC_V2
+
+    # Case 1: selected v2 / A changes v1 -> REFUSE
+    with patch("subprocess.run") as mock_run:
+
+        def side_effect_v1(cmd, **kwargs):
+            res = MagicMock()
+            res.returncode = 0
+            if cmd[1:3] == ["rev-parse", "--verify"]:
+                res.stdout = "cand123\n"
+            elif cmd[1:3] == ["diff", "--name-only"]:
+                res.stdout = "evals/baselines/gate-3-baseline-v1.json\n"
+            return res
+
+        mock_run.side_effect = side_effect_v1
+        with pytest.raises(RuntimeError, match="must modify strictly and only"):
+            mod.validate_authorization_contract(
+                repo_root=REPO_ROOT,
+                candidate_sha="cand123",
+                authorization_commit_sha="auth123",
+                auth_spec_path=v2_spec,
+                allow_dirty=False,
+                is_live=False,
+            )
+
+    # Case 2: selected v1 / A changes v2 -> REFUSE
+    with patch("subprocess.run") as mock_run:
+
+        def side_effect_v2(cmd, **kwargs):
+            res = MagicMock()
+            res.returncode = 0
+            if cmd[1:3] == ["rev-parse", "--verify"]:
+                res.stdout = "cand123\n"
+            elif cmd[1:3] == ["diff", "--name-only"]:
+                res.stdout = "evals/baselines/gate-3-baseline-v2.json\n"
+            return res
+
+        mock_run.side_effect = side_effect_v2
+        with pytest.raises(RuntimeError, match="must modify strictly and only"):
+            mod.validate_authorization_contract(
+                repo_root=REPO_ROOT,
+                candidate_sha="cand123",
+                authorization_commit_sha="auth123",
+                auth_spec_path=v1_spec,
+                allow_dirty=False,
+                is_live=False,
+            )
+
+    # Case 3: selected v2 / A changes v2 only -> PASS
+    with patch("subprocess.run") as mock_run:
+
+        def side_effect_pass(cmd, **kwargs):
+            res = MagicMock()
+            res.returncode = 0
+            if cmd[1:3] == ["rev-parse", "--verify"]:
+                res.stdout = "cand123\n"
+            elif cmd[1:3] == ["diff", "--name-only"]:
+                res.stdout = "evals/baselines/gate-3-baseline-v2.json\n"
+            return res
+
+        mock_run.side_effect = side_effect_pass
+        mod.validate_authorization_contract(
+            repo_root=REPO_ROOT,
+            candidate_sha="cand123",
+            authorization_commit_sha="auth123",
+            auth_spec_path=v2_spec,
+            allow_dirty=False,
+            is_live=False,
+        )
+
+    # Case 4: selected v2 / A changes v2 + another file -> REFUSE
+    with patch("subprocess.run") as mock_run:
+
+        def side_effect_multi(cmd, **kwargs):
+            res = MagicMock()
+            res.returncode = 0
+            if cmd[1:3] == ["rev-parse", "--verify"]:
+                res.stdout = "cand123\n"
+            elif cmd[1:3] == ["diff", "--name-only"]:
+                res.stdout = "evals/baselines/gate-3-baseline-v2.json\nextra_file.txt\n"
+            return res
+
+        mock_run.side_effect = side_effect_multi
+        with pytest.raises(RuntimeError, match="must modify strictly and only"):
+            mod.validate_authorization_contract(
+                repo_root=REPO_ROOT,
+                candidate_sha="cand123",
+                authorization_commit_sha="auth123",
+                auth_spec_path=v2_spec,
+                allow_dirty=False,
+                is_live=False,
+            )
