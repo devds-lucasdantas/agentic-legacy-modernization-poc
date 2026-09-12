@@ -19,6 +19,7 @@ import hashlib
 import importlib.util
 import json
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -1240,3 +1241,362 @@ def test_risk_ontology_wire_schema_deterministic():
             operation_evidence=SourceEvidence(file_path="f.cbl", line_start=1, line_end=2),
             affected_resource_evidence=SourceEvidence(file_path="f.cbl", line_start=3, line_end=4),
         )
+
+
+# ======================================================================
+# 17. H4 FINAL RUNNER FAILURE-PATH INTEGRATED REGRESSIONS
+# ======================================================================
+
+
+def _execute_child_failure_scenario(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    run_label: str,
+    mock_response: Any,
+    expected_error_phase: str,
+    evaluator_error: bool = False,
+) -> None:
+    """Helper executing execute_internal_child() post-provider flow for failure regressions.
+
+    Monkeypatches only external/provider boundaries and preflight verification,
+    then executes through the real live child execution path.
+    """
+    import argparse
+    from datetime import UTC, datetime
+
+    from agents.legacy_analyzer import config as cfg_mod
+    from agents.legacy_analyzer.system_agent import (
+        SystemAnalyzerAgent,
+        SystemExecutionMetadata,
+    )
+    from src.validation.evaluator_v3 import SystemEvaluatorV3
+
+    mod = get_run_gate_3_module()
+
+    repo_dir = tmp_path / "repo"
+    repo_dir.mkdir(parents=True, exist_ok=True)
+    canonical_dir = repo_dir / "artifacts" / "gate-3" / run_label
+    canonical_dir.mkdir(parents=True, exist_ok=True)
+    res_file = canonical_dir / mod.RESERVATION_STATE_FILE
+
+    base_reservation = {
+        "status": "RESERVED",
+        "gate": 3,
+        "run_label": run_label,
+        "candidate_git_sha": "sha_cand_h4",
+        "authorization_commit_sha": "sha_auth_h4",
+    }
+    res_file.write_text(json.dumps(base_reservation), encoding="utf-8")
+
+    golden_file = REPO_ROOT / mod.DEFAULT_GOLDEN_PATH
+    golden_sha = hashlib.sha256(golden_file.read_bytes()).hexdigest()
+
+    spec = {
+        "gate": 3,
+        "spec_version": "3.4.1",
+        "schema_version": "3.4.1",
+        "prompt_version": "3.4.1",
+        "evaluator_version": "3.4.1",
+        "golden_dataset_version": "3.4.1",
+        "requested_model": "gpt-5-mini",
+        "reasoning_effort": "low",
+        "max_attempts": 1,
+        "maximum_model_attempts": 1,
+        "openai_client_max_retries": 0,
+        "run_label": run_label,
+        "candidate_git_sha": "sha_cand_h4",
+        "prompt_sha256": "85b19f21c4de45f6fe1a6a219484f856b89bea21b595e04f19d8dc521f820483",
+        "wire_schema_sha256": "4129e91578e445a1fb8392728aef2406c73ec60dcdd60cf84dafb706917f6686",
+        "golden_dataset_sha256": golden_sha,
+        "bundle_sha256": "fake_bundle_sha",
+        "bundle_manifest_sha256": "fake_manifest_sha",
+        "foundry_project_fingerprint": "fake_fp_h4",
+        "target_bundle_files": [
+            "legacy/core-banking-system/BANK-MAIN.CBL",
+            "legacy/core-banking-system/INIT-DB.CBL",
+            "legacy/core-banking-system/TRANS-PROC.CBL",
+            "legacy/core-banking-system/REPORT-GEN.CBL",
+            "legacy/core-banking-system/ACCOUNTS.CPY",
+            "legacy/core-banking-system/ACCOUNTS.DAT",
+        ],
+    }
+
+    # Runner preflight mocks (purely offline environment harnesses)
+    monkeypatch.setattr(mod, "is_isolated_python", lambda: True)
+    monkeypatch.setattr(mod, "is_bytecode_writing_disabled", lambda: True)
+    monkeypatch.setattr(mod, "verify_trusted_runner_bootstrap", lambda *args, **kwargs: None)
+    monkeypatch.setattr(mod, "verify_snapshot_against_git_objects", lambda *args, **kwargs: None)
+    monkeypatch.setattr(mod, "validate_authorization_contract", lambda *args, **kwargs: None)
+    monkeypatch.setattr(mod, "verify_clean_worktree", lambda *args, **kwargs: None)
+    monkeypatch.setattr(mod, "verify_no_executable_overlays", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        mod,
+        "verify_bundle_integrity",
+        lambda *args, **kwargs: ([], "fake_bundle_sha", "fake_manifest_sha"),
+    )
+    monkeypatch.setattr(mod, "verify_schema_and_prompt_hashes", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        mod,
+        "verify_runtime_environment",
+        lambda *args, **kwargs: ({"pkg": "1.0"}, "fake_runtime_sha"),
+    )
+    monkeypatch.setattr(
+        mod, "load_authorization_spec_from_git", lambda *args, **kwargs: (spec, "fake_spec_sha")
+    )
+    monkeypatch.setattr(
+        mod, "load_authorization_spec", lambda *args, **kwargs: (spec, "fake_spec_sha")
+    )
+
+    # Provider config mocking
+    mock_cfg = cfg_mod.FoundryConfig(
+        foundry_project_endpoint="https://fake-endpoint.services.ai.azure.com",
+        foundry_model="gpt-5-mini",
+    )
+    monkeypatch.setattr(cfg_mod, "load_config", lambda: mock_cfg)
+    monkeypatch.setattr(cfg_mod, "compute_foundry_project_fingerprint", lambda ep: "fake_fp_h4")
+
+    # Provider boundary mocking with call counting
+    invoke_raw_call_count = 0
+
+    def mock_invoke_raw(self, *args, **kwargs):
+        nonlocal invoke_raw_call_count
+        invoke_raw_call_count += 1
+        meta = SystemExecutionMetadata(
+            gate="3",
+            run_label=run_label,
+            timestamp=datetime.now(UTC).isoformat(),
+            model="gpt-5-mini",
+            requested_model="gpt-5-mini",
+            reasoning_effort="low",
+            git_commit_sha="sha_cand_h4",
+            foundry_project_fingerprint="fake_fp_h4",
+        )
+        meta.response_id = getattr(mock_response, "id", "resp_mock_h4")
+        meta.response_model_id = getattr(mock_response, "model", "gpt-5-mini")
+        raw_json = json.dumps(
+            {
+                "id": meta.response_id,
+                "model": meta.response_model_id,
+                "status": getattr(mock_response, "status", None),
+                "raw_mock": True,
+            }
+        )
+        return mock_response, meta, raw_json
+
+    monkeypatch.setattr(SystemAnalyzerAgent, "invoke_raw", mock_invoke_raw)
+
+    if evaluator_error:
+
+        def mock_eval(self, assessment):
+            raise RuntimeError("Simulated deterministic evaluator explosion")
+
+        monkeypatch.setattr(SystemEvaluatorV3, "evaluate_assessment", mock_eval)
+
+    args = argparse.Namespace(
+        provenance_repo=str(repo_dir),
+        snapshot_dir=str(REPO_ROOT),
+        artifact_dir=str(canonical_dir),
+        auth_spec=str(REPO_ROOT / mod.DEFAULT_AUTH_SPEC_PATH),
+        run_label=run_label,
+        authorized_git_sha="sha_cand_h4",
+        authorization_commit_sha="sha_auth_h4",
+        golden_path=str(REPO_ROOT / mod.DEFAULT_GOLDEN_PATH),
+        synthetic=False,
+        dry_run=False,
+        allow_dirty=False,
+    )
+
+    # 1. Execute real child path - must return 1 and not raise UnboundLocalError
+    ret = mod.execute_internal_child(args)
+    assert ret == 1, f"Expected returncode 1, got {ret}"
+
+    # 2. invoke_raw call counter == 1
+    assert invoke_raw_call_count == 1, f"Expected 1 model call, got {invoke_raw_call_count}"
+
+    # 3. raw-response.json exists
+    raw_path = canonical_dir / "raw-response.json"
+    assert raw_path.is_file(), "raw-response.json must exist"
+
+    # 4. terminal-result.json exists with status == FAILED and expected error_phase
+    term_path = canonical_dir / mod.TERMINAL_RESULT_FILE
+    assert term_path.is_file(), f"{mod.TERMINAL_RESULT_FILE} must exist"
+    term_data = json.loads(term_path.read_text(encoding="utf-8"))
+    assert term_data["status"] == "FAILED"
+    assert term_data["error_phase"] == expected_error_phase, (
+        f"Expected error_phase '{expected_error_phase}', got '{term_data['error_phase']}'"
+    )
+
+    # 5. manifest.json exists and hashes all preserved immutable artifacts
+    manifest_path = canonical_dir / "manifest.json"
+    assert manifest_path.is_file(), "manifest.json must exist"
+    manifest_data = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert manifest_data["status"] == "FAILED"
+    assert manifest_data["gate_3_pass"] is False
+    assert "raw-response.json" in manifest_data["artifacts"]
+    assert mod.TERMINAL_RESULT_FILE in manifest_data["artifacts"]
+    assert mod.RESERVATION_STATE_FILE not in manifest_data["artifacts"]
+    assert "manifest.json" not in manifest_data["artifacts"]
+
+    if evaluator_error:
+        assert "model-assessment.json" in manifest_data["artifacts"], (
+            "Evaluator failure must preserve parsed model-assessment.json"
+        )
+        assert (canonical_dir / "model-assessment.json").is_file()
+
+    for fname, exp_sha in manifest_data["artifacts"].items():
+        act_sha = hashlib.sha256((canonical_dir / fname).read_bytes()).hexdigest()
+        assert act_sha == exp_sha, f"Manifest hash mismatch for {fname}"
+
+    # 6. reservation-state.json == FAILED
+    assert res_file.is_file()
+    res_data = json.loads(res_file.read_text(encoding="utf-8"))
+    assert res_data["status"] == "FAILED"
+    assert res_data["error_phase"] == expected_error_phase
+
+    # 7. subsequent reuse of the label is refused
+    with pytest.raises(RuntimeError, match="Irrevocable reservation error"):
+        mod.check_existing_reservation(canonical_dir, run_label)
+
+    # 8. no second model invocation occurs on subsequent attempt
+    ret2 = mod.execute_internal_child(args)
+    assert ret2 == 1
+    assert invoke_raw_call_count == 1, "No second model invocation permitted!"
+
+
+def test_integrated_child_failure_response_status(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """Scenario 1: Provider returns status != 'completed' (e.g. 'failed').
+
+    Verifies child handles failure cleanly without UnboundLocalError,
+    error_phase is RESPONSE_STATUS, artifacts are preserved, and reservation is FAILED.
+    """
+
+    class MockResponseStatusFailed:
+        id = "resp_mock_status_fail"
+        status = "failed"
+        model = "gpt-5-mini"
+        refusal = None
+        output: list[Any] = []
+
+    _execute_child_failure_scenario(
+        tmp_path=tmp_path,
+        monkeypatch=monkeypatch,
+        run_label="fail-status",
+        mock_response=MockResponseStatusFailed(),
+        expected_error_phase="RESPONSE_STATUS",
+    )
+
+
+def test_integrated_child_failure_provider_refusal(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """Scenario 2: Provider returns refusal.
+
+    Verifies inspect_response_for_refusal triggers, error_phase is RESPONSE_REFUSAL,
+    raw-response.json is persisted, and no UnboundLocalError occurs.
+    """
+
+    class MockResponseRefusal:
+        id = "resp_mock_refusal"
+        status = "completed"
+        model = "gpt-5-mini"
+        refusal = "I cannot fulfill this request due to safety policies."
+        output: list[Any] = []
+
+    _execute_child_failure_scenario(
+        tmp_path=tmp_path,
+        monkeypatch=monkeypatch,
+        run_label="fail-refusal",
+        mock_response=MockResponseRefusal(),
+        expected_error_phase="RESPONSE_REFUSAL",
+    )
+
+
+def test_integrated_child_failure_model_mismatch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """Scenario 3: Provider response.model != requested_model.
+
+    Verifies model identity enforcement triggers, error_phase is RESPONSE_MODEL_MISMATCH,
+    raw response is preserved, and reservation is FAILED.
+    """
+
+    class MockResponseModelMismatch:
+        id = "resp_mock_model_mismatch"
+        status = "completed"
+        model = "gpt-4o"
+        refusal = None
+        output: list[Any] = []
+
+    _execute_child_failure_scenario(
+        tmp_path=tmp_path,
+        monkeypatch=monkeypatch,
+        run_label="fail-model-mismatch",
+        mock_response=MockResponseModelMismatch(),
+        expected_error_phase="RESPONSE_MODEL_MISMATCH",
+    )
+
+
+def test_integrated_child_failure_malformed_output(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """Scenario 4: Malformed structured output / Pydantic validation failure.
+
+    Verifies Pydantic ValidationError in validate_and_parse_response is caught cleanly,
+    assessment is safely handled as None without UnboundLocalError, error_phase is
+    MALFORMED_OUTPUT, and failure state is finalized.
+    """
+
+    class MockResponseMalformed:
+        id = "resp_mock_malformed"
+        status = "completed"
+        model = "gpt-5-mini"
+        refusal = None
+        output = [
+            type(
+                "Item",
+                (),
+                {"content": [type("TextItem", (), {"text": '{"unrecognized_json": 123}'})()]},
+            )()
+        ]
+
+    _execute_child_failure_scenario(
+        tmp_path=tmp_path,
+        monkeypatch=monkeypatch,
+        run_label="fail-malformed",
+        mock_response=MockResponseMalformed(),
+        expected_error_phase="MALFORMED_OUTPUT",
+    )
+
+
+def test_integrated_child_failure_evaluator_exception(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Scenario 5: Evaluator exception with successfully parsed assessment.
+
+    Verifies:
+    - provider call count == 1
+    - parsed model assessment is preserved (model-assessment.json in manifest)
+    - terminal failure evidence is finalized with error_phase == EVALUATOR
+    - reservation becomes FAILED
+    """
+    from src.validation.evaluator_v3 import load_golden_assessment
+
+    mod = get_run_gate_3_module()
+    golden_path = REPO_ROOT / mod.DEFAULT_GOLDEN_PATH
+    valid_assessment_json = load_golden_assessment(golden_path).model_dump_json()
+
+    class MockResponseValid:
+        id = "resp_mock_valid"
+        status = "completed"
+        model = "gpt-5-mini"
+        refusal = None
+        output = [
+            type(
+                "Item",
+                (),
+                {"content": [type("TextItem", (), {"text": valid_assessment_json})()]},
+            )()
+        ]
+
+    _execute_child_failure_scenario(
+        tmp_path=tmp_path,
+        monkeypatch=monkeypatch,
+        run_label="fail-evaluator",
+        mock_response=MockResponseValid(),
+        expected_error_phase="EVALUATOR",
+        evaluator_error=True,
+    )

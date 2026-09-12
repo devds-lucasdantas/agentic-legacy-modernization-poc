@@ -1399,6 +1399,9 @@ def execute_internal_child(args: argparse.Namespace) -> int:
     from agents.legacy_analyzer.schemas.system_assessment import (
         SCHEMA_VERSION as AGENT_SCHEMA_VERSION,
     )
+    from agents.legacy_analyzer.schemas.system_assessment import (
+        SystemAssessment,
+    )
 
     if AGENT_SCHEMA_VERSION != spec["schema_version"]:
         print(
@@ -1517,6 +1520,8 @@ def execute_internal_child(args: argparse.Namespace) -> int:
     except Exception as e:
         print(f"ERROR: Application module import failed: {e}", file=sys.stderr)
         return 1
+
+    assessment: SystemAssessment | None = None
 
     if args.synthetic:
         if not golden_file.is_file():
@@ -1669,6 +1674,7 @@ def execute_internal_child(args: argparse.Namespace) -> int:
         )
 
         # Post-call validation: status, refusal, exact model equality, Pydantic parsing
+        assessment = None
         try:
             assessment = agent.validate_and_parse_response(
                 response=response,
@@ -1687,7 +1693,11 @@ def execute_internal_child(args: argparse.Namespace) -> int:
             err_phase = "RESPONSE_VALIDATION"
             if "status=" in err_str:
                 err_phase = "RESPONSE_STATUS"
-            elif "refusal" in err_str.lower():
+            elif (
+                "refusal" in err_str.lower()
+                or "refused" in err_str.lower()
+                or type(e).__name__ == "ResponseRefusedError"
+            ):
                 err_phase = "RESPONSE_REFUSAL"
             elif "does not match requested model" in err_str:
                 err_phase = "RESPONSE_MODEL_MISMATCH"
@@ -1717,6 +1727,7 @@ def execute_internal_child(args: argparse.Namespace) -> int:
             return 1
 
     # Deterministic evaluation using SystemEvaluatorV3
+    assert assessment is not None
     try:
         parser = SystemCobolParser(bundle)
         facts = parser.get_supported_facts()
