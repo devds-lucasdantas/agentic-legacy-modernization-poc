@@ -1,13 +1,12 @@
-# GATE 3 POST-ASTRA REMEDIATION — AUDIT REPORT
+# GATE 3 POST-ASTRA REMEDIATION HOTFIX — AUDIT REPORT
 
 **Generated mechanically from repository data and offline verification.**
 
 ## 1. Provenance and Repository State
-- **Audited Remediated Candidate SHA (Commit H2-0)**: `3ec2ee1592cdf2cb44991d960a05d5b6c125546b`
-- **Report HEAD (Commit H2)**: `PENDING_COMMIT`
-- **Pre-Remediation Anchor HEAD**: `72467779ad3bc536bc8eafda8bec54ad22bf4797`
-- **Pre-Astra Hotfix SHA**: `946b8bfd7bb93ec5912420d54d77a8f144a130f6`
-- **Base Candidate SHA**: `48123358a2023dae91b56cb4437c9eeeb5a967f7`
+- **Audited Functional Hotfix Candidate SHA (Commit H3-0)**: `76edc67922c649f3da9f59de0347b96e9a68a374`
+- **Report Commit SHA (Commit H3)**: `PENDING_COMMIT`
+- **Prior Remediated Candidate SHA (Commit H2-0)**: `3ec2ee1592cdf2cb44991d960a05d5b6c125546b`
+- **Prior Report HEAD (Commit H2)**: `3d23be23d3d13f958f420973d67c1aa1e0a19b7d`
 - **Legacy Repository Status**: `UNTOUCHED / CLEAN` (all 6 legacy fixture files byte-identical)
 - **Gate 2 Artifacts Status**: `UNTOUCHED / CLEAN`
 - **Live Calls Made**: `0`
@@ -16,102 +15,118 @@
 
 ### Recent Forward Git Commits
 ```text
-3ec2ee1 feat(gate-3): post-astra remediation for system analysis
+76edc67 fix(gate-3): post-astra remediation hotfix for system understanding (H3-0)
+3d23be2 docs(gate-3): record post-astra remediation audit report (H2)
+3ec2ee1 feat(gate-3): post-astra remediation for system analysis (H2-0)
 7246777 docs(gate-3): update remediation report for pre-astra hotfix candidate 946b8bf
 946b8bf fix(gate-3): pre-astra hotfix - wire file status certificate, remove prompt leakage, eliminate expected_git_sha, enforce version contract
-6a7267c docs(gate-3): record mechanically generated remediation round 3 audit report for candidate 4812335
-4812335 feat(gate-3): round 3 pre-astra corrections (fail-closed parser, level-88 losslessness, file status certificate, 18 category policies, and runner plumbing)
 ```
 
-## 2. Resolution of Adversarial Review Findings (Astra Remediation)
+---
 
-### CF1 / Findings 1-2: Resource-Grounded Behavioral Risks
-- Extended `BehavioralRiskFact` and `BehavioralRisk` schema with `resource_name: str | None`.
-- Updated `get_semantic_key()` to incorporate `resource_name` deterministically:
-  `BEHAVIORAL_RISK:{program_id}:{risk_category}:{risk_basis_kind}:{impact_category}:{resource_name or ''}`.
-- Grounded all `MISSING_ERROR_STATUS` risks in `ACCOUNT-FILE` and `TEMP-FILE` respectively.
-- Grounded `NON_ATOMIC_EXTERNAL_MUTATION` in `ACCOUNTS.DAT`.
+## 2. Remediation Hotfix Audit & Implementation Details
 
-### CF2 / Finding 3: Extension-Preserving File Bindings
-- Upgraded `ASSIGN TO` parser regex to be quote-aware and extension-preserving.
-- Internal files bound to exact filesystem targets preserving `.DAT` and `.TMP` extensions:
-  - `ACCOUNT-FILE` -> `ACCOUNTS.DAT`
-  - `TEMP-FILE` -> `ACCOUNTS.TMP`
-  - `BACKUP-FILE` -> `ACCOUNTS.BAK`
-  - `REPORT-FILE` -> `TRANS_REPORT.TXT`
-- Ground truth golden dataset V3.4.0 and parser support index perfectly aligned on canonical targets.
+### Blocker 1: Direct Child Reservation Must Fail Closed
+- **Mandatory Reservation State**: In official live execution mode (`--internal-child-exec`), `reservation-state.json` is required to exist and parse strictly before configuration, credential loading, or model instantiation.
+- **Fail Closed**: Eliminated any `except Exception: pass` fallbacks in the official trust decision. Missing file, malformed JSON, non-dict payloads, or missing state fields immediately trigger a zero-call failure (exit code 1).
+- **Exact Contract Invariants**:
+  - `status == "RESERVED"`
+  - `gate == 3`
+  - `run_label == spec["run_label"] == CLI run_label`
+  - `candidate_git_sha == spec["candidate_git_sha"] == CLI authorized_git_sha`
+  - `authorization_commit_sha == CLI authorization_commit_sha`
+- **Deterministic Location**: Artifact directory must strictly match `provenance_repo / "artifacts" / "gate-3" / spec["run_label"]`.
+- **Parent-Owned Reservation**: Child process is strictly forbidden from creating its own official reservation.
+- **Legacy Fallback Scope**: Legacy `run-state.json` inspection is restricted exclusively to backward-compatible offline test paths and never used for official live decisions.
+- **Regressions**: `test_child_reservation_fail_closed_regressions` explicitly tests missing file, malformed JSON, corrupted structures, mismatched A, mismatched C, mismatched run_label, mismatched gate, non-RESERVED status, and non-canonical artifact paths, proving zero model calls via sentinel.
 
-### CF3 / Finding 4: Generic Shell Classifier & Target-Matched Non-Atomic Mutation
-- Replaced brittle string matching with `classify_command_operation(cmd_text)`.
-- Generic classifier unnests shell wrappers (`cmd /c`, `/bin/sh -c`, `sh -c`, `bash -c`).
-- Recognizes primitive file operations: `DELETE`, `RENAME`, `COPY`, `MOVE`.
-- `NON_ATOMIC_EXTERNAL_MUTATION` is derived ONLY when the delete target strictly matches the rename target (`op1_tgt.upper() == op2_tgt.upper()`), identifying non-atomic in-place file replacement.
+### Blocker 2: Bind Child to Committed Authorization Spec
+- **Centralized Validation**: Refactored spec dictionary validation into `validate_authorization_spec_dict(spec)` and integrated it into both `load_authorization_spec()` (disk loader) and `load_authorization_spec_from_git()` (Git object blob loader). The Git object loader now strictly parses and validates the schema contract rather than accepting unvalidated JSON bytes.
+- **Independent Contract Verification**: After loading the spec blob from commit $A$, the child independently establishes:
+  - `spec["candidate_git_sha"] == authorized_git_sha`
+  - `spec["run_label"] == CLI run_label`
+  - Full contract validation: gate (`3`), versions (`3.4.1`), reasoning effort (`high`), retry/attempt limits (0 retries, 1 attempt), requested model (`gpt-5-mini`), hashes, fingerprint format, and target bundle.
+- **Official Live Execution Direct Binding**:
+  - Direct child independently verifies `git rev-parse HEAD == authorization_commit_sha`.
+  - Verifies working tree and executable overlays are clean (`verify_clean_worktree`, `verify_no_executable_overlays`).
+  - Verifies parent commit $A\hat{\ } == spec["candidate_git_sha"]$.
+  - Verifies git diff $C..A$ touches strictly and exclusively `evals/baselines/gate-3-baseline-v1.json`.
+- **Regressions**: `test_child_spec_binding_regressions` tests candidate SHA mismatch, run_label mismatch, HEAD not matching $A$, and malformed committed spec, proving zero model calls.
 
-### CF4 / Finding 5: Unit-Scoped Record-to-FD Isolation
-- Isolated `unit_record_to_fd: dict[str, dict[str, str]]` indexed by compilation unit (`program_id`).
-- Precludes cross-program bleed where identical record level-01 identifiers in different files could falsely resolve across program boundaries.
+### Blocker 3: Terminal Failure Evidence Preservation
+- **Two-Layer State Architecture on Failure**: Standardized post-invocation failure handling via centralized helper `finalize_post_model_failure(...)`.
+- **Preserved Evidence**: For any failure occurring AFTER a provider response has returned, preserves:
+  - `raw-response.json` (unaltered provider response)
+  - `run-metadata.json`
+  - `model-assessment.json` (if structured parsing succeeded)
+  - `authorization-spec.json` (where available)
+  - `production-prompt.md`
+  - `wire-schema.json`
+  - Full source, bundle, parser, and runtime provenance
+  - `terminal-result.json` with status `"FAILED"`, error phase, error type, error message, candidate SHA, authorization commit SHA, response ID, response model ID, and timestamps.
+- **Manifest Invariant**: `manifest.json` is generated over all preserved immutable artifacts as the final immutable execution artifact.
+- **Reservation Transition**: Only after immutable evidence is fully persisted does `reservation-state.json` transition to `"FAILED"`.
+- **Failure Cases Handled**:
+  1. Provider returned, status validation fails
+  2. Provider returned refusal
+  3. Provider returned malformed structured output
+  4. Response model mismatch
+  5. Evaluator raises exception
+  6. Later final-artifact generation raises exception
+- **Permanent Consumption**: In all cases, the reservation is permanently consumed and rerun is refused.
+- **Regressions**: `test_terminal_failure_evidence_preservation` verifies raw response survival, `terminal-result.json` creation with status FAILED, manifest verification, reservation state FAILED, rerun refusal, and invocation count strictly equal to 1.
 
-### CF5 / Finding 6: Role-Bound Support Index Verification
-- In `SystemSupportIndex`, added role-bound assertion verification: when candidate fact specifies `resource_name`, it MUST strictly match `target_record.internal_file_name`.
-- Eliminates false positive matches on distinct file handles within the same program.
+### Requirement 4: Restore Preregistered Core / Supplementary Test
+- **Semantic Distinction**: `BEHAVIORAL_RISK` remains `REQUIRED_PREREGISTERED_CORE`, not exhaustive.
+- **True Supplementary Proposition**: `TRANS-PROC / TEMP-FILE / MISSING_ERROR_STATUS` is recognized as a TRUE SUPPLEMENTARY fact supported by AST analysis and parser index, but removed from the required golden core.
+- **Golden Core Count**: Mechanically re-derived to **59** expected facts (with `BEHAVIORAL_RISK` required count = 4).
+- **Adversarial Regression**: `test_trans_proc_temp_file_supplementary_adversarial` swaps required `TRANS-PROC / ACCOUNT-FILE / MISSING_ERROR_STATUS` for true supplementary `TRANS-PROC / TEMP-FILE / MISSING_ERROR_STATUS` with exact role-bound evidence coordinates:
+  - TEMP-FILE prediction is verified `is_supported == True`.
+  - `unsupported_predicted_count == 0`.
+  - Required ACCOUNT-FILE proposition remains unmatched (`missing_expected_count == 1`).
+  - `recall < 1.0` (58 / 59 = 0.983).
+  - Gate 3 evaluation strictly fails (`gate_3_pass == False`).
+  - Proves resource-scoped semantic matching fixed the underlying evaluator defect without artificially promoting supplementary facts to required core.
 
-### CF6 / Finding 7: Ground Truth Dataset V3.4.0 Alignment
-- Bumped golden dataset version to `3.4.0`.
-- All 5 `BEHAVIORAL_RISK` entries fully grounded with their respective `resource_name`.
-- All 4 `FILE_BINDING` entries preserve file extensions (`.DAT`, `.TMP`).
-- Total expected facts: **60**.
+### Requirement 5: Risk Ontology Actually Deterministic
+- **Pydantic Enum/Literal Enforcement**: Replaced open strings with broad reusable preregistered `Literal` types:
+  - `RiskCategory`: Literal["IO_ERROR_HANDLING", "DATA_INTEGRITY", "CONTROL_FLOW", "PORTABILITY", "RESOURCE_LIFECYCLE", "CONCURRENCY_ERROR", "DATA_CORRUPTION", "CONFIGURATION"]
+  - `RiskBasisKind`: Literal["MISSING_ERROR_STATUS", "NON_ATOMIC_EXTERNAL_MUTATION", "NON_RETURNING_TERMINATION", "UNCHECKED_EXTERNAL_RESULT", "INVALID_INPUT_HANDLING", "RESOURCE_LIFECYCLE_FAILURE", "RESOURCE_LEAK", "DEADLOCK_RISK", "INCORRECT_PRECISION", "INCOMPLETE_INITIALIZATION"]
+  - `ImpactCategory`: Literal["AVAILABILITY", "ERROR_VISIBILITY", "CONTROL_FLOW", "DATA_INTEGRITY", "PORTABILITY", "SECURITY_INTEGRITY", "PERFORMANCE"]
+- **Wire Schema Guarantee**: Verified that the generated OpenAI JSON schema enforces strict `enum` constraints for all three fields.
+- **Schema Leakage Audit**: Proved that no fixture-specific program names, resource names, or command literals leak into the wire schema definitions or descriptions.
+- **Regressions**: `test_risk_ontology_wire_schema_deterministic` tests wire schema enum constraints, absence of leaked tokens, and proves arbitrary category tokens raise Pydantic validation errors.
 
-### CF7 / Finding 8: Strict Precision Formula & Duplicate Rejection
-- In `SystemEvaluatorV3` (v3.4.0):
-  $$\text{precision} = \frac{\text{supported\_predicted\_count}}{\text{unique\_predicted\_count}}$$
-- Duplicate assertion occurrences are tracked in `duplicate_prediction_count`.
-- If `duplicate_prediction_count > 0`, the evaluator immediately enforces `gate_3_pass = False`.
+---
 
-### CF8 / Finding 9: Raw Provider Boundary Architecture
-- Refactored `SystemAnalyzerAgent.invoke_raw()`:
-  1. Invokes Responses API with frozen wire schema (`text={"format": wire_schema}`).
-  2. Receives provider response BEFORE any Pydantic/schema validation.
-  3. Returns `(response, metadata, raw_response_text)`.
-- In `scripts/run-gate-3.py`:
-  1. Raw provider response is IMMEDIATELY serialized and persisted to disk at `raw-response.json`.
-  2. Transition to `POST_MODEL_RESPONSE` state.
-  3. Only then calls `validate_and_parse_response()` for status, refusal, response-model, and Pydantic validation.
-  4. Even if output is malformed or Pydantic validation fails, the raw provider payload remains permanently preserved on disk for auditability.
+## 3. Coherent Version Contract Bump (3.4.1)
 
-### CF9 / Finding 10: Evidence-Based Exact Model Match
-- Inspected Gate 1 and Gate 2 execution records: provider response model ID is exact `"gpt-5-mini"`.
-- Zero aliases permitted. Strict equality `response_model == requested_model` enforced.
-- Any mismatch after the baseline call results in immediate terminal failure (status `FAILED`, exit code 1, raw response preserved, reservation permanently consumed, zero retries).
+All system components have been coherently updated to version **3.4.1**:
+- **Baseline Authorization Spec**: `evals/baselines/gate-3-baseline-v1.json` (`spec_version`: 3.4.1)
+- **System Assessment Schema**: `agents/legacy_analyzer/schemas/system_assessment.py` (`SCHEMA_VERSION`: 3.4.1)
+- **System Prompt**: `agents/legacy_analyzer/prompts/system_v3.md` (`version`: 3.4.1)
+- **Analyzer Agent**: `agents/legacy_analyzer/system_agent.py` (`PROMPT_VERSION`: 3.4.1)
+- **Deterministic Evaluator**: `src/validation/evaluator_v3.py` (`EVALUATOR_VERSION`: 3.4.1)
+- **Golden Dataset**: `evals/expected/system-understanding-v3.json` (`version`: 3.4.1)
+- **Runner Constants**: `scripts/run-gate-3.py` (`3.4.1`)
 
-### CF10 / Finding 11: Direct Child Authorization Contract
-- Enforced direct child relationship in `validate_authorization_contract()`:
-  $$A\hat{\ } == C$$
-- Validates that parent of authorization commit A is candidate commit C via `git rev-parse --verify {A}^`.
-- Validates that git diff between C and A touches strictly and exclusively `evals/baselines/gate-3-baseline-v1.json`.
+### Component Cryptographic Hashes (V3.4.1)
+| Component | File Path | SHA256 Digest |
+| :--- | :--- | :--- |
+| **Production Prompt** | `agents/legacy_analyzer/prompts/system_v3.md` | `85b19f21c4de45f6fe1a6a219484f856b89bea21b595e04f19d8dc521f820483` |
+| **Wire Schema** | Generated from `SystemAssessment` | `4129e91578e445a1fb8392728aef2406c73ec60dcdd60cf84dafb706917f6686` |
+| **Golden Dataset** | `evals/expected/system-understanding-v3.json` | `88592af941a35d73077f55d3e2a32dce6d4bd18364acd9d792dd9005c7f97149` |
+| **Source Bundle Manifest** | `evals/baselines/target-bundle-manifest.json` | `9bfa5f67aeb10e408ecbbcf8f0f0ff82894ae4a896d93f773489fe0d2c0b021d` |
 
-### CF11 / Finding 12: Two-Layer State Model
-- Separated mutable coordination state from immutable scientific records:
-  1. **`reservation-state.json`**: Mutable lifecycle coordination file (`RESERVED` -> `MODEL_INVOCATION` -> `POST_MODEL_RESPONSE` -> `FINALIZING` -> `COMPLETED` / `FAILED`). Explicitly excluded from `manifest.json`.
-  2. **`terminal-result.json`**: Immutable scientific outcome and evaluation provenance record. Written during `FINALIZING`, before `manifest.json`, and strictly included and hashed in `manifest.json`.
+---
 
-### CF12 / Finding 13: Strict Single-Attempt Execution Policy
-- Guaranteed single-attempt invocation:
-  - `openai_client_max_retries = 0`
-  - `application_model_retries = 0`
-  - `maximum_model_attempts = 1`
-  - `maximum_logical_invocation_count = 1`
-- Any preflight failure exits 1 with zero network calls.
-
-## 3. Independent Golden Dataset Verification (V3.4.0)
+## 4. Ground Truth Golden Dataset Breakdown (V3.4.1)
+- **Total Required Facts**: **59**
 - **Authoring Method**: `INDEPENDENT_STATIC_SOURCE_AUDIT`
-- **Total Required Facts**: `60`
-- **Auditor Rationale Present**: `True`
-- **Production Parser Independence**: Zero golden-authoring files import `SystemCobolParser` or `SystemSupportIndex`.
 
-### Ground Truth Category Breakdown
 | Proposition Category | Required Count | Category Policy |
 | :--- | :---: | :--- |
-| `BEHAVIORAL_RISK` | 5 | `REQUIRED_PREREGISTERED_CORE` |
+| `BEHAVIORAL_RISK` | 4 | `REQUIRED_PREREGISTERED_CORE` |
 | `CALLER_CONTINUATION_CONSTRAINT` | 3 | `REQUIRED_EXHAUSTIVE` |
 | `CALL_EDGE` | 4 | `REQUIRED_EXHAUSTIVE` |
 | `CALL_OCCURRENCE` | 6 | `REQUIRED_EXHAUSTIVE` |
@@ -130,19 +145,9 @@
 | `RESOURCE_LIFECYCLE` | 4 | `REQUIRED_EXHAUSTIVE` |
 | `TERMINATION_SITE` | 4 | `REQUIRED_EXHAUSTIVE` |
 
-**Sum of Category Expected Counts**: `60` (Mechanically verified == `60`)
+**Sum of Category Expected Counts**: `59` (Mechanically verified == `59`).
 
-## 4. Two-Phase Authorization Specification Integrity (V3.4.0)
-- **Spec Version**: `3.4.0`
-- **Target Run Label**: `baseline-v1`
-- **Requested Model**: `gpt-5-mini`
-- **Foundry Project Fingerprint**: `3f0c34d730680ad8baac11d2825e120045eb19be1d9ec1c0b2a2d337096ae33f`
-- **Candidate Git SHA**: `` (empty string enforces no live calls on candidate commit)
-- **Composite Source Bundle SHA256**: `95bb386b51d653c0a1834e1950634a9887b7cb6826b8c317a07c4b6a4167d060`
-- **Source Manifest SHA256**: `daf28b3314199db8e31bfacdf2fb8441b54682caa7854ed288e1bc00866a1dd1`
-- **Production Prompt SHA256**: `954b41a3375b47c0b82f939e6ce20f865f5733f3fa14f346ef8d52367dca23d2`
-- **Wire Schema SHA256**: `dd3f87d4f3b50c3d973796d19ca7dae8b5d345f1b1b01da4e9ec6bc30e3bbd22`
-- **Golden Dataset SHA256**: `c5678ee291b26c63bca64dae61cbbff7f99991ca6fc82aee0045d47509f63569`
+---
 
 ## 5. Offline Verification Suite Results
 | Check | Tool / Framework | Scope | Result | Details |
@@ -151,4 +156,17 @@
 | Formatting | `ruff format --check .` | Repository-wide | **PASS** | 64 files checked, 0 violations |
 | Type Checking | `mypy` | `src agents scripts tests evals` | **PASS** | 49 source files, 0 issues |
 | Dependencies | `pip check` | Active environment | **PASS** | No broken requirements |
-| Unit & Regression Tests | `pytest -v` | All 10 test modules | **PASS** | **236 / 236 passed (100%)** in 178s |
+| Unit & Regression Tests | `pytest -v` | All test modules | **PASS** | **241 / 241 passed (100%)** in 185.86s |
+
+---
+
+## 6. Audit Conclusion and Freeze Recommendation
+Commit $H_{3-0}$ (`76edc67922c649f3da9f59de0347b96e9a68a374`) satisfies all 5 blocker/requirement remediation criteria:
+1. Child reservation fails closed before model access without silent exception handling.
+2. Direct child binds strictly to committed spec $A$ and validates Head/worktree integrity.
+3. Centralized post-invocation failure evidence preservation is enforced with permanent consumption.
+4. Preregistered core is restored to 59 facts with verified supplementary resource-scoped matching.
+5. Risk ontology is made deterministic with Pydantic Literal enums and wire schema constraints.
+6. The entire contract is coherently aligned at version 3.4.1.
+
+Zero live calls were made, baseline-v1 was not executed, commit A was not created, and legacy files/Gate 2 remain untouched.
