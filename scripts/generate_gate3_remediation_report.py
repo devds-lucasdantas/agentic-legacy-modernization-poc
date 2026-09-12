@@ -99,13 +99,14 @@ def generate_report() -> str:
 
     # Build report
     lines = [
-        "# GATE 3 REMEDIATION ROUND 2 — EXECUTION AND AUDIT REPORT",
+        "# GATE 3 REMEDIATION ROUND 3 — EXECUTION AND AUDIT REPORT",
         "",
         "**Generated mechanically from repository data without manual constants.**",
         "",
         "## 1. Provenance and Repository State",
-        f"- **Current Git HEAD**: `{git_head}`",
-        "- **Preserved Remote Anchor**: `364e334`",
+        f"- **Audited Candidate SHA (Commit C0)**: `{git_head}`",
+        f"- **Report Source SHA**: `{git_head}`",
+        "- **Preserved Remote Anchor**: `e8bd484`",
         (
             f"- **Legacy Repository Status**: "
             f"`{'UNTOUCHED / CLEAN' if legacy_gate2_clean else 'ERROR'}`"
@@ -115,7 +116,8 @@ def generate_report() -> str:
             f"`{'UNTOUCHED / CLEAN' if legacy_gate2_clean else 'ERROR'}`"
         ),
         "- **Live Calls Made**: `0`",
-        "- **Baseline Executions Run**: `0`",
+        "- **Baseline-v1 Executions Run**: `0`",
+        "- **Authorization Commit A**: `NOT CREATED` (strictly deferred)",
         "",
         "### Recent Forward Git Commits",
         "```text",
@@ -153,7 +155,7 @@ def generate_report() -> str:
         f"- **Production Prompt SHA256**: `{prompt_sha256}`",
         f"- **Wire Schema SHA256**: `{wire_schema_sha256}`",
         "",
-        "## 4. Parser Statement Coverage and Dynamic Offsets",
+        "## 4. Parser Statement Coverage and Round 3 Grammar Support",
         f"- **Total Physical Lines**: `{cert_dict['physical_line_count']}`",
         f"- **Logical Statements Parsed**: `{cert_dict['logical_statement_count']}`",
         f"- **Parsed and Scored Statements**: `{cert_dict['parsed_and_scored_count']}`",
@@ -163,42 +165,58 @@ def generate_report() -> str:
         ),
         f"- **Unsupported Relevant Statements**: `{cert_dict['unsupported_relevant_count']}`",
         (
-            "- **Zero Fixture Assumptions**: Removed `or 'ACCOUNTS'`, `record[:10]`, "
-            "`record[40:55]`, and `'BAL'` substring checks. Dynamic AST picture parsing "
-            "(`parse_cobol_picture`) adapts to mutated copybook layouts."
+            "- **Fail-Closed Parser**: Only allowlisted constructs receive PARSED_AND_SCORED "
+            "or RECOGNIZED_BUT_UNSCORED; all other statements fall through to UNSUPPORTED_RELEVANT "
+            "and fail-closed early abort blocks execution with 0 calls."
         ),
         (
-            "- **Non-Atomic Update Consequence**: Qualified to `CANONICAL_DATASET_UNAVAILABLE` "
-            "(eliminated `PERMANENT_DATA_LOSS`)."
+            "- **Level-88 Losslessness**: Preserves condition values in RecordFieldFact; "
+            "participates in declaration identity but has 0 storage bytes, excluded from byte "
+            "offsets, and excluded from representation compatibility."
+        ),
+        (
+            "- **File Status Ownership**: Owned by SELECT file binding; whole-scope host "
+            "certificate proves absence before granting MISSING_ERROR_STATUS risk credit."
+        ),
+        (
+            "- **Generic File Operations**: WRITE statements resolve to owning FD and emit "
+            "FileOperationFacts; evaluated under OPTIONAL_SUPPLEMENTARY policy."
         ),
         "",
-        "## 5. Model Schema & Wire Integrity",
+        "## 5. Model Schema, Evaluator & Runner Integrity",
         (
-            "- **Duplicate Collection Removed**: Removed `programs`; "
-            "retained single canonical `program_declarations`."
+            "- **18 Category Policies**: 13 REQUIRED_EXHAUSTIVE, 4 REQUIRED_PREREGISTERED_CORE, "
+            "1 OPTIONAL_SUPPLEMENTARY (FILE_OPERATION with 0 recall obligation, "
+            "strict precision penalty)."
         ),
         (
-            "- **Answer Leakage Removed**: Replaced specific fixture hints in `risk_category` "
-            "with generic taxonomy (`IO_ERROR_HANDLING`, `DATA_INTEGRITY`, `CONTROL_FLOW`, "
-            "`PORTABILITY`, `RESOURCE_LIFECYCLE`)."
+            "- **Deterministic Behavioral Risk**: Scored on program_id, risk_category, "
+            "risk_basis_kind, and impact_category; role-bound spans on operation and resource."
         ),
         (
-            "- **Irrevocable Reservation**: Enforced atomic exclusive directory creation and "
-            "fail-closed re-entry on `RESERVED`, `MODEL_INVOCATION`, `FAILED`, and `COMPLETED`."
+            "- **Structured Operation Sequence**: Scored with 4 role-bound spans "
+            "(first_operation, second_operation, first_resource, second_resource)."
         ),
         (
-            "- **Preflight Identity Checks**: Enforced preflight verification of model and "
-            "endpoint fingerprint before `MODEL_INVOCATION` write."
+            "- **Runner Spec Git Object Plumbing**: Retrieves baseline spec from authorization "
+            "commit A via `git show {A}:evals/baselines/gate-3-baseline-v1.json`; "
+            "enforces canonical path, normalized 3.3.0 versions, clean diff C..A, "
+            "and snapshot execution from C."
         ),
         "- **14 Immutable Artifacts**: Verified SHA256 preservation in `manifest.json`.",
     ]
 
     report = "\n".join(lines) + "\n"
 
-    # Save report
+    # Save report to docs/ and artifacts/gate-3/
     out_file = REPO_ROOT / "docs" / "gate-3-remediation-report.md"
     out_file.parent.mkdir(parents=True, exist_ok=True)
     out_file.write_text(report, encoding="utf-8")
+
+    art_file = REPO_ROOT / "artifacts" / "gate-3" / "remediation_round_3_report.md"
+    art_file.parent.mkdir(parents=True, exist_ok=True)
+    art_file.write_text(report, encoding="utf-8")
+
     return report
 
 
