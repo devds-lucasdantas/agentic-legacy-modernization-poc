@@ -50,9 +50,9 @@ def test_load_authorization_spec_valid():
     assert spec["gate"] == 3
     assert spec["run_label"] == "baseline-v1"
     assert spec["requested_model"] == "gpt-5-mini"
-    assert spec["schema_version"] == "3.4.0"
-    assert spec["evaluator_version"] == "3.4.0"
-    assert spec["golden_dataset_version"] == "3.4.0"
+    assert spec["schema_version"] == "3.4.1"
+    assert spec["evaluator_version"] == "3.4.1"
+    assert spec["golden_dataset_version"] == "3.4.1"
     assert len(spec["target_bundle"]) == 6
     assert len(sha256) == 64
 
@@ -234,8 +234,8 @@ def test_synthetic_execution_end_to_end(tmp_path: Path):
     eval_data = json.loads((out_dir / "evaluation.json").read_text(encoding="utf-8"))
     summary = eval_data["metric_summary"]
     assert summary["gate_3_pass"] is True
-    assert summary["matched_expected_count"] == 60
-    assert summary["expected_fact_count"] == 60
+    assert summary["matched_expected_count"] == 59
+    assert summary["expected_fact_count"] == 59
     assert summary["precision"] == 1.0
     assert summary["recall"] == 1.0
 

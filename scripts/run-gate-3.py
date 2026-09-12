@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Gate 3 — Multi-File System Analysis Runner (Version 3.4.0)
+"""Gate 3 — Multi-File System Analysis Runner (Version 3.4.1)
 
 Executes multi-file system analysis across all six files of the core banking
 system bundle using structured schemas, Responses API Structured Outputs,
@@ -53,11 +53,11 @@ from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
-SPEC_VERSION = "3.4.0"
-SCHEMA_VERSION = "3.4.0"
-PROMPT_VERSION = "3.4.0"
-EVALUATOR_VERSION = "3.4.0"
-GOLDEN_DATASET_VERSION = "3.4.0"
+SPEC_VERSION = "3.4.1"
+SCHEMA_VERSION = "3.4.1"
+PROMPT_VERSION = "3.4.1"
+EVALUATOR_VERSION = "3.4.1"
+GOLDEN_DATASET_VERSION = "3.4.1"
 
 SAFE_RUN_LABEL_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 HEX_64_PATTERN = re.compile(r"^[0-9a-f]{64}$")
@@ -464,36 +464,10 @@ def create_git_snapshot_archive(
     return temp_dir
 
 
-def load_authorization_spec_from_git(
-    repo_root: Path, commit_sha: str, rel_path: str = DEFAULT_AUTH_SPEC_PATH
-) -> tuple[dict[str, Any], str]:
-    """Retrieve authorization spec directly from Git commit object plumbing."""
-    sanitized_env = get_sanitized_git_env()
-    proc = subprocess.run(
-        ["git", "show", f"{commit_sha}:{rel_path}"],
-        cwd=repo_root,
-        env=sanitized_env,
-        capture_output=True,
-        check=False,
-    )
-    if proc.returncode != 0:
-        raise RuntimeError(
-            f"Failed to retrieve authorization spec from git object '{commit_sha}:{rel_path}': "
-            f"{proc.stderr.decode('utf-8', errors='replace')}"
-        )
-    raw_bytes = proc.stdout
-    spec_sha256 = hashlib.sha256(raw_bytes).hexdigest()
-    spec = json.loads(raw_bytes.decode("utf-8"))
-    return spec, spec_sha256
-
-
-def load_authorization_spec(spec_path: Path) -> tuple[dict[str, Any], str]:
-    """Load and validate the Gate 3 authorization specification."""
-    if not spec_path.is_file():
-        raise FileNotFoundError(f"Authorization specification not found at: {spec_path}")
-    raw_bytes = spec_path.read_bytes()
-    spec_sha256 = hashlib.sha256(raw_bytes).hexdigest()
-    spec = json.loads(raw_bytes.decode("utf-8"))
+def validate_authorization_spec_dict(spec: dict[str, Any]) -> dict[str, Any]:
+    """Validate all contract fields of the Gate 3 authorization specification dictionary."""
+    if not isinstance(spec, dict):
+        raise ValueError("Authorization spec must be a JSON object / dict.")
 
     required_keys = {
         "spec_version",
@@ -526,7 +500,7 @@ def load_authorization_spec(spec_path: Path) -> tuple[dict[str, Any], str]:
         raise ValueError("Authorization spec must contain 'candidate_git_sha'")
     if "expected_git_sha" in spec:
         raise ValueError("Authorization spec must not contain legacy 'expected_git_sha'")
-    spec["candidate_git_sha"] = spec.get("candidate_git_sha", "")
+
     if spec.get("gate") != 3:
         raise ValueError(f"Authorization spec gate must be 3, got: {spec.get('gate')}")
     if spec.get("spec_version") != SPEC_VERSION:
@@ -534,6 +508,10 @@ def load_authorization_spec(spec_path: Path) -> tuple[dict[str, Any], str]:
     if spec.get("schema_version") != SCHEMA_VERSION:
         raise ValueError(
             f"schema_version must be '{SCHEMA_VERSION}', got: {spec.get('schema_version')}"
+        )
+    if spec.get("prompt_version") != PROMPT_VERSION:
+        raise ValueError(
+            f"prompt_version must be '{PROMPT_VERSION}', got: {spec.get('prompt_version')}"
         )
     if spec.get("evaluator_version") != EVALUATOR_VERSION:
         raise ValueError(
@@ -554,7 +532,94 @@ def load_authorization_spec(spec_path: Path) -> tuple[dict[str, Any], str]:
         raise ValueError("maximum_logical_invocation_count must be 1")
     if spec.get("reasoning_effort") != "low":
         raise ValueError("reasoning_effort must be 'low'")
+    if spec.get("requested_model") != "gpt-5-mini":
+        raise ValueError(
+            f"requested_model must be 'gpt-5-mini', got: {spec.get('requested_model')}"
+        )
 
+    # Format validations
+    validate_run_label(str(spec.get("run_label", "")))
+    validate_project_fingerprint_format(str(spec.get("foundry_project_fingerprint", "")))
+
+    for h_field in (
+        "prompt_sha256",
+        "wire_schema_sha256",
+        "source_manifest_sha256",
+        "bundle_sha256",
+        "dependency_lock_sha256",
+        "golden_dataset_sha256",
+    ):
+        h_val = str(spec.get(h_field, ""))
+        if not HEX_64_PATTERN.fullmatch(h_val):
+            raise ValueError(
+                f"{h_field} must be exactly 64 lowercase hex characters, got: '{h_val}'"
+            )
+
+    candidate_sha = str(spec.get("candidate_git_sha", "")).strip()
+    if candidate_sha and not HEX_40_PATTERN.fullmatch(candidate_sha):
+        raise ValueError(
+            "candidate_git_sha must be empty or 40 lowercase hex characters, "
+            f"got: '{candidate_sha}'"
+        )
+
+    tb = spec.get("target_bundle")
+    if not isinstance(tb, list) or len(tb) != 6:
+        raise ValueError(f"target_bundle must be a list of exactly 6 items, got: {type(tb)}")
+    for idx, item in enumerate(tb):
+        if not isinstance(item, dict) or "path" not in item or "sha256" not in item:
+            raise ValueError(f"target_bundle item {idx} missing 'path' or 'sha256'")
+        sha_item = str(item.get("sha256", ""))
+        if not HEX_64_PATTERN.fullmatch(sha_item):
+            raise ValueError(
+                f"target_bundle item {idx} ({item.get('path')}) sha256 must be 64 hex characters, "
+                f"got: '{sha_item}'"
+            )
+
+    return spec
+
+
+def load_authorization_spec_from_git(
+    repo_root: Path, commit_sha: str, rel_path: str = DEFAULT_AUTH_SPEC_PATH
+) -> tuple[dict[str, Any], str]:
+    """Retrieve and validate authorization spec directly from Git commit object plumbing."""
+    sanitized_env = get_sanitized_git_env()
+    proc = subprocess.run(
+        ["git", "show", f"{commit_sha}:{rel_path}"],
+        cwd=repo_root,
+        env=sanitized_env,
+        capture_output=True,
+        check=False,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f"Failed to retrieve authorization spec from git object '{commit_sha}:{rel_path}': "
+            f"{proc.stderr.decode('utf-8', errors='replace')}"
+        )
+    raw_bytes = proc.stdout
+    spec_sha256 = hashlib.sha256(raw_bytes).hexdigest()
+    try:
+        spec = json.loads(raw_bytes.decode("utf-8"))
+    except Exception as e:
+        raise ValueError(
+            f"Committed authorization spec in '{commit_sha}:{rel_path}' is malformed JSON: {e}"
+        ) from e
+    validate_authorization_spec_dict(spec)
+    return spec, spec_sha256
+
+
+def load_authorization_spec(spec_path: Path) -> tuple[dict[str, Any], str]:
+    """Load and validate the Gate 3 authorization specification from a filesystem path."""
+    if not spec_path.is_file():
+        raise FileNotFoundError(f"Authorization specification not found at: {spec_path}")
+    raw_bytes = spec_path.read_bytes()
+    spec_sha256 = hashlib.sha256(raw_bytes).hexdigest()
+    try:
+        spec = json.loads(raw_bytes.decode("utf-8"))
+    except Exception as e:
+        raise ValueError(
+            f"Authorization specification at '{spec_path}' is malformed JSON: {e}"
+        ) from e
+    validate_authorization_spec_dict(spec)
     return spec, spec_sha256
 
 
@@ -587,6 +652,26 @@ def validate_authorization_contract(
 
     if candidate_sha and authorization_commit_sha and not allow_dirty:
         env = get_sanitized_git_env()
+
+        # In live execution, verify that git rev-parse HEAD == authorization_commit_sha
+        if is_live:
+            head_proc = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=repo_root,
+                env=env,
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            head_sha = head_proc.stdout.strip()
+            if head_sha != authorization_commit_sha:
+                raise RuntimeError(
+                    f"Current HEAD commit '{head_sha}' does not match authorization commit "
+                    f"'{authorization_commit_sha}'"
+                )
+            verify_clean_worktree(repo_root, allow_dirty=allow_dirty)
+            verify_no_executable_overlays(repo_root, allow_dirty=allow_dirty)
+
         # Direct child parentage verification: A^ == C
         parent_proc = subprocess.run(
             ["git", "rev-parse", "--verify", f"{authorization_commit_sha}^"],
@@ -871,6 +956,185 @@ def execute_gate_3(
         return child_proc.returncode
 
 
+def finalize_post_model_failure(
+    artifact_dir: Path,
+    reservation_file: Path,
+    error_phase: str,
+    error: Exception | str,
+    spec: dict[str, Any] | None,
+    candidate_sha: str,
+    authorization_commit_sha: str,
+    authorized_sha: str,
+    run_label: str,
+    bundle: Any | None = None,
+    parser: Any | None = None,
+    runtime_manifest: dict[str, str] | None = None,
+    metadata: Any | None = None,
+    assessment: Any | None = None,
+    raw_response_content: Any | None = None,
+) -> None:
+    """Centralized post-invocation failure finalizer.
+
+    Preserves all obtainable immutable evidence artifacts, writes terminal-result.json with
+    status=FAILED, generates manifest.json over preserved immutable artifacts, and finally
+    transitions reservation-state.json to FAILED.
+    """
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    error_type = type(error).__name__ if isinstance(error, Exception) else "Error"
+    error_message = str(error)
+    response_id = getattr(metadata, "response_id", None) if metadata else None
+    response_model_id = getattr(metadata, "response_model_id", None) if metadata else None
+
+    # 1. raw-response.json
+    raw_resp_path = artifact_dir / "raw-response.json"
+    if not raw_resp_path.exists() and raw_response_content is not None:
+        if isinstance(raw_response_content, (dict, list)):
+            atomic_write_json(raw_resp_path, raw_response_content)
+        else:
+            try:
+                parsed_raw = json.loads(raw_response_content)
+                atomic_write_json(raw_resp_path, parsed_raw)
+            except Exception:
+                raw_resp_path.write_text(str(raw_response_content), encoding="utf-8")
+
+    # 2. run-metadata.json
+    run_meta_path = artifact_dir / "run-metadata.json"
+    if not run_meta_path.exists() and metadata is not None:
+        meta_dict = metadata.to_dict() if hasattr(metadata, "to_dict") else dict(metadata)
+        meta_dict["candidate_git_sha"] = candidate_sha
+        meta_dict["authorization_commit_sha"] = authorization_commit_sha
+        meta_dict["git_commit_sha"] = authorized_sha
+        atomic_write_json(run_meta_path, meta_dict)
+
+    # 3. model-assessment.json (if parsing succeeded)
+    if assessment is not None and not (artifact_dir / "model-assessment.json").exists():
+        try:
+            dump = assessment.model_dump() if hasattr(assessment, "model_dump") else assessment
+            atomic_write_json(artifact_dir / "model-assessment.json", dump)
+        except Exception:
+            pass
+
+    # 4. authorization-spec.json
+    if spec is not None and not (artifact_dir / "authorization-spec.json").exists():
+        atomic_write_json(artifact_dir / "authorization-spec.json", spec)
+
+    # 5. production-prompt.md
+    if not (artifact_dir / "production-prompt.md").exists():
+        try:
+            from agents.legacy_analyzer.system_agent import load_system_v3_prompt
+
+            (artifact_dir / "production-prompt.md").write_text(
+                load_system_v3_prompt(), encoding="utf-8"
+            )
+        except Exception:
+            pass
+
+    # 6. wire-schema.json
+    if not (artifact_dir / "wire-schema.json").exists():
+        try:
+            from agents.legacy_analyzer.schemas.system_export import (
+                get_system_openai_wire_schema,
+            )
+
+            atomic_write_json(artifact_dir / "wire-schema.json", get_system_openai_wire_schema())
+        except Exception:
+            pass
+
+    # 7. source-manifest.json & canonical-input-bundle.txt
+    if bundle is not None:
+        if not (artifact_dir / "source-manifest.json").exists():
+            source_manifest = {
+                rel_path: {
+                    "size": len(f.raw_content.encode("utf-8")),
+                    "lines": f.line_count,
+                    "sha256": f.sha256,
+                }
+                for rel_path, f in bundle.files.items()
+            }
+            atomic_write_json(artifact_dir / "source-manifest.json", source_manifest)
+        if not (artifact_dir / "canonical-input-bundle.txt").exists():
+            (artifact_dir / "canonical-input-bundle.txt").write_text(
+                bundle.formatted_prompt_payload, encoding="utf-8"
+            )
+
+    # 8. parser-coverage-certificate.json
+    if parser is not None and not (artifact_dir / "parser-coverage-certificate.json").exists():
+        try:
+            coverage_cert = parser.get_parser_coverage_certificate()
+            atomic_write_json(
+                artifact_dir / "parser-coverage-certificate.json", coverage_cert.to_dict()
+            )
+        except Exception:
+            pass
+
+    # 9. runtime-manifest.json
+    if runtime_manifest is not None and not (artifact_dir / "runtime-manifest.json").exists():
+        atomic_write_json(artifact_dir / "runtime-manifest.json", runtime_manifest)
+
+    # 10. terminal-result.json (immutable failure outcome, written before manifest)
+    terminal_result = {
+        "gate": 3,
+        "run_label": run_label,
+        "status": "FAILED",
+        "error_phase": error_phase,
+        "error_type": error_type,
+        "error_message": error_message,
+        "candidate_git_sha": candidate_sha,
+        "authorization_commit_sha": authorization_commit_sha,
+        "git_commit_sha": authorized_sha,
+        "response_id": response_id,
+        "response_model_id": response_model_id,
+        "timestamp": datetime.now(UTC).isoformat(),
+    }
+    atomic_write_json(artifact_dir / TERMINAL_RESULT_FILE, terminal_result)
+
+    # 11. manifest.json (written LAST of immutable set)
+    excluded_from_manifest = {
+        "manifest.json",
+        RESERVATION_STATE_FILE,
+        "run-state.json",
+    }
+    manifest_shas: dict[str, str] = {}
+    for fname in sorted(os.listdir(artifact_dir)):
+        if fname in excluded_from_manifest or fname.endswith(".tmp") or ".tmp." in fname:
+            continue
+        fpath = artifact_dir / fname
+        if fpath.is_file():
+            manifest_shas[fname] = hashlib.sha256(fpath.read_bytes()).hexdigest()
+
+    manifest = {
+        "gate": 3,
+        "run_label": run_label,
+        "status": "FAILED",
+        "timestamp": datetime.now(UTC).isoformat(),
+        "candidate_git_sha": candidate_sha,
+        "authorization_commit_sha": authorization_commit_sha,
+        "git_commit_sha": authorized_sha,
+        "gate_3_pass": False,
+        "artifacts": manifest_shas,
+    }
+    atomic_write_json(artifact_dir / "manifest.json", manifest)
+
+    # 12. Only AFTER the failure evidence set is finalized: reservation-state.json -> FAILED
+    atomic_write_json(
+        reservation_file,
+        {
+            "status": "FAILED",
+            "error_phase": error_phase,
+            "error_type": error_type,
+            "error_message": error_message,
+            "run_label": run_label,
+            "gate": 3,
+            "timestamp": datetime.now(UTC).isoformat(),
+            "candidate_git_sha": candidate_sha,
+            "authorization_commit_sha": authorization_commit_sha,
+            "git_commit_sha": authorized_sha,
+            "response_id": response_id,
+            "response_model_id": response_model_id,
+        },
+    )
+
+
 def execute_internal_child(args: argparse.Namespace) -> int:
     """Child execution path: self-authorizing trust verification and execution."""
     if not is_isolated_python() or not is_bytecode_writing_disabled():
@@ -890,38 +1154,122 @@ def execute_internal_child(args: argparse.Namespace) -> int:
     authorization_commit_sha = getattr(args, "authorization_commit_sha", "") or authorized_sha
     candidate_sha = authorized_sha
     is_live = not (args.synthetic or args.dry_run)
+    is_official_live = is_live and not args.allow_dirty
+    reservation_file = artifact_dir / RESERVATION_STATE_FILE
 
-    if run_label.startswith("baseline-") and not args.allow_dirty and not args.synthetic:
+    if is_official_live:
         canonical_out = (provenance_repo / "artifacts" / "gate-3" / run_label).resolve()
         if artifact_dir != canonical_out:
             print(
-                f"ERROR: Baseline run '{run_label}' must write to canonical directory "
-                f"'{canonical_out}', got '{artifact_dir}'",
+                f"ERROR: Official live child artifact directory '{artifact_dir}' does not "
+                f"equal canonical destination '{canonical_out}'",
                 file=sys.stderr,
             )
             return 1
 
-    reservation_file = artifact_dir / RESERVATION_STATE_FILE
-    for state_path in (reservation_file, artifact_dir / "run-state.json"):
-        if state_path.exists():
-            try:
-                cur_state = json.loads(state_path.read_text(encoding="utf-8"))
-                st = cur_state.get("status")
-                if st in (
-                    "MODEL_INVOCATION",
-                    "POST_MODEL_RESPONSE",
-                    "FINALIZING",
-                    "FAILED",
-                    "COMPLETED",
-                ):
-                    print(
-                        f"ERROR: Irrevocable reservation error: Run label '{run_label}' already in "
-                        f"state '{st}'. Refusing re-entry.",
-                        file=sys.stderr,
-                    )
-                    return 1
-            except Exception:
-                pass
+        if not reservation_file.is_file():
+            print(
+                f"ERROR: Official live child requires existing reservation state file: "
+                f"'{reservation_file}' not found.",
+                file=sys.stderr,
+            )
+            return 1
+
+        try:
+            res_data = json.loads(reservation_file.read_text(encoding="utf-8"))
+        except Exception as e:
+            print(
+                f"ERROR: Official live child failed to parse reservation state file: {e}",
+                file=sys.stderr,
+            )
+            return 1
+
+        if not isinstance(res_data, dict):
+            print(
+                "ERROR: Official live child reservation state must be a JSON object.",
+                file=sys.stderr,
+            )
+            return 1
+
+        required_res_fields = {
+            "status",
+            "gate",
+            "run_label",
+            "candidate_git_sha",
+            "authorization_commit_sha",
+        }
+        missing_res_fields = required_res_fields - set(res_data.keys())
+        if missing_res_fields:
+            print(
+                f"ERROR: Official live child reservation state missing required fields: "
+                f"{sorted(missing_res_fields)}",
+                file=sys.stderr,
+            )
+            return 1
+
+        if res_data.get("status") != "RESERVED":
+            print(
+                f"ERROR: Official live child reservation state status must be 'RESERVED', "
+                f"got: '{res_data.get('status')}'",
+                file=sys.stderr,
+            )
+            return 1
+
+        if res_data.get("gate") != 3:
+            print(
+                f"ERROR: Official live child reservation state gate must be 3, "
+                f"got: {res_data.get('gate')}",
+                file=sys.stderr,
+            )
+            return 1
+
+        if res_data.get("run_label") != run_label:
+            print(
+                f"ERROR: Official live child reservation state run_label mismatch: "
+                f"reservation='{res_data.get('run_label')}', CLI='{run_label}'",
+                file=sys.stderr,
+            )
+            return 1
+
+        if res_data.get("candidate_git_sha") != authorized_sha:
+            print(
+                "ERROR: Official live child reservation state candidate_git_sha mismatch: "
+                f"reservation='{res_data.get('candidate_git_sha')}', "
+                f"CLI authorized='{authorized_sha}'",
+                file=sys.stderr,
+            )
+            return 1
+
+        if res_data.get("authorization_commit_sha") != authorization_commit_sha:
+            print(
+                "ERROR: Official live child reservation state authorization_commit_sha mismatch: "
+                f"reservation='{res_data.get('authorization_commit_sha')}', "
+                f"CLI='{authorization_commit_sha}'",
+                file=sys.stderr,
+            )
+            return 1
+    else:
+        # Offline / backward-compatible test paths
+        for state_path in (reservation_file, artifact_dir / "run-state.json"):
+            if state_path.exists():
+                try:
+                    cur_state = json.loads(state_path.read_text(encoding="utf-8"))
+                    st = cur_state.get("status")
+                    if st in (
+                        "MODEL_INVOCATION",
+                        "POST_MODEL_RESPONSE",
+                        "FINALIZING",
+                        "FAILED",
+                        "COMPLETED",
+                    ):
+                        print(
+                            f"ERROR: Irrevocable reservation error: Run label '{run_label}' "
+                            f"already in state '{st}'. Refusing re-entry.",
+                            file=sys.stderr,
+                        )
+                        return 1
+                except Exception:
+                    pass
 
     # Ensure controlled sys.path: snapshot_dir is at sys.path[0] and provenance_repo is excluded
     sys.path = [p for p in sys.path if Path(p).resolve() != provenance_repo.resolve()]
@@ -965,6 +1313,46 @@ def execute_internal_child(args: argparse.Namespace) -> int:
     except Exception as e:
         print(f"ERROR: Failed to load authorization spec: {e}", file=sys.stderr)
         return 1
+
+    # Child independently verifies binding to committed authorization spec:
+    if is_official_live:
+        if spec.get("candidate_git_sha") != authorized_sha:
+            print(
+                f"ERROR: Authorization spec candidate_git_sha '{spec.get('candidate_git_sha')}' "
+                f"does not match CLI authorized SHA '{authorized_sha}'",
+                file=sys.stderr,
+            )
+            return 1
+        if spec.get("run_label") != run_label:
+            print(
+                f"ERROR: Authorization spec run_label '{spec.get('run_label')}' "
+                f"does not match CLI run_label '{run_label}'",
+                file=sys.stderr,
+            )
+            return 1
+        canonical_spec_out = (
+            provenance_repo / "artifacts" / "gate-3" / spec["run_label"]
+        ).resolve()
+        if artifact_dir != canonical_spec_out:
+            print(
+                "ERROR: Artifact directory does not match spec run_label canonical destination",
+                file=sys.stderr,
+            )
+            return 1
+        if res_data["run_label"] != spec["run_label"]:
+            print(
+                f"ERROR: Reservation run_label '{res_data['run_label']}' does not match "
+                f"spec run_label '{spec['run_label']}'",
+                file=sys.stderr,
+            )
+            return 1
+        if res_data["candidate_git_sha"] != spec["candidate_git_sha"]:
+            print(
+                f"ERROR: Reservation candidate_git_sha '{res_data['candidate_git_sha']}' "
+                f"does not match spec candidate_git_sha '{spec['candidate_git_sha']}'",
+                file=sys.stderr,
+            )
+            return 1
 
     # Validate authorization contract in child
     try:
@@ -1295,173 +1683,236 @@ def execute_internal_child(args: argparse.Namespace) -> int:
             metadata_dict["authorization_commit_sha"] = authorization_commit_sha
         except Exception as e:
             print(f"ERROR: Post-invocation response validation failed: {e}", file=sys.stderr)
-            atomic_write_json(
-                reservation_file,
-                {
-                    "status": "FAILED",
-                    "error_phase": "RESPONSE_VALIDATION",
-                    "error_message": str(e),
-                    "timestamp": datetime.now(UTC).isoformat(),
-                    "candidate_git_sha": candidate_sha,
-                    "authorization_commit_sha": authorization_commit_sha,
-                    "git_commit_sha": authorized_sha,
-                },
+            err_str = str(e)
+            err_phase = "RESPONSE_VALIDATION"
+            if "status=" in err_str:
+                err_phase = "RESPONSE_STATUS"
+            elif "refusal" in err_str.lower():
+                err_phase = "RESPONSE_REFUSAL"
+            elif "does not match requested model" in err_str:
+                err_phase = "RESPONSE_MODEL_MISMATCH"
+            elif (
+                "validation error" in err_str.lower()
+                or "did not contain structured output" in err_str
+            ):
+                err_phase = "MALFORMED_OUTPUT"
+
+            finalize_post_model_failure(
+                artifact_dir=artifact_dir,
+                reservation_file=reservation_file,
+                error_phase=err_phase,
+                error=e,
+                spec=spec,
+                candidate_sha=candidate_sha,
+                authorization_commit_sha=authorization_commit_sha,
+                authorized_sha=authorized_sha,
+                run_label=run_label,
+                bundle=bundle,
+                parser=parser,
+                runtime_manifest=runtime_manifest,
+                metadata=metadata,
+                assessment=assessment,
+                raw_response_content=raw_response_content,
             )
             return 1
 
     # Deterministic evaluation using SystemEvaluatorV3
-    parser = SystemCobolParser(bundle)
-    facts = parser.get_supported_facts()
-    index = SystemSupportIndex(
-        facts, bundle, file_status_certificate=parser.file_status_certificate
-    )
-    evaluator = SystemEvaluatorV3(index, golden_dataset_path=golden_file)
-    eval_result, predictions = evaluator.evaluate_assessment(assessment)
+    try:
+        parser = SystemCobolParser(bundle)
+        facts = parser.get_supported_facts()
+        index = SystemSupportIndex(
+            facts, bundle, file_status_certificate=parser.file_status_certificate
+        )
+        evaluator = SystemEvaluatorV3(index, golden_dataset_path=golden_file)
+        eval_result, predictions = evaluator.evaluate_assessment(assessment)
+    except Exception as e:
+        print(f"ERROR: Evaluator execution failed: {e}", file=sys.stderr)
+        finalize_post_model_failure(
+            artifact_dir=artifact_dir,
+            reservation_file=reservation_file,
+            error_phase="EVALUATOR",
+            error=e,
+            spec=spec,
+            candidate_sha=candidate_sha,
+            authorization_commit_sha=authorization_commit_sha,
+            authorized_sha=authorized_sha,
+            run_label=run_label,
+            bundle=bundle,
+            parser=parser,
+            runtime_manifest=runtime_manifest,
+            metadata=metadata if not args.synthetic else None,
+            assessment=assessment,
+            raw_response_content=raw_response_content,
+        )
+        return 1
 
-    # Transition to FINALIZING
-    atomic_write_json(
-        reservation_file,
-        {
-            "status": "FINALIZING",
-            "run_label": run_label,
-            "gate": 3,
-            "timestamp": datetime.now(UTC).isoformat(),
-            "candidate_git_sha": candidate_sha,
-            "authorization_commit_sha": authorization_commit_sha,
-            "git_commit_sha": authorized_sha,
-        },
-    )
+    try:
+        # Transition to FINALIZING
+        atomic_write_json(
+            reservation_file,
+            {
+                "status": "FINALIZING",
+                "run_label": run_label,
+                "gate": 3,
+                "timestamp": datetime.now(UTC).isoformat(),
+                "candidate_git_sha": candidate_sha,
+                "authorization_commit_sha": authorization_commit_sha,
+                "git_commit_sha": authorized_sha,
+            },
+        )
 
-    # Complete immutable artifact preservation (13 distinct artifacts + manifest.json)
-    from agents.legacy_analyzer.schemas.system_export import get_system_openai_wire_schema
-    from agents.legacy_analyzer.system_agent import load_system_v3_prompt
+        # Complete immutable artifact preservation (13 distinct artifacts + manifest.json)
+        from agents.legacy_analyzer.schemas.system_export import get_system_openai_wire_schema
+        from agents.legacy_analyzer.system_agent import load_system_v3_prompt
 
-    # 1. authorization-spec.json
-    atomic_write_json(artifact_dir / "authorization-spec.json", spec)
+        # 1. authorization-spec.json
+        atomic_write_json(artifact_dir / "authorization-spec.json", spec)
 
-    # 2. production-prompt.md
-    prompt_text = load_system_v3_prompt()
-    (artifact_dir / "production-prompt.md").write_text(prompt_text, encoding="utf-8")
+        # 2. production-prompt.md
+        prompt_text = load_system_v3_prompt()
+        (artifact_dir / "production-prompt.md").write_text(prompt_text, encoding="utf-8")
 
-    # 3. wire-schema.json
-    wire_schema = get_system_openai_wire_schema()
-    atomic_write_json(artifact_dir / "wire-schema.json", wire_schema)
+        # 3. wire-schema.json
+        wire_schema = get_system_openai_wire_schema()
+        atomic_write_json(artifact_dir / "wire-schema.json", wire_schema)
 
-    # 4. source-manifest.json
-    source_manifest = {
-        rel_path: {
-            "size": len(f.raw_content.encode("utf-8")),
-            "lines": f.line_count,
-            "sha256": f.sha256,
+        # 4. source-manifest.json
+        source_manifest = {
+            rel_path: {
+                "size": len(f.raw_content.encode("utf-8")),
+                "lines": f.line_count,
+                "sha256": f.sha256,
+            }
+            for rel_path, f in bundle.files.items()
         }
-        for rel_path, f in bundle.files.items()
-    }
-    atomic_write_json(artifact_dir / "source-manifest.json", source_manifest)
+        atomic_write_json(artifact_dir / "source-manifest.json", source_manifest)
 
-    # 5. canonical-input-bundle.txt
-    (artifact_dir / "canonical-input-bundle.txt").write_text(
-        bundle.formatted_prompt_payload, encoding="utf-8"
-    )
+        # 5. canonical-input-bundle.txt
+        (artifact_dir / "canonical-input-bundle.txt").write_text(
+            bundle.formatted_prompt_payload, encoding="utf-8"
+        )
 
-    # 6. parser-coverage-certificate.json
-    coverage_cert = parser.get_parser_coverage_certificate()
-    atomic_write_json(artifact_dir / "parser-coverage-certificate.json", coverage_cert.to_dict())
+        # 6. parser-coverage-certificate.json
+        coverage_cert = parser.get_parser_coverage_certificate()
+        atomic_write_json(
+            artifact_dir / "parser-coverage-certificate.json", coverage_cert.to_dict()
+        )
 
-    # 7. runtime-manifest.json
-    atomic_write_json(artifact_dir / "runtime-manifest.json", runtime_manifest)
+        # 7. runtime-manifest.json
+        atomic_write_json(artifact_dir / "runtime-manifest.json", runtime_manifest)
 
-    # 8. raw-response.json
-    if isinstance(raw_response_content, (dict, list)):
-        atomic_write_json(artifact_dir / "raw-response.json", raw_response_content)
-    else:
-        try:
-            parsed_raw = json.loads(raw_response_content)
-            atomic_write_json(artifact_dir / "raw-response.json", parsed_raw)
-        except Exception:
-            (artifact_dir / "raw-response.json").write_text(
-                str(raw_response_content), encoding="utf-8"
-            )
+        # 8. raw-response.json
+        if isinstance(raw_response_content, (dict, list)):
+            atomic_write_json(artifact_dir / "raw-response.json", raw_response_content)
+        else:
+            try:
+                parsed_raw = json.loads(raw_response_content)
+                atomic_write_json(artifact_dir / "raw-response.json", parsed_raw)
+            except Exception:
+                (artifact_dir / "raw-response.json").write_text(
+                    str(raw_response_content), encoding="utf-8"
+                )
 
-    # 9. model-assessment.json
-    atomic_write_json(artifact_dir / "model-assessment.json", assessment.model_dump())
+        # 9. model-assessment.json
+        atomic_write_json(artifact_dir / "model-assessment.json", assessment.model_dump())
 
-    # 10. enriched-assessment.json
-    atomic_write_json(artifact_dir / "enriched-assessment.json", assessment.model_dump())
+        # 10. enriched-assessment.json
+        atomic_write_json(artifact_dir / "enriched-assessment.json", assessment.model_dump())
 
-    # 11. evaluation.json
-    eval_dict = {
-        "metric_summary": eval_result.to_dict(),
-        "predictions": [p.to_dict() for p in predictions],
-    }
-    atomic_write_json(artifact_dir / "evaluation.json", eval_dict)
+        # 11. evaluation.json
+        eval_dict = {
+            "metric_summary": eval_result.to_dict(),
+            "predictions": [p.to_dict() for p in predictions],
+        }
+        atomic_write_json(artifact_dir / "evaluation.json", eval_dict)
 
-    # 12. run-metadata.json
-    atomic_write_json(artifact_dir / "run-metadata.json", metadata_dict)
+        # 12. run-metadata.json
+        atomic_write_json(artifact_dir / "run-metadata.json", metadata_dict)
 
-    # 13. terminal-result.json (immutable scientific outcome, written before manifest)
-    terminal_result = {
-        "gate": 3,
-        "run_label": run_label,
-        "status": "COMPLETED",
-        "gate_3_pass": eval_result.gate_3_pass,
-        "timestamp": datetime.now(UTC).isoformat(),
-        "candidate_git_sha": candidate_sha,
-        "authorization_commit_sha": authorization_commit_sha,
-        "git_commit_sha": authorized_sha,
-        "precision": eval_result.precision,
-        "recall": eval_result.recall,
-        "matched_expected_count": eval_result.matched_expected_count,
-        "expected_fact_count": eval_result.expected_fact_count,
-        "duplicate_count": eval_result.duplicate_prediction_count,
-        "supported_unique_count": eval_result.supported_predicted_count,
-        "unsupported_count": eval_result.unsupported_predicted_count,
-    }
-    atomic_write_json(artifact_dir / TERMINAL_RESULT_FILE, terminal_result)
-
-    # 14. manifest.json (written LAST; maps filename -> SHA256 of all 13 immutable artifacts)
-    excluded_from_manifest = {
-        "manifest.json",
-        RESERVATION_STATE_FILE,
-        "run-state.json",
-    }
-    manifest_shas: dict[str, str] = {}
-    for fname in sorted(os.listdir(artifact_dir)):
-        if fname in excluded_from_manifest or fname.endswith(".tmp") or ".tmp." in fname:
-            continue
-        fpath = artifact_dir / fname
-        if fpath.is_file():
-            manifest_shas[fname] = hashlib.sha256(fpath.read_bytes()).hexdigest()
-
-    manifest = {
-        "gate": 3,
-        "run_label": run_label,
-        "timestamp": datetime.now(UTC).isoformat(),
-        "candidate_git_sha": candidate_sha,
-        "authorization_commit_sha": authorization_commit_sha,
-        "git_commit_sha": authorized_sha,
-        "gate_3_pass": eval_result.gate_3_pass,
-        "precision": eval_result.precision,
-        "recall": eval_result.recall,
-        "matched_expected_count": eval_result.matched_expected_count,
-        "expected_fact_count": eval_result.expected_fact_count,
-        "artifacts": manifest_shas,
-    }
-    atomic_write_json(artifact_dir / "manifest.json", manifest)
-
-    # Finally: transition mutable reservation file to COMPLETED
-    atomic_write_json(
-        reservation_file,
-        {
+        # 13. terminal-result.json (immutable scientific outcome, written before manifest)
+        terminal_result = {
+            "gate": 3,
+            "run_label": run_label,
             "status": "COMPLETED",
             "gate_3_pass": eval_result.gate_3_pass,
-            "run_label": run_label,
-            "gate": 3,
             "timestamp": datetime.now(UTC).isoformat(),
             "candidate_git_sha": candidate_sha,
             "authorization_commit_sha": authorization_commit_sha,
             "git_commit_sha": authorized_sha,
-        },
-    )
+            "precision": eval_result.precision,
+            "recall": eval_result.recall,
+            "matched_expected_count": eval_result.matched_expected_count,
+            "expected_fact_count": eval_result.expected_fact_count,
+            "duplicate_count": eval_result.duplicate_prediction_count,
+            "supported_unique_count": eval_result.supported_predicted_count,
+            "unsupported_count": eval_result.unsupported_predicted_count,
+        }
+        atomic_write_json(artifact_dir / TERMINAL_RESULT_FILE, terminal_result)
+
+        # 14. manifest.json (written LAST; maps filename -> SHA256 of all 13 immutable artifacts)
+        excluded_from_manifest = {
+            "manifest.json",
+            RESERVATION_STATE_FILE,
+            "run-state.json",
+        }
+        manifest_shas: dict[str, str] = {}
+        for fname in sorted(os.listdir(artifact_dir)):
+            if fname in excluded_from_manifest or fname.endswith(".tmp") or ".tmp." in fname:
+                continue
+            fpath = artifact_dir / fname
+            if fpath.is_file():
+                manifest_shas[fname] = hashlib.sha256(fpath.read_bytes()).hexdigest()
+
+        manifest = {
+            "gate": 3,
+            "run_label": run_label,
+            "timestamp": datetime.now(UTC).isoformat(),
+            "candidate_git_sha": candidate_sha,
+            "authorization_commit_sha": authorization_commit_sha,
+            "git_commit_sha": authorized_sha,
+            "gate_3_pass": eval_result.gate_3_pass,
+            "precision": eval_result.precision,
+            "recall": eval_result.recall,
+            "matched_expected_count": eval_result.matched_expected_count,
+            "expected_fact_count": eval_result.expected_fact_count,
+            "artifacts": manifest_shas,
+        }
+        atomic_write_json(artifact_dir / "manifest.json", manifest)
+
+        # Finally: transition mutable reservation file to COMPLETED
+        atomic_write_json(
+            reservation_file,
+            {
+                "status": "COMPLETED",
+                "gate_3_pass": eval_result.gate_3_pass,
+                "run_label": run_label,
+                "gate": 3,
+                "timestamp": datetime.now(UTC).isoformat(),
+                "candidate_git_sha": candidate_sha,
+                "authorization_commit_sha": authorization_commit_sha,
+                "git_commit_sha": authorized_sha,
+            },
+        )
+    except Exception as e:
+        print(f"ERROR: Final artifact generation failed: {e}", file=sys.stderr)
+        finalize_post_model_failure(
+            artifact_dir=artifact_dir,
+            reservation_file=reservation_file,
+            error_phase="ARTIFACT_GENERATION",
+            error=e,
+            spec=spec,
+            candidate_sha=candidate_sha,
+            authorization_commit_sha=authorization_commit_sha,
+            authorized_sha=authorized_sha,
+            run_label=run_label,
+            bundle=bundle,
+            parser=parser,
+            runtime_manifest=runtime_manifest,
+            metadata=metadata if not args.synthetic else None,
+            assessment=assessment,
+            raw_response_content=raw_response_content,
+        )
+        return 1
 
     print(
         f"Gate 3 evaluation complete. Pass: {eval_result.gate_3_pass} "

@@ -86,8 +86,8 @@ def test_independent_golden_positive_oracle_pass():
     metrics, predictions = evaluator.evaluate_assessment(golden_assessment)
 
     assert metrics.gate_3_pass is True
-    assert metrics.expected_fact_count == 60
-    assert metrics.matched_expected_count == 60
+    assert metrics.expected_fact_count == 59
+    assert metrics.matched_expected_count == 59
     assert metrics.missing_expected_count == 0
     assert metrics.precision == 1.0
     assert metrics.recall == 1.0
@@ -95,7 +95,7 @@ def test_independent_golden_positive_oracle_pass():
     assert metrics.invalid_evidence_count == 0
     assert metrics.duplicate_prediction_count == 0
     assert metrics.contradiction_count == 0
-    assert len(predictions) == 60
+    assert len(predictions) == 59
     assert all(p.is_supported for p in predictions)
 
 
@@ -322,9 +322,9 @@ def test_duplicate_propositions_flagged_without_inflating_recall():
 
     metrics, _ = evaluator.evaluate_assessment(assessment)
     assert metrics.duplicate_prediction_count == 1
-    assert metrics.raw_predicted_count == 61
-    assert metrics.unique_predicted_count == 60
-    assert metrics.matched_expected_count == 60
+    assert metrics.raw_predicted_count == 60
+    assert metrics.unique_predicted_count == 59
+    assert metrics.matched_expected_count == 59
     assert metrics.recall == 1.0
     assert metrics.gate_3_pass is False
 

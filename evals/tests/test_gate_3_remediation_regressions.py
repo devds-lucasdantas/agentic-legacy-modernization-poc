@@ -61,8 +61,8 @@ def test_independent_golden_provenance():
     data = json.loads(golden_path.read_text(encoding="utf-8"))
 
     assert data.get("golden_authoring_method") == "INDEPENDENT_STATIC_SOURCE_AUDIT"
-    assert data.get("total_expected_facts") == 60
-    assert len(data["propositions"]) == 60
+    assert data.get("total_expected_facts") == 59
+    assert len(data["propositions"]) == 59
 
     for prop in data["propositions"]:
         assert "auditor_rationale" in prop, f"Proposition {prop['id']} missing auditor_rationale"
@@ -460,11 +460,16 @@ def test_authorization_contract_rejects_non_direct_child(monkeypatch):
     mod = get_run_gate_3_module()
     spec_path = REPO_ROOT / mod.DEFAULT_AUTH_SPEC_PATH
 
+    monkeypatch.setattr(mod, "verify_clean_worktree", lambda *args, **kwargs: None)
+    monkeypatch.setattr(mod, "verify_no_executable_overlays", lambda *args, **kwargs: None)
+
     import subprocess
 
     orig_run = subprocess.run
 
     def mock_run(cmd, *args, **kwargs):
+        if len(cmd) >= 3 and cmd[0] == "git" and cmd[1] == "rev-parse" and cmd[2] == "HEAD":
+            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="auth_commit_a_sha\n")
         if len(cmd) >= 3 and cmd[0] == "git" and cmd[1] == "rev-parse" and "--verify" in cmd:
             # Return a different parent SHA than candidate
             return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="other_parent_sha\n")
@@ -488,11 +493,16 @@ def test_authorization_contract_rejects_diff_outside_canonical_spec(monkeypatch)
     mod = get_run_gate_3_module()
     spec_path = REPO_ROOT / mod.DEFAULT_AUTH_SPEC_PATH
 
+    monkeypatch.setattr(mod, "verify_clean_worktree", lambda *args, **kwargs: None)
+    monkeypatch.setattr(mod, "verify_no_executable_overlays", lambda *args, **kwargs: None)
+
     import subprocess
 
     orig_run = subprocess.run
 
     def mock_run(cmd, *args, **kwargs):
+        if len(cmd) >= 3 and cmd[0] == "git" and cmd[1] == "rev-parse" and cmd[2] == "HEAD":
+            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="auth_commit_a_sha\n")
         if len(cmd) >= 3 and cmd[0] == "git" and cmd[1] == "rev-parse" and "--verify" in cmd:
             return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="candidate_c_sha\n")
         if len(cmd) >= 3 and cmd[0] == "git" and cmd[1] == "diff":
@@ -603,3 +613,630 @@ def test_exact_evidence_based_model_match():
 
     with pytest.raises(ValueError, match="does not match requested model"):
         agent.validate_and_parse_response(MockResponse(), meta, requested_model="gpt-5-mini")
+
+
+# ======================================================================
+# 12. BLOCKER 1 — DIRECT CHILD RESERVATION MUST FAIL CLOSED
+# ======================================================================
+
+
+def test_child_reservation_fail_closed_regressions(tmp_path: Path, monkeypatch):
+    """Verify official live internal child fails closed before model invocation.
+
+    Tests:
+    - missing reservation-state.json
+    - malformed JSON
+    - missing required state fields
+    - wrong authorization_commit_sha (A)
+    - wrong candidate_git_sha (C)
+    - wrong run_label
+    - wrong gate (!= 3)
+    - status != RESERVED
+    - artifact_dir != canonical destination
+
+    In EVERY case, verifies zero model invocations via sentinel.
+    """
+    import argparse
+
+    from agents.legacy_analyzer.system_agent import SystemAnalyzerAgent
+
+    mod = get_run_gate_3_module()
+    monkeypatch.setattr(mod, "is_isolated_python", lambda: True)
+    monkeypatch.setattr(mod, "is_bytecode_writing_disabled", lambda: True)
+
+    model_calls = 0
+
+    def sentinel_call(*args, **kwargs):
+        nonlocal model_calls
+        model_calls += 1
+        raise RuntimeError("FATAL: Model invoked when child reservation should fail closed!")
+
+    monkeypatch.setattr(SystemAnalyzerAgent, "invoke_raw", sentinel_call)
+    monkeypatch.setattr(SystemAnalyzerAgent, "analyze_system", sentinel_call)
+
+    repo_dir = tmp_path / "repo"
+    repo_dir.mkdir(parents=True, exist_ok=True)
+    run_label = "official-baseline-v1"
+    canonical_dir = repo_dir / "artifacts" / "gate-3" / run_label
+    canonical_dir.mkdir(parents=True, exist_ok=True)
+    res_file = canonical_dir / mod.RESERVATION_STATE_FILE
+
+    base_args = argparse.Namespace(
+        provenance_repo=str(repo_dir),
+        snapshot_dir=str(REPO_ROOT),
+        artifact_dir=str(canonical_dir),
+        auth_spec=str(REPO_ROOT / mod.DEFAULT_AUTH_SPEC_PATH),
+        run_label=run_label,
+        authorized_git_sha="sha_candidate_c",
+        authorization_commit_sha="sha_auth_a",
+        golden_path=str(REPO_ROOT / mod.DEFAULT_GOLDEN_PATH),
+        synthetic=False,
+        dry_run=False,
+        allow_dirty=False,
+    )
+
+    valid_reservation = {
+        "status": "RESERVED",
+        "gate": 3,
+        "run_label": run_label,
+        "candidate_git_sha": "sha_candidate_c",
+        "authorization_commit_sha": "sha_auth_a",
+    }
+
+    # 1. Missing reservation-state.json
+    if res_file.exists():
+        res_file.unlink()
+    ret = mod.execute_internal_child(base_args)
+    assert ret == 1
+    assert model_calls == 0
+
+    # 2. Malformed JSON
+    res_file.write_text("{malformed:json,", encoding="utf-8")
+    ret = mod.execute_internal_child(base_args)
+    assert ret == 1
+    assert model_calls == 0
+
+    # 3. Not a JSON object (e.g. JSON list)
+    res_file.write_text('["not", "an", "object"]', encoding="utf-8")
+    ret = mod.execute_internal_child(base_args)
+    assert ret == 1
+    assert model_calls == 0
+
+    # 4. Missing required state fields
+    for field in ["status", "gate", "run_label", "candidate_git_sha", "authorization_commit_sha"]:
+        corrupted = dict(valid_reservation)
+        del corrupted[field]
+        res_file.write_text(json.dumps(corrupted), encoding="utf-8")
+        ret = mod.execute_internal_child(base_args)
+        assert ret == 1, f"Missing field '{field}' must fail closed!"
+        assert model_calls == 0
+
+    # 5. Wrong authorization_commit_sha (wrong A)
+    corrupted = dict(valid_reservation, authorization_commit_sha="wrong_sha_a")
+    res_file.write_text(json.dumps(corrupted), encoding="utf-8")
+    ret = mod.execute_internal_child(base_args)
+    assert ret == 1
+    assert model_calls == 0
+
+    # 6. Wrong candidate_git_sha (wrong C)
+    corrupted = dict(valid_reservation, candidate_git_sha="wrong_sha_c")
+    res_file.write_text(json.dumps(corrupted), encoding="utf-8")
+    ret = mod.execute_internal_child(base_args)
+    assert ret == 1
+    assert model_calls == 0
+
+    # 7. Wrong run_label
+    corrupted = dict(valid_reservation, run_label="other-run-label")
+    res_file.write_text(json.dumps(corrupted), encoding="utf-8")
+    ret = mod.execute_internal_child(base_args)
+    assert ret == 1
+    assert model_calls == 0
+
+    # 8. Wrong gate
+    corrupted = dict(valid_reservation, gate=2)
+    res_file.write_text(json.dumps(corrupted), encoding="utf-8")
+    ret = mod.execute_internal_child(base_args)
+    assert ret == 1
+    assert model_calls == 0
+
+    # 9. Status != RESERVED (MODEL_INVOCATION, COMPLETED, FAILED)
+    for bad_status in ["MODEL_INVOCATION", "COMPLETED", "FAILED", "PENDING"]:
+        corrupted = dict(valid_reservation, status=bad_status)
+        res_file.write_text(json.dumps(corrupted), encoding="utf-8")
+        ret = mod.execute_internal_child(base_args)
+        assert ret == 1
+        assert model_calls == 0
+
+    # 10. Artifact directory != canonical destination
+    non_canonical_dir = tmp_path / "other_artifacts" / run_label
+    non_canonical_dir.mkdir(parents=True, exist_ok=True)
+    non_canonical_res = non_canonical_dir / mod.RESERVATION_STATE_FILE
+    non_canonical_res.write_text(json.dumps(valid_reservation), encoding="utf-8")
+    bad_dest_args = argparse.Namespace(**dict(vars(base_args), artifact_dir=str(non_canonical_dir)))
+    ret = mod.execute_internal_child(bad_dest_args)
+    assert ret == 1
+    assert model_calls == 0
+
+
+# ======================================================================
+# 13. BLOCKER 2 — BIND CHILD TO COMMITTED AUTHORIZATION SPEC
+# ======================================================================
+
+
+def test_child_spec_binding_regressions(tmp_path: Path, monkeypatch):
+    """Verify child enforces exact binding to committed authorization spec.
+
+    Tests:
+    - spec candidate C1 vs CLI candidate C2 => zero-call FAIL
+    - spec run label X vs CLI run label Y => zero-call FAIL
+    - A is valid child of C but A != current HEAD => zero-call FAIL
+    - malformed / invalid committed spec => zero-call FAIL
+    """
+    import argparse
+    import subprocess
+
+    from agents.legacy_analyzer.system_agent import SystemAnalyzerAgent
+
+    mod = get_run_gate_3_module()
+    monkeypatch.setattr(mod, "is_isolated_python", lambda: True)
+    monkeypatch.setattr(mod, "is_bytecode_writing_disabled", lambda: True)
+    monkeypatch.setattr(mod, "verify_trusted_runner_bootstrap", lambda *args, **kwargs: None)
+    monkeypatch.setattr(mod, "verify_snapshot_against_git_objects", lambda *args, **kwargs: None)
+
+    model_calls = 0
+
+    def sentinel_call(*args, **kwargs):
+        nonlocal model_calls
+        model_calls += 1
+        raise RuntimeError("FATAL: Model invoked during spec binding failure!")
+
+    monkeypatch.setattr(SystemAnalyzerAgent, "invoke_raw", sentinel_call)
+    monkeypatch.setattr(SystemAnalyzerAgent, "analyze_system", sentinel_call)
+
+    repo_dir = tmp_path / "repo"
+    repo_dir.mkdir(parents=True, exist_ok=True)
+    run_label = "baseline-v1"
+    canonical_dir = repo_dir / "artifacts" / "gate-3" / run_label
+    canonical_dir.mkdir(parents=True, exist_ok=True)
+    res_file = canonical_dir / mod.RESERVATION_STATE_FILE
+
+    base_reservation = {
+        "status": "RESERVED",
+        "gate": 3,
+        "run_label": run_label,
+        "candidate_git_sha": "sha_candidate_c1",
+        "authorization_commit_sha": "sha_auth_a",
+    }
+    res_file.write_text(json.dumps(base_reservation), encoding="utf-8")
+
+    # 1. Spec candidate C1 vs CLI candidate C2
+    spec_with_c1 = {
+        "gate": 3,
+        "spec_version": "3.4.1",
+        "schema_version": "3.4.1",
+        "prompt_version": "3.4.1",
+        "evaluator_version": "3.4.1",
+        "golden_dataset_version": "3.4.1",
+        "requested_model": "gpt-5-mini",
+        "reasoning_effort": "high",
+        "max_attempts": 1,
+        "openai_client_max_retries": 0,
+        "run_label": run_label,
+        "candidate_git_sha": "sha_candidate_c1",
+        "prompt_sha256": "85b19f21c4de45f6fe1a6a219484f856b89bea21b595e04f19d8dc521f820483",
+        "wire_schema_sha256": "4129e91578e445a1fb8392728aef2406c73ec60dcdd60cf84dafb706917f6686",
+        "golden_dataset_sha256": "88592af941a35d73077f55d3e2a32dce6d4bd18364acd9d792dd9005c7f97149",
+        "bundle_manifest_sha256": (
+            "9bfa5f67aeb10e408ecbbcf8f0f0ff82894ae4a896d93f773489fe0d2c0b021d"
+        ),
+        "foundry_project_fingerprint": (
+            "8d3e4299446d036e0d9b4c090da9081a3bb9a69ef49042b4507119f8dd0e1948"
+        ),
+        "target_bundle_files": [
+            "legacy/core-banking-system/BANK-MAIN.CBL",
+            "legacy/core-banking-system/INIT-DB.CBL",
+            "legacy/core-banking-system/TRANS-PROC.CBL",
+            "legacy/core-banking-system/REPORT-GEN.CBL",
+            "legacy/core-banking-system/ACCOUNTS.CPY",
+            "legacy/core-banking-system/ACCOUNTS.DAT",
+        ],
+    }
+
+    monkeypatch.setattr(
+        mod, "load_authorization_spec_from_git", lambda *args, **kwargs: (spec_with_c1, "fake_sha")
+    )
+    monkeypatch.setattr(
+        mod, "load_authorization_spec", lambda *args, **kwargs: (spec_with_c1, "fake_sha")
+    )
+
+    auth_file = repo_dir / mod.DEFAULT_AUTH_SPEC_PATH
+    auth_file.parent.mkdir(parents=True, exist_ok=True)
+    auth_file.write_text(json.dumps(spec_with_c1), encoding="utf-8")
+
+    monkeypatch.setattr(mod, "verify_clean_worktree", lambda *args, **kwargs: None)
+    monkeypatch.setattr(mod, "verify_no_executable_overlays", lambda *args, **kwargs: None)
+
+    args_c2 = argparse.Namespace(
+        provenance_repo=str(repo_dir),
+        snapshot_dir=str(REPO_ROOT),
+        artifact_dir=str(canonical_dir),
+        auth_spec=str(auth_file),
+        run_label=run_label,
+        authorized_git_sha="sha_candidate_c2",  # C2 != C1
+        authorization_commit_sha="sha_auth_a",
+        golden_path=str(REPO_ROOT / mod.DEFAULT_GOLDEN_PATH),
+        synthetic=False,
+        dry_run=False,
+        allow_dirty=False,
+    )
+    # Reservation candidate_git_sha must match authorized_git_sha to reach spec check
+    res_file.write_text(
+        json.dumps(dict(base_reservation, candidate_git_sha="sha_candidate_c2")),
+        encoding="utf-8",
+    )
+    ret = mod.execute_internal_child(args_c2)
+    assert ret == 1
+    assert model_calls == 0
+
+    # 2. Spec run label X vs CLI run label Y
+    spec_with_x = dict(spec_with_c1, run_label="run-x")
+    monkeypatch.setattr(
+        mod, "load_authorization_spec_from_git", lambda *args, **kwargs: (spec_with_x, "fake_sha")
+    )
+    res_file.write_text(
+        json.dumps(dict(base_reservation, candidate_git_sha="sha_candidate_c1")),
+        encoding="utf-8",
+    )
+    args_y = argparse.Namespace(
+        provenance_repo=str(repo_dir),
+        snapshot_dir=str(REPO_ROOT),
+        artifact_dir=str(canonical_dir),
+        auth_spec=str(auth_file),
+        run_label=run_label,  # Y != X
+        authorized_git_sha="sha_candidate_c1",
+        authorization_commit_sha="sha_auth_a",
+        golden_path=str(REPO_ROOT / mod.DEFAULT_GOLDEN_PATH),
+        synthetic=False,
+        dry_run=False,
+        allow_dirty=False,
+    )
+    ret = mod.execute_internal_child(args_y)
+    assert ret == 1
+    assert model_calls == 0
+
+    # 3. A is valid child of C but A != current HEAD
+    monkeypatch.setattr(
+        mod, "load_authorization_spec_from_git", lambda *args, **kwargs: (spec_with_c1, "fake_sha")
+    )
+    orig_sub_run = subprocess.run
+
+    def mock_sub_run(cmd, *args, **kwargs):
+        if len(cmd) >= 3 and cmd[0] == "git" and cmd[1] == "rev-parse" and cmd[2] == "HEAD":
+            return subprocess.CompletedProcess(
+                args=cmd, returncode=0, stdout="other_commit_not_a\n"
+            )
+        return orig_sub_run(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", mock_sub_run)
+    args_head_mismatch = argparse.Namespace(
+        provenance_repo=str(repo_dir),
+        snapshot_dir=str(REPO_ROOT),
+        artifact_dir=str(canonical_dir),
+        auth_spec=str(auth_file),
+        run_label=run_label,
+        authorized_git_sha="sha_candidate_c1",
+        authorization_commit_sha="sha_auth_a",
+        golden_path=str(REPO_ROOT / mod.DEFAULT_GOLDEN_PATH),
+        synthetic=False,
+        dry_run=False,
+        allow_dirty=False,
+    )
+    ret = mod.execute_internal_child(args_head_mismatch)
+    assert ret == 1
+    assert model_calls == 0
+
+    # 4. Malformed / invalid committed spec
+    bad_spec = dict(spec_with_c1)
+    del bad_spec["spec_version"]
+    monkeypatch.setattr(subprocess, "run", orig_sub_run)
+
+    with pytest.raises(ValueError, match="missing required keys"):
+        mod.validate_authorization_spec_dict(bad_spec)
+
+    # Also verify child fails with zero model calls on malformed spec
+    monkeypatch.setattr(
+        mod, "load_authorization_spec_from_git", lambda *args, **kwargs: (bad_spec, "fake_sha")
+    )
+    args_bad_spec = argparse.Namespace(
+        provenance_repo=str(repo_dir),
+        snapshot_dir=str(REPO_ROOT),
+        artifact_dir=str(canonical_dir),
+        auth_spec=str(auth_file),
+        run_label=run_label,
+        authorized_git_sha="sha_candidate_c1",
+        authorization_commit_sha="sha_auth_a",
+        golden_path=str(REPO_ROOT / mod.DEFAULT_GOLDEN_PATH),
+        synthetic=False,
+        dry_run=False,
+        allow_dirty=False,
+    )
+    ret = mod.execute_internal_child(args_bad_spec)
+    assert ret == 1
+    assert model_calls == 0
+
+
+# ======================================================================
+# 14. BLOCKER 3 — TERMINAL FAILURE EVIDENCE PRESERVATION
+# ======================================================================
+
+
+def test_terminal_failure_evidence_preservation(tmp_path: Path):
+    """Verify centralized failure finalizer preserves raw response, writes terminal-result.json,
+    manifest.json, transitions reservation-state.json to FAILED, and blocks re-entry.
+    """
+    mod = get_run_gate_3_module()
+    artifact_dir = tmp_path / "failure_artifacts"
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    res_file = artifact_dir / mod.RESERVATION_STATE_FILE
+
+    # Initial reservation
+    res_file.write_text(
+        json.dumps(
+            {
+                "status": "MODEL_INVOCATION",
+                "gate": 3,
+                "run_label": "fail-test-run",
+                "candidate_git_sha": "cand_sha",
+                "authorization_commit_sha": "auth_sha",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    spec = {
+        "gate": 3,
+        "spec_version": "3.4.1",
+        "run_label": "fail-test-run",
+    }
+    raw_content = {"id": "resp_test_123", "model": "gpt-5-mini", "output": []}
+
+    class DummyMeta:
+        response_id = "resp_test_123"
+        response_model_id = "gpt-5-mini"
+
+        def to_dict(self):
+            return {
+                "response_id": self.response_id,
+                "response_model_id": self.response_model_id,
+            }
+
+    # Simulate post-model failure (e.g. status validation failure or refusal)
+    mod.finalize_post_model_failure(
+        artifact_dir=artifact_dir,
+        reservation_file=res_file,
+        error_phase="RESPONSE_VALIDATION",
+        error=ValueError("Model response status validation failed: refusal detected"),
+        spec=spec,
+        candidate_sha="cand_sha",
+        authorization_commit_sha="auth_sha",
+        authorized_sha="auth_sha",
+        run_label="fail-test-run",
+        metadata=DummyMeta(),
+        raw_response_content=raw_content,
+    )
+
+    # 1. raw-response.json survives
+    raw_file = artifact_dir / "raw-response.json"
+    assert raw_file.is_file()
+    assert json.loads(raw_file.read_text(encoding="utf-8")) == raw_content
+
+    # 2. terminal-result.json exists and says FAILED
+    term_file = artifact_dir / mod.TERMINAL_RESULT_FILE
+    assert term_file.is_file()
+    term_data = json.loads(term_file.read_text(encoding="utf-8"))
+    assert term_data["status"] == "FAILED"
+    assert term_data["error_phase"] == "RESPONSE_VALIDATION"
+    assert term_data["error_type"] == "ValueError"
+    assert "refusal detected" in term_data["error_message"]
+    assert term_data["candidate_git_sha"] == "cand_sha"
+    assert term_data["authorization_commit_sha"] == "auth_sha"
+    assert term_data["response_id"] == "resp_test_123"
+
+    # 3. manifest.json covers preserved immutable artifacts with matching SHA256
+    manifest_file = artifact_dir / "manifest.json"
+    assert manifest_file.is_file()
+    manifest_data = json.loads(manifest_file.read_text(encoding="utf-8"))
+    assert manifest_data["status"] == "FAILED"
+    assert manifest_data["gate_3_pass"] is False
+    assert "raw-response.json" in manifest_data["artifacts"]
+    assert mod.TERMINAL_RESULT_FILE in manifest_data["artifacts"]
+    assert mod.RESERVATION_STATE_FILE not in manifest_data["artifacts"]
+
+    for name, sha in manifest_data["artifacts"].items():
+        actual_sha = hashlib.sha256((artifact_dir / name).read_bytes()).hexdigest()
+        assert actual_sha == sha, f"SHA mismatch for preserved artifact {name}"
+
+    # 4. reservation-state.json is FAILED
+    assert res_file.is_file()
+    res_data = json.loads(res_file.read_text(encoding="utf-8"))
+    assert res_data["status"] == "FAILED"
+    assert res_data["error_phase"] == "RESPONSE_VALIDATION"
+
+    # 5. Subsequent rerun is refused
+    with pytest.raises(RuntimeError, match="Irrevocable reservation error"):
+        mod.check_existing_reservation(artifact_dir, "fail-test-run")
+
+
+# ======================================================================
+# 15. REQUIREMENT 4 — PREREGISTERED CORE / SUPPLEMENTARY TEST
+# ======================================================================
+
+
+def test_trans_proc_temp_file_supplementary_adversarial():
+    """Verify resource-scoped semantic matching handles true supplementary fact.
+
+    Swaps required TRANS-PROC / ACCOUNT-FILE / MISSING_ERROR_STATUS for
+    true supplementary TRANS-PROC / TEMP-FILE / MISSING_ERROR_STATUS.
+
+    Expected:
+    - TEMP-FILE prediction is SUPPORTED
+    - unsupported_predicted_count == 0
+    - required ACCOUNT-FILE proposition remains UNMATCHED
+    - recall < 1.0 (58 / 59)
+    - Gate 3 FAIL
+    """
+    from agents.legacy_analyzer.schemas.system_assessment import BehavioralRisk, SourceEvidence
+    from src.cobol.multi_source_reader import read_system_bundle
+    from src.cobol.system_cobol_parser import SystemCobolParser
+    from src.cobol.system_support_index import SystemSupportIndex
+    from src.validation.evaluator_v3 import SystemEvaluatorV3, load_golden_assessment
+
+    bundle = read_system_bundle(repo_root=REPO_ROOT)
+    parser = SystemCobolParser(bundle)
+    facts = parser.get_supported_facts()
+    index = SystemSupportIndex(
+        facts, bundle, file_status_certificate=parser.file_status_certificate
+    )
+    golden_path = REPO_ROOT / "evals" / "expected" / "system-understanding-v3.json"
+    evaluator = SystemEvaluatorV3(index, golden_dataset_path=golden_path)
+
+    assessment = load_golden_assessment(golden_dataset_path=golden_path)
+
+    # 1. Remove required TRANS-PROC / ACCOUNT-FILE / MISSING_ERROR_STATUS
+    initial_risks = len(assessment.behavioral_risks)
+    assessment.behavioral_risks = [
+        r
+        for r in assessment.behavioral_risks
+        if not (
+            r.program_id == "TRANS-PROC"
+            and r.resource_name == "ACCOUNT-FILE"
+            and r.risk_basis_kind == "MISSING_ERROR_STATUS"
+        )
+    ]
+    assert len(assessment.behavioral_risks) == initial_risks - 1
+
+    # 2. Add true supplementary TRANS-PROC / TEMP-FILE / MISSING_ERROR_STATUS
+    supp_risk = BehavioralRisk(
+        program_id="TRANS-PROC",
+        risk_category="IO_ERROR_HANDLING",
+        risk_basis_kind="MISSING_ERROR_STATUS",
+        impact_category="ERROR_VISIBILITY",
+        resource_name="TEMP-FILE",
+        operation_evidence=SourceEvidence(
+            file_path="legacy/core-banking-system/TRANS-PROC.CBL",
+            line_start=47,
+            line_end=82,
+        ),
+        affected_resource_evidence=SourceEvidence(
+            file_path="legacy/core-banking-system/TRANS-PROC.CBL",
+            line_start=9,
+            line_end=10,
+        ),
+    )
+    assessment.behavioral_risks.append(supp_risk)
+
+    metrics, predictions = evaluator.evaluate_assessment(assessment)
+
+    # 3. Assertions
+    temp_pred = next(
+        p
+        for p in predictions
+        if p.semantic_key
+        == "RISK:TRANS-PROC:IO_ERROR_HANDLING:MISSING_ERROR_STATUS:ERROR_VISIBILITY:TEMP-FILE"
+    )
+    assert temp_pred.is_supported is True
+    assert metrics.unsupported_predicted_count == 0
+    assert metrics.missing_expected_count == 1
+    assert metrics.matched_expected_count == 58
+    assert metrics.expected_fact_count == 59
+    assert metrics.recall < 1.0
+    assert metrics.gate_3_pass is False
+
+
+# ======================================================================
+# 16. REQUIREMENT 5 — RISK ONTOLOGY ACTUALLY DETERMINISTIC
+# ======================================================================
+
+
+def test_risk_ontology_wire_schema_deterministic():
+    """Verify OpenAI wire schema enforces Literal enum constraints and leaks no fixture tokens."""
+    from pydantic import ValidationError
+
+    from agents.legacy_analyzer.schemas.system_assessment import BehavioralRisk, SourceEvidence
+    from agents.legacy_analyzer.schemas.system_export import get_system_openai_wire_schema
+
+    wire = get_system_openai_wire_schema()
+    wire_json = json.dumps(wire)
+
+    # 1. Enum constraints are present in wire schema properties
+    defs = wire["json_schema"]["schema"].get("$defs", {})
+    br = defs.get("BehavioralRisk", {})
+    props = br.get("properties", {})
+
+    assert "enum" in props["risk_category"], "risk_category missing enum in wire schema!"
+    expected_risk_categories = {
+        "IO_ERROR_HANDLING",
+        "DATA_INTEGRITY",
+        "CONTROL_FLOW",
+        "PORTABILITY",
+        "RESOURCE_LIFECYCLE",
+        "CONCURRENCY_ERROR",
+        "DATA_CORRUPTION",
+        "CONFIGURATION",
+    }
+    assert set(props["risk_category"]["enum"]) == expected_risk_categories
+
+    assert "enum" in props["risk_basis_kind"], "risk_basis_kind missing enum in wire schema!"
+    expected_basis_kinds = {
+        "MISSING_ERROR_STATUS",
+        "NON_ATOMIC_EXTERNAL_MUTATION",
+        "NON_RETURNING_TERMINATION",
+        "UNCHECKED_EXTERNAL_RESULT",
+        "INVALID_INPUT_HANDLING",
+        "RESOURCE_LIFECYCLE_FAILURE",
+        "RESOURCE_LEAK",
+        "DEADLOCK_RISK",
+        "INCORRECT_PRECISION",
+        "INCOMPLETE_INITIALIZATION",
+    }
+    assert set(props["risk_basis_kind"]["enum"]) == expected_basis_kinds
+
+    assert "enum" in props["impact_category"], "impact_category missing enum in wire schema!"
+    expected_impact_categories = {
+        "AVAILABILITY",
+        "ERROR_VISIBILITY",
+        "CONTROL_FLOW",
+        "DATA_INTEGRITY",
+        "PORTABILITY",
+        "SECURITY_INTEGRITY",
+        "PERFORMANCE",
+    }
+    assert set(props["impact_category"]["enum"]) == expected_impact_categories
+
+    # 2. Fixture program/resource names and command literals absent from wire schema
+    fixture_tokens = [
+        "BANK-MAIN",
+        "INIT-DB",
+        "TRANS-PROC",
+        "REPORT-GEN",
+        "ACCOUNTS.DAT",
+        "ACCOUNTS.CPY",
+        "ACCOUNTS.TMP",
+        "cmd /c del",
+        "cmd /c ren",
+        "rm -f",
+    ]
+    for tok in fixture_tokens:
+        assert tok not in wire_json, f"Fixture token '{tok}' leaked into wire schema!"
+
+    # 3. Arbitrary category token is schema-invalid
+    with pytest.raises(ValidationError):
+        BehavioralRisk(
+            program_id="PROG-X",
+            risk_category="ARBITRARY_INVALID_CATEGORY",  # type: ignore[arg-type]
+            risk_basis_kind="MISSING_ERROR_STATUS",
+            impact_category="ERROR_VISIBILITY",
+            resource_name="RES-1",
+            operation_evidence=SourceEvidence(file_path="f.cbl", line_start=1, line_end=2),
+            affected_resource_evidence=SourceEvidence(file_path="f.cbl", line_start=3, line_end=4),
+        )

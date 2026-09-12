@@ -31,7 +31,7 @@ from agents.legacy_analyzer.schemas.system_assessment import (
 from src.cobol.multi_source_reader import MultiSourceBundle, read_system_bundle
 from src.validation.evaluator_v3 import EVALUATOR_VERSION
 
-PROMPT_VERSION: str = "3.4.0"
+PROMPT_VERSION: str = "3.4.1"
 
 ReasoningEffort = Literal[
     "none",

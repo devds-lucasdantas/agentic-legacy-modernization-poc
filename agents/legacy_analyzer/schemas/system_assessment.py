@@ -7,9 +7,45 @@ Strictly adheres to:
 - Role-bound multi-evidence models for relational and cross-program assertions.
 """
 
+from typing import Literal
+
 from pydantic import BaseModel, ConfigDict, Field
 
-SCHEMA_VERSION: str = "3.4.0"
+SCHEMA_VERSION: str = "3.4.1"
+
+RiskCategory = Literal[
+    "IO_ERROR_HANDLING",
+    "DATA_INTEGRITY",
+    "CONTROL_FLOW",
+    "PORTABILITY",
+    "RESOURCE_LIFECYCLE",
+    "CONCURRENCY_ERROR",
+    "DATA_CORRUPTION",
+    "CONFIGURATION",
+]
+
+RiskBasisKind = Literal[
+    "MISSING_ERROR_STATUS",
+    "NON_ATOMIC_EXTERNAL_MUTATION",
+    "NON_RETURNING_TERMINATION",
+    "UNCHECKED_EXTERNAL_RESULT",
+    "INVALID_INPUT_HANDLING",
+    "RESOURCE_LIFECYCLE_FAILURE",
+    "RESOURCE_LEAK",
+    "DEADLOCK_RISK",
+    "INCORRECT_PRECISION",
+    "INCOMPLETE_INITIALIZATION",
+]
+
+ImpactCategory = Literal[
+    "AVAILABILITY",
+    "ERROR_VISIBILITY",
+    "CONTROL_FLOW",
+    "DATA_INTEGRITY",
+    "PORTABILITY",
+    "SECURITY_INTEGRITY",
+    "PERFORMANCE",
+]
 
 
 class SourceEvidence(BaseModel):
@@ -266,28 +302,13 @@ class BehavioralRisk(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     program_id: str = Field(description="Affected program identifier")
-    risk_category: str = Field(
-        description=(
-            "Standardized risk category classification representing system fault domain: "
-            "IO_ERROR_HANDLING, DATA_INTEGRITY, CONTROL_FLOW, PORTABILITY, "
-            "RESOURCE_LIFECYCLE, CONCURRENCY_ERROR, DATA_CORRUPTION, CONFIGURATION"
-        )
+    risk_category: RiskCategory = Field(
+        description="Standardized risk category classification representing system fault domain"
     )
-    risk_basis_kind: str = Field(
-        description=(
-            "Standardized underlying risk basis kind: MISSING_ERROR_STATUS, "
-            "NON_ATOMIC_EXTERNAL_MUTATION, NON_RETURNING_TERMINATION, "
-            "UNCHECKED_EXTERNAL_RESULT, INVALID_INPUT_HANDLING, RESOURCE_LIFECYCLE_FAILURE, "
-            "RESOURCE_LEAK, DEADLOCK_RISK, INCORRECT_PRECISION, INCOMPLETE_INITIALIZATION"
-        )
+    risk_basis_kind: RiskBasisKind = Field(
+        description="Standardized underlying operational or architectural risk basis kind"
     )
-    impact_category: str = Field(
-        description=(
-            "System impact classification: AVAILABILITY, "
-            "ERROR_VISIBILITY, CONTROL_FLOW, DATA_INTEGRITY, PORTABILITY, "
-            "SECURITY_INTEGRITY, PERFORMANCE"
-        )
-    )
+    impact_category: ImpactCategory = Field(description="Standardized system impact classification")
     resource_name: str | None = Field(
         default=None,
         description=(

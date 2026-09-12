@@ -1,9 +1,9 @@
 {
-  "version": "3.4.0",
+  "version": "3.4.1",
   "benchmark_design": "GATE_3_SYSTEM_UNDERSTANDING_APPROVED_CONTRACT",
   "golden_authoring_method": "INDEPENDENT_STATIC_SOURCE_AUDIT",
   "provenance_notes": "Authored directly from independent static source audit of the six legacy repository artifacts without runtime parser dependencies.",
-  "total_expected_facts": 60,
+  "total_expected_facts": 59,
   "category_policies": {
     "PROGRAM_DECLARATION": "REQUIRED_EXHAUSTIVE",
     "CALL_OCCURRENCE": "REQUIRED_EXHAUSTIVE",
@@ -25,7 +25,7 @@
     "FILE_OPERATION": "OPTIONAL_SUPPLEMENTARY"
   },
   "group_counts": {
-    "BEHAVIORAL_RISK": 5,
+    "BEHAVIORAL_RISK": 4,
     "CALLER_CONTINUATION_CONSTRAINT": 3,
     "CALL_EDGE": 4,
     "CALL_OCCURRENCE": 6,
@@ -1113,24 +1113,6 @@
         }
       },
       "auditor_rationale": "Static source audit: TRANS-PROC SELECT ACCOUNT-FILE lacks FILE STATUS clause, leaving file I/O operations unhandled."
-    },
-    {
-      "id": "prop.risk.trans_proc_temp_file_missing_status",
-      "category": "BEHAVIORAL_RISK",
-      "semantic_key": "RISK:TRANS-PROC:IO_ERROR_HANDLING:MISSING_ERROR_STATUS:ERROR_VISIBILITY:TEMP-FILE",
-      "evidence_spans": {
-        "operation_evidence": {
-          "file_path": "legacy/core-banking-system/TRANS-PROC.CBL",
-          "line_start": 47,
-          "line_end": 82
-        },
-        "affected_resource_evidence": {
-          "file_path": "legacy/core-banking-system/TRANS-PROC.CBL",
-          "line_start": 9,
-          "line_end": 10
-        }
-      },
-      "auditor_rationale": "Static source audit: TRANS-PROC SELECT TEMP-FILE lacks FILE STATUS clause, leaving file I/O operations unhandled."
     },
     {
       "id": "prop.state_cmp.1000000003",
