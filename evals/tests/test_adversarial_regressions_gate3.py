@@ -472,7 +472,7 @@ def test_cf2_comp3_to_display_layout_equivalence(tmp_path: Path):
     rec_facts = [f.fact for f in facts if isinstance(f.fact, RecordLayoutFact)]
     cpy_rec = next((f for f in rec_facts if f.program_id == "ACCOUNTS"), None)
     assert cpy_rec is not None
-    assert cpy_rec.storage_format == "DISPLAY"
+    assert any(f.name == "ACC-BALANCE" and f.usage == "DISPLAY" for f in cpy_rec.fields)
 
     rel_facts = [f.fact for f in facts if isinstance(f.fact, RecordLayoutRelationFact)]
     rel = next(
@@ -625,7 +625,9 @@ def test_cf8_changed_pic_usage(tmp_path: Path):
     layouts = [f.fact for f in facts if isinstance(f.fact, RecordLayoutFact)]
     init_rec = next((rec for rec in layouts if rec.program_id == "INIT-DB"), None)
     assert init_rec is not None
-    assert init_rec.storage_format == "COMP_3"
+    assert any(
+        f.name == "REC-ACC-BALANCE" and f.usage in ("COMP_3", "COMP-3") for f in init_rec.fields
+    )
 
 
 def test_cf9_changed_caller_callee_target(tmp_path: Path):

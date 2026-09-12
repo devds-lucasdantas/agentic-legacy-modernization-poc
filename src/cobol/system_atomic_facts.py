@@ -194,25 +194,54 @@ class InternalCallResolutionFact(SystemAtomicFact):
 
 
 @dataclass(frozen=True)
+class RecordFieldFact:
+    """Individual data field or level-88 condition name within a record."""
+
+    field_kind: str  # DATA_FIELD or CONDITION_NAME
+    level: int
+    name: str
+    picture: str | None = None
+    usage: str | None = None
+    condition_values: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "field_kind", canonicalize_token(self.field_kind))
+        object.__setattr__(self, "name", normalize_identifier(self.name))
+        if self.picture is not None:
+            object.__setattr__(self, "picture", canonicalize_token(self.picture))
+        if self.usage is not None:
+            object.__setattr__(self, "usage", canonicalize_token(self.usage))
+        if self.condition_values:
+            object.__setattr__(
+                self,
+                "condition_values",
+                tuple(canonicalize_token(v.strip("'\"")) for v in self.condition_values),
+            )
+
+
+@dataclass(frozen=True)
 class RecordLayoutFact(SystemAtomicFact):
-    """01 Record layout declaration in program or copybook."""
+    """01 Record layout declaration in program or copybook with ordered fields."""
 
     program_id: str
     record_name: str
-    field_count: int
-    storage_format: str  # DISPLAY, COMP-3
+    fields: tuple[RecordFieldFact, ...]
     fact_category: str = field(default="RECORD_LAYOUT", init=False)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "program_id", normalize_identifier(self.program_id))
         object.__setattr__(self, "record_name", normalize_identifier(self.record_name))
-        object.__setattr__(self, "storage_format", canonicalize_token(self.storage_format))
 
     def get_semantic_key(self) -> str:
-        return (
-            f"RECORD_LAYOUT:{self.program_id}:{self.record_name}:"
-            f"{self.field_count}:{self.storage_format}"
-        )
+        field_strs: list[str] = []
+        for f in self.fields:
+            if f.field_kind == "DATA_FIELD":
+                field_strs.append(f"DATA({f.level}:{f.name}:{f.picture}:{f.usage})")
+            else:
+                vals = ",".join(f.condition_values)
+                field_strs.append(f"COND({f.level}:{f.name}:[{vals}])")
+        fields_repr = ";".join(field_strs)
+        return f"RECORD_LAYOUT:{self.program_id}:{self.record_name}:[{fields_repr}]"
 
 
 # ---------------------------------------------------------------------------
@@ -438,16 +467,14 @@ class OperationSequenceFact(SystemAtomicFact):
     """Strict temporal ordering between two procedural operations."""
 
     program_id: str
-    first_operation: str
-    second_operation: str
-    sequence_rationale: str
+    first_operation: str  # DELETE, RENAME, COPY, MOVE, EXECUTE
+    second_operation: str  # DELETE, RENAME, COPY, MOVE, EXECUTE
     fact_category: str = field(default="OPERATION_SEQUENCE", init=False)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "program_id", normalize_identifier(self.program_id))
         object.__setattr__(self, "first_operation", canonicalize_token(self.first_operation))
         object.__setattr__(self, "second_operation", canonicalize_token(self.second_operation))
-        object.__setattr__(self, "sequence_rationale", canonicalize_token(self.sequence_rationale))
 
     def get_semantic_key(self) -> str:
         return f"OP_SEQUENCE:{self.program_id}:{self.first_operation}->{self.second_operation}"
@@ -515,13 +542,16 @@ class PlatformDependencyFact(SystemAtomicFact):
 
 @dataclass(frozen=True)
 class BehavioralRiskFact(SystemAtomicFact):
-    """System-level behavioral risk or operational fragility."""
+    """System-level behavioral risk with explicit asserted basis and impact."""
 
     program_id: str
     risk_category: str  # IO_ERROR_HANDLING, DATA_INTEGRITY, CONTROL_FLOW, etc.
-    precondition: str
-    possible_consequence: str
-    severity: str  # HIGH, MEDIUM, LOW
+    risk_basis_kind: (
+        str  # MISSING_ERROR_STATUS, NON_ATOMIC_EXTERNAL_MUTATION, NON_RETURNING_TERMINATION, etc.
+    )
+    impact_category: (
+        str  # AVAILABILITY, ERROR_VISIBILITY, CONTROL_FLOW, DATA_INTEGRITY, PORTABILITY
+    )
     fact_category: str = field(default="BEHAVIORAL_RISK", init=False)
 
     def __post_init__(self) -> None:
@@ -534,15 +564,13 @@ class BehavioralRiskFact(SystemAtomicFact):
         elif rc in ("CALLEE_PROCESS_TERMINATION", "UNCONTROLLED_TERMINATION"):
             rc = "CONTROL_FLOW"
         object.__setattr__(self, "risk_category", rc)
-        object.__setattr__(
-            self, "possible_consequence", canonicalize_token(self.possible_consequence)
-        )
-        object.__setattr__(self, "severity", canonicalize_token(self.severity))
+        object.__setattr__(self, "risk_basis_kind", canonicalize_token(self.risk_basis_kind))
+        object.__setattr__(self, "impact_category", canonicalize_token(self.impact_category))
 
     def get_semantic_key(self) -> str:
         return (
             f"RISK:{self.program_id}:{self.risk_category}:"
-            f"{self.possible_consequence}:{self.severity}"
+            f"{self.risk_basis_kind}:{self.impact_category}"
         )
 
 

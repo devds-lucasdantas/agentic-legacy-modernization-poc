@@ -152,7 +152,10 @@ def test_mutated_dat_record_field_widths_and_order(tmp_path: Path):
 
 
 def test_non_atomic_update_consequence_qualified():
-    """Verify non-atomic update consequence is qualified (CANONICAL_DATASET_UNAVAILABLE)."""
+    """Verify non-atomic update consequence is deterministic.
+
+    Checks (NON_ATOMIC_EXTERNAL_MUTATION / DATA_INTEGRITY).
+    """
     parser_path = REPO_ROOT / "src" / "cobol" / "system_cobol_parser.py"
     facts_path = REPO_ROOT / "src" / "cobol" / "system_atomic_facts.py"
     golden_path = REPO_ROOT / "evals" / "expected" / "system-understanding-v3.json"
@@ -162,7 +165,8 @@ def test_non_atomic_update_consequence_qualified():
         assert "PERMANENT_DATA_LOSS" not in content, f"PERMANENT_DATA_LOSS found in {path}"
 
     golden_text = golden_path.read_text(encoding="utf-8")
-    assert "CANONICAL_DATASET_UNAVAILABLE" in golden_text
+    assert "NON_ATOMIC_EXTERNAL_MUTATION" in golden_text
+    assert "DATA_INTEGRITY" in golden_text
 
 
 # ======================================================================
@@ -176,7 +180,7 @@ def test_category_completeness_policy():
     data = json.loads(golden_path.read_text(encoding="utf-8"))
 
     policies = data.get("category_policies", {})
-    assert len(policies) == 17
+    assert len(policies) == 18
 
     allowed_policies = {
         "REQUIRED_EXHAUSTIVE",
@@ -217,6 +221,15 @@ def test_category_completeness_policy():
     for cat in preregistered_cats:
         assert policies[cat] == "REQUIRED_PREREGISTERED_CORE", (
             f"Expected {cat} to be REQUIRED_PREREGISTERED_CORE, got {policies[cat]}"
+        )
+
+    # Check optional supplementary categories
+    optional_cats = [
+        "FILE_OPERATION",
+    ]
+    for cat in optional_cats:
+        assert policies[cat] == "OPTIONAL_SUPPLEMENTARY", (
+            f"Expected {cat} to be OPTIONAL_SUPPLEMENTARY, got {policies[cat]}"
         )
 
 

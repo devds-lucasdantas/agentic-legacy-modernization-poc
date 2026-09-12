@@ -7,17 +7,28 @@ Provides exact role-bound evidence verification adhering strictly to:
 - Host verifier reasons over exact AST relations and does not supply omitted relationships.
 """
 
+from typing import Any
+
 from src.cobol.multi_source_reader import MultiSourceBundle
-from src.cobol.system_atomic_facts import EvidenceSpan, SupportedSystemFact, SystemAtomicFact
+from src.cobol.system_atomic_facts import (
+    BehavioralRiskFact,
+    EvidenceSpan,
+    SupportedSystemFact,
+    SystemAtomicFact,
+)
 
 
 class SystemSupportIndex:
     """Immutable ground-truth index for verified system facts and source spans."""
 
     def __init__(
-        self, supported_facts: list[SupportedSystemFact], bundle: MultiSourceBundle
+        self,
+        supported_facts: list[SupportedSystemFact],
+        bundle: MultiSourceBundle,
+        file_status_certificate: Any | None = None,
     ) -> None:
         self.bundle = bundle
+        self.file_status_certificate = file_status_certificate
         self._facts_by_prop_id: dict[str, SupportedSystemFact] = {}
         self._facts_by_semantic_key: dict[str, list[SupportedSystemFact]] = {}
         self._facts_by_file: dict[str, list[SupportedSystemFact]] = {}
@@ -126,6 +137,27 @@ class SystemSupportIndex:
                     break
 
             if roles_match:
+                if (
+                    isinstance(candidate_fact, BehavioralRiskFact)
+                    and candidate_fact.risk_basis_kind == "MISSING_ERROR_STATUS"
+                ):
+                    if self.file_status_certificate is not None:
+                        is_proven = False
+                        for (
+                            p_id,
+                            f_name,
+                        ), has_status in self.file_status_certificate.bindings_file_status.items():
+                            if p_id == candidate_fact.program_id and not has_status:
+                                if f_name.lower().replace("-", "_") in sf.proposition_id.lower():
+                                    is_proven = True
+                                    break
+                        if not is_proven:
+                            return (
+                                False,
+                                "Whole-scope certificate does not prove absence of FILE STATUS "
+                                f"for {candidate_fact.program_id}",
+                                None,
+                            )
                 return True, "Supported by exact role-bound ground-truth AST fact", sf
 
         return (

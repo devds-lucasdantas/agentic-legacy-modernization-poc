@@ -71,6 +71,28 @@ class InternalCallResolution(BaseModel):
     )
 
 
+class RecordField(BaseModel):
+    """Field or condition name within a COBOL record declaration."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    field_kind: str = Field(
+        description=(
+            "Field classification: DATA_FIELD (storage-bearing) or CONDITION_NAME (level-88)"
+        )
+    )
+    level: int = Field(description="COBOL level number (e.g. 5, 88)")
+    name: str = Field(description="Field or condition identifier")
+    picture: str | None = Field(default=None, description="PICTURE clause if DATA_FIELD")
+    usage: str | None = Field(
+        default=None, description="Storage USAGE if DATA_FIELD: DISPLAY, COMP-3, BINARY"
+    )
+    condition_values: list[str] = Field(
+        default_factory=list,
+        description="Declared literal values for CONDITION_NAME (level-88)",
+    )
+
+
 class RecordLayout(BaseModel):
     """01 Record layout definition declared in program or copybook."""
 
@@ -78,8 +100,9 @@ class RecordLayout(BaseModel):
 
     program_id: str = Field(description="Program or copybook declaring the record layout")
     record_name: str = Field(description="01 Record layout identifier")
-    field_count: int = Field(description="Number of elementary subordinate fields in the layout")
-    storage_format: str = Field(description="Storage format of record fields: DISPLAY or COMP-3")
+    fields: list[RecordField] = Field(
+        default_factory=list, description="Ordered elementary data fields and condition names"
+    )
     evidence: SourceEvidence
 
 
@@ -155,7 +178,7 @@ class CommandInvocation(BaseModel):
 
     program_id: str = Field(description="Program executing the command")
     command_template: str = Field(description="Command string literal or assembled template")
-    target_operand: str = Field(description="Buffer variable passed to SYSTEM (e.g. WS-CMD)")
+    target_operand: str = Field(description="Buffer variable passed to runtime system interface")
     assignment_evidence: SourceEvidence = Field(description="Evidence of MOVE literal TO buffer")
     call_evidence: SourceEvidence = Field(description="Evidence of CALL 'SYSTEM' USING buffer")
 
@@ -190,11 +213,24 @@ class OperationSequence(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     program_id: str = Field(description="Program containing the sequence")
-    first_operation: str = Field(description="Canonical description of initial operation")
-    second_operation: str = Field(description="Canonical description of subsequent operation")
-    sequence_rationale: str = Field(description="Operational rationale for ordering")
-    first_evidence: SourceEvidence = Field(description="Evidence of the first operation")
-    second_evidence: SourceEvidence = Field(description="Evidence of the second operation")
+    first_operation: str = Field(
+        description="First operation kind: DELETE, RENAME, COPY, MOVE, EXECUTE"
+    )
+    second_operation: str = Field(
+        description="Second operation kind: DELETE, RENAME, COPY, MOVE, EXECUTE"
+    )
+    first_assignment_evidence: SourceEvidence = Field(
+        description="Evidence of first command literal assignment"
+    )
+    first_call_evidence: SourceEvidence = Field(
+        description="Evidence of first command dispatch call"
+    )
+    second_assignment_evidence: SourceEvidence = Field(
+        description="Evidence of second command literal assignment"
+    )
+    second_call_evidence: SourceEvidence = Field(
+        description="Evidence of second command dispatch call"
+    )
 
 
 class ComputationDataflow(BaseModel):
@@ -234,18 +270,22 @@ class BehavioralRisk(BaseModel):
             "DATA_INTEGRITY, CONTROL_FLOW, PORTABILITY, RESOURCE_LIFECYCLE"
         )
     )
-    precondition: str = Field(description="Canonical condition triggering the risk")
-    possible_consequence: str = Field(
+    risk_basis_kind: str = Field(
         description=(
-            "Canonical consequence token "
-            "(e.g. CANONICAL_DATASET_UNAVAILABLE, UNCHECKED_IO_ERROR, RUN_UNIT_ABORT)"
+            "Underlying risk basis kind: MISSING_ERROR_STATUS, "
+            "NON_ATOMIC_EXTERNAL_MUTATION, NON_RETURNING_TERMINATION, "
+            "UNCHECKED_EXTERNAL_RESULT, INVALID_INPUT_HANDLING, RESOURCE_LIFECYCLE_FAILURE"
         )
     )
-    severity: str = Field(description="Severity assessment: HIGH, MEDIUM, LOW")
-    precondition_evidence: SourceEvidence = Field(description="Evidence for precondition")
+    impact_category: str = Field(
+        description=(
+            "System impact classification: AVAILABILITY, "
+            "ERROR_VISIBILITY, CONTROL_FLOW, DATA_INTEGRITY, PORTABILITY"
+        )
+    )
     operation_evidence: SourceEvidence = Field(description="Evidence for unhandled operation")
     affected_resource_evidence: SourceEvidence = Field(
-        description="Evidence for affected resource/file"
+        description="Evidence for affected resource or file binding"
     )
 
 

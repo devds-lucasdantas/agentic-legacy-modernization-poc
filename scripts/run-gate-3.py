@@ -412,23 +412,19 @@ def create_git_snapshot_archive(
 
     if allow_dirty:
         # For testing with uncommitted changes, overlay working tree files onto snapshot
+        excluded_dirs = {
+            ".git",
+            ".venv",
+            "artifacts",
+            "scratch",
+            "__pycache__",
+            ".pytest_cache",
+            ".ruff_cache",
+            ".mypy_cache",
+        }
         for root, dirs, files in os.walk(repo_root):
+            dirs[:] = [d for d in dirs if d not in excluded_dirs]
             rel_root = Path(root).relative_to(repo_root)
-            if any(
-                part
-                in (
-                    ".git",
-                    ".venv",
-                    "artifacts",
-                    "scratch",
-                    "__pycache__",
-                    ".pytest_cache",
-                    ".ruff_cache",
-                    ".mypy_cache",
-                )
-                for part in rel_root.parts
-            ):
-                continue
             for f in files:
                 if f.endswith((".pyc", ".pyo")):
                     continue
@@ -438,6 +434,29 @@ def create_git_snapshot_archive(
                 dst_file.write_bytes(src_file.read_bytes())
 
     return temp_dir
+
+
+def load_authorization_spec_from_git(
+    repo_root: Path, commit_sha: str, rel_path: str = DEFAULT_AUTH_SPEC_PATH
+) -> tuple[dict[str, Any], str]:
+    """Retrieve authorization spec directly from Git commit object plumbing."""
+    sanitized_env = get_sanitized_git_env()
+    proc = subprocess.run(
+        ["git", "show", f"{commit_sha}:{rel_path}"],
+        cwd=repo_root,
+        env=sanitized_env,
+        capture_output=True,
+        check=False,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f"Failed to retrieve authorization spec from git object '{commit_sha}:{rel_path}': "
+            f"{proc.stderr.decode('utf-8', errors='replace')}"
+        )
+    raw_bytes = proc.stdout
+    spec_sha256 = hashlib.sha256(raw_bytes).hexdigest()
+    spec = json.loads(raw_bytes.decode("utf-8"))
+    return spec, spec_sha256
 
 
 def load_authorization_spec(spec_path: Path) -> tuple[dict[str, Any], str]:
@@ -469,6 +488,7 @@ def load_authorization_spec(spec_path: Path) -> tuple[dict[str, Any], str]:
         "prompt_version",
         "evaluator_version",
         "golden_dataset_version",
+        "golden_dataset_sha256",
         "target_bundle",
     }
     missing = required_keys - set(spec.keys())
@@ -481,6 +501,16 @@ def load_authorization_spec(spec_path: Path) -> tuple[dict[str, Any], str]:
     spec["candidate_git_sha"] = spec.get("candidate_git_sha") or spec.get("expected_git_sha", "")
     if spec.get("gate") != 3:
         raise ValueError(f"Authorization spec gate must be 3, got: {spec.get('gate')}")
+    if spec.get("spec_version") != "3.3.0":
+        raise ValueError(f"spec_version must be '3.3.0', got: {spec.get('spec_version')}")
+    if spec.get("schema_version") != "3.3.0":
+        raise ValueError(f"schema_version must be '3.3.0', got: {spec.get('schema_version')}")
+    if spec.get("evaluator_version") != "3.3.0":
+        raise ValueError(f"evaluator_version must be '3.3.0', got: {spec.get('evaluator_version')}")
+    if spec.get("golden_dataset_version") != "3.3.0":
+        raise ValueError(
+            f"golden_dataset_version must be '3.3.0', got: {spec.get('golden_dataset_version')}"
+        )
     if spec.get("openai_client_max_retries") != 0:
         raise ValueError("openai_client_max_retries must be 0")
     if spec.get("application_model_retries") != 0:
@@ -605,6 +635,14 @@ def execute_gate_3(
     head_sha = rev_res.stdout.strip()
 
     # 3. Load auth spec
+    if (
+        not allow_dirty
+        and auth_spec_path.resolve() != (repo_root / DEFAULT_AUTH_SPEC_PATH).resolve()
+    ):
+        raise ValueError(
+            f"Authorization specification must use canonical path '{DEFAULT_AUTH_SPEC_PATH}'. "
+            f"Got: '{auth_spec_path}'"
+        )
     spec, spec_sha = load_authorization_spec(auth_spec_path)
     if spec["run_label"] != run_label:
         raise ValueError(f"Run label mismatch: CLI={run_label}, spec={spec['run_label']}")
@@ -798,10 +836,43 @@ def execute_internal_child(args: argparse.Namespace) -> int:
             return 1
 
     # Step 4: Load and verify authorization spec
+    if (
+        not args.allow_dirty
+        and auth_spec_path.resolve() != (provenance_repo / DEFAULT_AUTH_SPEC_PATH).resolve()
+    ):
+        print(
+            "ERROR: Authorization specification must use canonical path "
+            f"'{DEFAULT_AUTH_SPEC_PATH}'.",
+            file=sys.stderr,
+        )
+        return 1
+
     try:
-        spec, spec_sha = load_authorization_spec(auth_spec_path)
+        if authorization_commit_sha and not args.allow_dirty:
+            spec, spec_sha = load_authorization_spec_from_git(
+                provenance_repo, authorization_commit_sha, DEFAULT_AUTH_SPEC_PATH
+            )
+        else:
+            spec, spec_sha = load_authorization_spec(auth_spec_path)
     except Exception as e:
         print(f"ERROR: Failed to load authorization spec: {e}", file=sys.stderr)
+        return 1
+
+    golden_file = (
+        Path(args.golden_path).resolve()
+        if args.golden_path
+        else (snapshot_dir / DEFAULT_GOLDEN_PATH)
+    )
+    if not golden_file.is_file():
+        print(f"ERROR: Golden dataset file missing: {golden_file}", file=sys.stderr)
+        return 1
+    actual_golden_sha = hashlib.sha256(golden_file.read_bytes()).hexdigest()
+    if actual_golden_sha.lower() != spec["golden_dataset_sha256"].lower():
+        print(
+            f"ERROR: Golden dataset SHA mismatch: actual={actual_golden_sha}, "
+            f"expected={spec['golden_dataset_sha256']}",
+            file=sys.stderr,
+        )
         return 1
 
     # Step 5: Verify multi-source bundle integrity
@@ -836,6 +907,39 @@ def execute_internal_child(args: argparse.Namespace) -> int:
 
     run_state_file = artifact_dir / "run-state.json"
 
+    # Step 8.5: Bundle parsing and fail-closed preflight check
+    try:
+        from src.cobol.multi_source_reader import read_system_bundle
+        from src.cobol.system_cobol_parser import SystemCobolParser
+    except Exception as e:
+        print(f"ERROR: Application parser import failed: {e}", file=sys.stderr)
+        return 1
+
+    bundle = read_system_bundle(snapshot_dir)
+    parser = SystemCobolParser(bundle)
+    coverage_cert = parser.get_parser_coverage_certificate()
+    if coverage_cert.unsupported_relevant_count > 0:
+        print(
+            f"ERROR: Fail-closed parser check failed: {coverage_cert.unsupported_relevant_count} "
+            f"unsupported relevant statement(s) detected. Execution strictly aborted.",
+            file=sys.stderr,
+        )
+        atomic_write_json(
+            run_state_file,
+            {
+                "status": "FAILED",
+                "error_phase": "FAIL_CLOSED_PARSER_CHECK",
+                "error_message": (
+                    f"Unsupported relevant statements: {coverage_cert.unsupported_relevant_count}"
+                ),
+                "timestamp": datetime.now(UTC).isoformat(),
+                "candidate_git_sha": candidate_sha,
+                "authorization_commit_sha": authorization_commit_sha,
+                "git_commit_sha": authorized_sha,
+            },
+        )
+        return 1
+
     # Step 9: If dry-run, report success without live call or credentials
     if args.dry_run:
         print("[OK] Dry-run preflight verification complete. All authorization checks PASSED.")
@@ -857,20 +961,11 @@ def execute_internal_child(args: argparse.Namespace) -> int:
     # Step 10: Import application modules strictly from snapshot
     try:
         from agents.legacy_analyzer.system_agent import SystemAnalyzerAgent
-        from src.cobol.multi_source_reader import read_system_bundle
-        from src.cobol.system_cobol_parser import SystemCobolParser
         from src.cobol.system_support_index import SystemSupportIndex
         from src.validation.evaluator_v3 import SystemEvaluatorV3, load_golden_assessment
     except Exception as e:
         print(f"ERROR: Application module import failed: {e}", file=sys.stderr)
         return 1
-
-    bundle = read_system_bundle(snapshot_dir)
-    golden_file = (
-        Path(args.golden_path).resolve()
-        if args.golden_path
-        else (snapshot_dir / DEFAULT_GOLDEN_PATH)
-    )
 
     # Step 11: Execute Synthetic or Live
     if args.synthetic:

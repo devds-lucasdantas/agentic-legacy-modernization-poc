@@ -1,5 +1,5 @@
 {
-  "version": "3.2.0",
+  "version": "3.3.0",
   "benchmark_design": "GATE_3_SYSTEM_UNDERSTANDING_APPROVED_CONTRACT",
   "golden_authoring_method": "INDEPENDENT_STATIC_SOURCE_AUDIT",
   "provenance_notes": "Authored directly from independent static source audit of the six legacy repository artifacts without runtime parser dependencies.",
@@ -21,7 +21,8 @@
     "COMPUTATION_DATAFLOW": "REQUIRED_PREREGISTERED_CORE",
     "PLATFORM_DEPENDENCY": "REQUIRED_EXHAUSTIVE",
     "BEHAVIORAL_RISK": "REQUIRED_PREREGISTERED_CORE",
-    "DATA_STATE_COMPARISON": "REQUIRED_EXHAUSTIVE"
+    "DATA_STATE_COMPARISON": "REQUIRED_EXHAUSTIVE",
+    "FILE_OPERATION": "OPTIONAL_SUPPLEMENTARY"
   },
   "group_counts": {
     "BEHAVIORAL_RISK": 4,
@@ -334,20 +335,84 @@
     {
       "id": "prop.layout.accounts_account_record",
       "category": "RECORD_LAYOUT",
-      "semantic_key": "RECORD_LAYOUT:ACCOUNTS:ACCOUNT-RECORD:4:COMP_3",
+      "semantic_key": "RECORD_LAYOUT:ACCOUNTS:ACCOUNT-RECORD:[DATA(5:ACC-NUMBER:9(10):DISPLAY);DATA(5:ACC-CUSTOMER-NAME:X(30):DISPLAY);DATA(5:ACC-BALANCE:S9(13)V99:COMP_3);DATA(5:ACC-STATUS:X(1):DISPLAY);COND(88:ACC-ACTIVE:[A]);COND(88:ACC-CLOSED:[C]);COND(88:ACC-SUSPENDED:[S])]",
       "evidence_spans": {
         "evidence": {
           "file_path": "legacy/core-banking-system/ACCOUNTS.CPY",
           "line_start": 2,
-          "line_end": 6
+          "line_end": 9
         }
       },
-      "auditor_rationale": "Static source audit: ACCOUNTS.CPY lines 2-6 declares ACCOUNT-RECORD with 4 fields using COMP-3 packed decimal."
+      "auditor_rationale": "Static source audit: ACCOUNTS.CPY lines 2-9 declares ACCOUNT-RECORD with 4 elementary data fields and 3 level-88 condition names.",
+      "fields": [
+        {
+          "field_kind": "DATA_FIELD",
+          "level": 5,
+          "name": "ACC-NUMBER",
+          "picture": "9(10)",
+          "usage": "DISPLAY",
+          "condition_values": []
+        },
+        {
+          "field_kind": "DATA_FIELD",
+          "level": 5,
+          "name": "ACC-CUSTOMER-NAME",
+          "picture": "X(30)",
+          "usage": "DISPLAY",
+          "condition_values": []
+        },
+        {
+          "field_kind": "DATA_FIELD",
+          "level": 5,
+          "name": "ACC-BALANCE",
+          "picture": "S9(13)V99",
+          "usage": "COMP-3",
+          "condition_values": []
+        },
+        {
+          "field_kind": "DATA_FIELD",
+          "level": 5,
+          "name": "ACC-STATUS",
+          "picture": "X(1)",
+          "usage": "DISPLAY",
+          "condition_values": []
+        },
+        {
+          "field_kind": "CONDITION_NAME",
+          "level": 88,
+          "name": "ACC-ACTIVE",
+          "picture": null,
+          "usage": null,
+          "condition_values": [
+            "A"
+          ]
+        },
+        {
+          "field_kind": "CONDITION_NAME",
+          "level": 88,
+          "name": "ACC-CLOSED",
+          "picture": null,
+          "usage": null,
+          "condition_values": [
+            "C"
+          ]
+        },
+        {
+          "field_kind": "CONDITION_NAME",
+          "level": 88,
+          "name": "ACC-SUSPENDED",
+          "picture": null,
+          "usage": null,
+          "condition_values": [
+            "S"
+          ]
+        }
+      ]
     },
     {
       "id": "prop.layout.init_db_account_rec",
       "category": "RECORD_LAYOUT",
-      "semantic_key": "RECORD_LAYOUT:INIT-DB:ACCOUNT-REC:4:DISPLAY",
+      "semantic_key": "RECORD_LAYOUT:INIT-DB:ACCOUNT-REC:[DATA(5:REC-ACC-NUMBER:9(10):DISPLAY);DATA(5:REC-ACC-NAME:X(30):DISPLAY);DATA(5:REC-ACC-BALANCE:S9(13)V99:DISPLAY);DATA(5:REC-ACC-STATUS:X(1):DISPLAY)]",
       "evidence_spans": {
         "evidence": {
           "file_path": "legacy/core-banking-system/INIT-DB.CBL",
@@ -355,12 +420,46 @@
           "line_end": 17
         }
       },
-      "auditor_rationale": "Static source audit: INIT-DB.CBL lines 13-17 declares ACCOUNT-REC with 4 fields in DISPLAY format."
+      "auditor_rationale": "Static source audit: INIT-DB.CBL lines 13-17 declares ACCOUNT-REC with 4 elementary DISPLAY fields.",
+      "fields": [
+        {
+          "field_kind": "DATA_FIELD",
+          "level": 5,
+          "name": "REC-ACC-NUMBER",
+          "picture": "9(10)",
+          "usage": "DISPLAY",
+          "condition_values": []
+        },
+        {
+          "field_kind": "DATA_FIELD",
+          "level": 5,
+          "name": "REC-ACC-NAME",
+          "picture": "X(30)",
+          "usage": "DISPLAY",
+          "condition_values": []
+        },
+        {
+          "field_kind": "DATA_FIELD",
+          "level": 5,
+          "name": "REC-ACC-BALANCE",
+          "picture": "S9(13)V99",
+          "usage": "DISPLAY",
+          "condition_values": []
+        },
+        {
+          "field_kind": "DATA_FIELD",
+          "level": 5,
+          "name": "REC-ACC-STATUS",
+          "picture": "X(1)",
+          "usage": "DISPLAY",
+          "condition_values": []
+        }
+      ]
     },
     {
       "id": "prop.layout.report_gen_account_rec",
       "category": "RECORD_LAYOUT",
-      "semantic_key": "RECORD_LAYOUT:REPORT-GEN:ACCOUNT-REC:4:DISPLAY",
+      "semantic_key": "RECORD_LAYOUT:REPORT-GEN:ACCOUNT-REC:[DATA(5:REC-ACC-NUMBER:9(10):DISPLAY);DATA(5:REC-ACC-NAME:X(30):DISPLAY);DATA(5:REC-ACC-BALANCE:S9(13)V99:DISPLAY);DATA(5:REC-ACC-STATUS:X(1):DISPLAY)]",
       "evidence_spans": {
         "evidence": {
           "file_path": "legacy/core-banking-system/REPORT-GEN.CBL",
@@ -368,12 +467,46 @@
           "line_end": 17
         }
       },
-      "auditor_rationale": "Static source audit: REPORT-GEN.CBL lines 13-17 declares ACCOUNT-REC with 4 fields in DISPLAY format."
+      "auditor_rationale": "Static source audit: REPORT-GEN.CBL lines 13-17 declares ACCOUNT-REC with 4 elementary DISPLAY fields.",
+      "fields": [
+        {
+          "field_kind": "DATA_FIELD",
+          "level": 5,
+          "name": "REC-ACC-NUMBER",
+          "picture": "9(10)",
+          "usage": "DISPLAY",
+          "condition_values": []
+        },
+        {
+          "field_kind": "DATA_FIELD",
+          "level": 5,
+          "name": "REC-ACC-NAME",
+          "picture": "X(30)",
+          "usage": "DISPLAY",
+          "condition_values": []
+        },
+        {
+          "field_kind": "DATA_FIELD",
+          "level": 5,
+          "name": "REC-ACC-BALANCE",
+          "picture": "S9(13)V99",
+          "usage": "DISPLAY",
+          "condition_values": []
+        },
+        {
+          "field_kind": "DATA_FIELD",
+          "level": 5,
+          "name": "REC-ACC-STATUS",
+          "picture": "X(1)",
+          "usage": "DISPLAY",
+          "condition_values": []
+        }
+      ]
     },
     {
       "id": "prop.layout.trans_proc_account_rec",
       "category": "RECORD_LAYOUT",
-      "semantic_key": "RECORD_LAYOUT:TRANS-PROC:ACCOUNT-REC:4:DISPLAY",
+      "semantic_key": "RECORD_LAYOUT:TRANS-PROC:ACCOUNT-REC:[DATA(5:REC-ACC-NUMBER:9(10):DISPLAY);DATA(5:REC-ACC-NAME:X(30):DISPLAY);DATA(5:REC-ACC-BALANCE:S9(13)V99:DISPLAY);DATA(5:REC-ACC-STATUS:X(1):DISPLAY)]",
       "evidence_spans": {
         "evidence": {
           "file_path": "legacy/core-banking-system/TRANS-PROC.CBL",
@@ -381,12 +514,46 @@
           "line_end": 19
         }
       },
-      "auditor_rationale": "Static source audit: TRANS-PROC.CBL lines 15-19 declares ACCOUNT-REC with 4 fields in DISPLAY format."
+      "auditor_rationale": "Static source audit: TRANS-PROC.CBL lines 15-19 declares ACCOUNT-REC with 4 elementary DISPLAY fields.",
+      "fields": [
+        {
+          "field_kind": "DATA_FIELD",
+          "level": 5,
+          "name": "REC-ACC-NUMBER",
+          "picture": "9(10)",
+          "usage": "DISPLAY",
+          "condition_values": []
+        },
+        {
+          "field_kind": "DATA_FIELD",
+          "level": 5,
+          "name": "REC-ACC-NAME",
+          "picture": "X(30)",
+          "usage": "DISPLAY",
+          "condition_values": []
+        },
+        {
+          "field_kind": "DATA_FIELD",
+          "level": 5,
+          "name": "REC-ACC-BALANCE",
+          "picture": "S9(13)V99",
+          "usage": "DISPLAY",
+          "condition_values": []
+        },
+        {
+          "field_kind": "DATA_FIELD",
+          "level": 5,
+          "name": "REC-ACC-STATUS",
+          "picture": "X(1)",
+          "usage": "DISPLAY",
+          "condition_values": []
+        }
+      ]
     },
     {
       "id": "prop.layout.trans_proc_temp_rec",
       "category": "RECORD_LAYOUT",
-      "semantic_key": "RECORD_LAYOUT:TRANS-PROC:TEMP-REC:4:DISPLAY",
+      "semantic_key": "RECORD_LAYOUT:TRANS-PROC:TEMP-REC:[DATA(5:TEMP-ACC-NUMBER:9(10):DISPLAY);DATA(5:TEMP-ACC-NAME:X(30):DISPLAY);DATA(5:TEMP-ACC-BALANCE:S9(13)V99:DISPLAY);DATA(5:TEMP-ACC-STATUS:X(1):DISPLAY)]",
       "evidence_spans": {
         "evidence": {
           "file_path": "legacy/core-banking-system/TRANS-PROC.CBL",
@@ -394,7 +561,41 @@
           "line_end": 26
         }
       },
-      "auditor_rationale": "Static source audit: TRANS-PROC.CBL lines 22-26 declares TEMP-REC with 4 fields in DISPLAY format."
+      "auditor_rationale": "Static source audit: TRANS-PROC.CBL lines 22-26 declares TEMP-REC with 4 elementary DISPLAY fields.",
+      "fields": [
+        {
+          "field_kind": "DATA_FIELD",
+          "level": 5,
+          "name": "TEMP-ACC-NUMBER",
+          "picture": "9(10)",
+          "usage": "DISPLAY",
+          "condition_values": []
+        },
+        {
+          "field_kind": "DATA_FIELD",
+          "level": 5,
+          "name": "TEMP-ACC-NAME",
+          "picture": "X(30)",
+          "usage": "DISPLAY",
+          "condition_values": []
+        },
+        {
+          "field_kind": "DATA_FIELD",
+          "level": 5,
+          "name": "TEMP-ACC-BALANCE",
+          "picture": "S9(13)V99",
+          "usage": "DISPLAY",
+          "condition_values": []
+        },
+        {
+          "field_kind": "DATA_FIELD",
+          "level": 5,
+          "name": "TEMP-ACC-STATUS",
+          "picture": "X(1)",
+          "usage": "DISPLAY",
+          "condition_values": []
+        }
+      ]
     },
     {
       "id": "prop.relation.accounts_init_db",
@@ -404,7 +605,7 @@
         "evidence_a": {
           "file_path": "legacy/core-banking-system/ACCOUNTS.CPY",
           "line_start": 2,
-          "line_end": 6
+          "line_end": 9
         },
         "evidence_b": {
           "file_path": "legacy/core-banking-system/INIT-DB.CBL",
@@ -422,7 +623,7 @@
         "evidence_a": {
           "file_path": "legacy/core-banking-system/ACCOUNTS.CPY",
           "line_start": 2,
-          "line_end": 6
+          "line_end": 9
         },
         "evidence_b": {
           "file_path": "legacy/core-banking-system/REPORT-GEN.CBL",
@@ -440,7 +641,7 @@
         "evidence_a": {
           "file_path": "legacy/core-banking-system/ACCOUNTS.CPY",
           "line_start": 2,
-          "line_end": 6
+          "line_end": 9
         },
         "evidence_b": {
           "file_path": "legacy/core-banking-system/TRANS-PROC.CBL",
@@ -458,7 +659,7 @@
         "evidence_a": {
           "file_path": "legacy/core-banking-system/ACCOUNTS.CPY",
           "line_start": 2,
-          "line_end": 6
+          "line_end": 9
         },
         "evidence_b": {
           "file_path": "legacy/core-banking-system/TRANS-PROC.CBL",
@@ -698,7 +899,7 @@
     {
       "id": "prop.lifecycle.init_db_account_file",
       "category": "RESOURCE_LIFECYCLE",
-      "semantic_key": "RESOURCE_LIFECYCLE:INIT-DB:ACCOUNT-FILE:OUTPUT:(OPEN->CLOSE)",
+      "semantic_key": "RESOURCE_LIFECYCLE:INIT-DB:ACCOUNT-FILE:OUTPUT:(OPEN_OUTPUT->WRITE->WRITE->WRITE->CLOSE)",
       "evidence_spans": {
         "evidence": {
           "file_path": "legacy/core-banking-system/INIT-DB.CBL",
@@ -706,12 +907,12 @@
           "line_end": 44
         }
       },
-      "auditor_rationale": "Static source audit: INIT-DB.CBL opens ACCOUNT-FILE for OUTPUT at line 24 and closes it at line 44."
+      "auditor_rationale": "Static source audit: INIT-DB.CBL performs OPEN OUTPUT at line 24, three WRITE statements at lines 28, 34, 40, and CLOSE at line 44."
     },
     {
       "id": "prop.lifecycle.report_gen_account_file",
       "category": "RESOURCE_LIFECYCLE",
-      "semantic_key": "RESOURCE_LIFECYCLE:REPORT-GEN:ACCOUNT-FILE:INPUT:(OPEN->READ->CLOSE)",
+      "semantic_key": "RESOURCE_LIFECYCLE:REPORT-GEN:ACCOUNT-FILE:INPUT:(OPEN_INPUT->READ->CLOSE)",
       "evidence_spans": {
         "evidence": {
           "file_path": "legacy/core-banking-system/REPORT-GEN.CBL",
@@ -719,12 +920,12 @@
           "line_end": 50
         }
       },
-      "auditor_rationale": "Static source audit: REPORT-GEN.CBL opens ACCOUNT-FILE for INPUT at line 28, reads records, and closes it at line 50."
+      "auditor_rationale": "Static source audit: REPORT-GEN.CBL performs OPEN INPUT at line 28, READ at line 33, and CLOSE at line 50."
     },
     {
       "id": "prop.lifecycle.trans_proc_account_file",
       "category": "RESOURCE_LIFECYCLE",
-      "semantic_key": "RESOURCE_LIFECYCLE:TRANS-PROC:ACCOUNT-FILE:INPUT:(OPEN->READ->CLOSE)",
+      "semantic_key": "RESOURCE_LIFECYCLE:TRANS-PROC:ACCOUNT-FILE:INPUT:(OPEN_INPUT->READ->CLOSE)",
       "evidence_spans": {
         "evidence": {
           "file_path": "legacy/core-banking-system/TRANS-PROC.CBL",
@@ -732,12 +933,12 @@
           "line_end": 81
         }
       },
-      "auditor_rationale": "Static source audit: TRANS-PROC.CBL opens ACCOUNT-FILE for INPUT at line 46, reads records, and closes it at line 81."
+      "auditor_rationale": "Static source audit: TRANS-PROC.CBL performs OPEN INPUT at line 46, READ at line 51, and CLOSE at line 81."
     },
     {
       "id": "prop.lifecycle.trans_proc_temp_file",
       "category": "RESOURCE_LIFECYCLE",
-      "semantic_key": "RESOURCE_LIFECYCLE:TRANS-PROC:TEMP-FILE:OUTPUT:(OPEN->CLOSE)",
+      "semantic_key": "RESOURCE_LIFECYCLE:TRANS-PROC:TEMP-FILE:OUTPUT:(OPEN_OUTPUT->WRITE->CLOSE)",
       "evidence_spans": {
         "evidence": {
           "file_path": "legacy/core-banking-system/TRANS-PROC.CBL",
@@ -745,26 +946,36 @@
           "line_end": 82
         }
       },
-      "auditor_rationale": "Static source audit: TRANS-PROC.CBL opens TEMP-FILE for OUTPUT at line 47 and closes it at line 82."
+      "auditor_rationale": "Static source audit: TRANS-PROC.CBL performs OPEN OUTPUT at line 47, WRITE at line 77, and CLOSE at line 82."
     },
     {
       "id": "prop.op_seq.trans_proc_del_ren",
       "category": "OPERATION_SEQUENCE",
-      "semantic_key": "OP_SEQUENCE:TRANS-PROC:DELETE_DATASET->RENAME_TEMPORARY_DATASET",
+      "semantic_key": "OP_SEQUENCE:TRANS-PROC:DELETE->RENAME",
       "evidence_spans": {
-        "first_evidence": {
+        "first_assignment_evidence": {
+          "file_path": "legacy/core-banking-system/TRANS-PROC.CBL",
+          "line_start": 86,
+          "line_end": 86
+        },
+        "first_call_evidence": {
           "file_path": "legacy/core-banking-system/TRANS-PROC.CBL",
           "line_start": 87,
           "line_end": 87
         },
-        "second_evidence": {
+        "second_assignment_evidence": {
+          "file_path": "legacy/core-banking-system/TRANS-PROC.CBL",
+          "line_start": 88,
+          "line_end": 88
+        },
+        "second_call_evidence": {
           "file_path": "legacy/core-banking-system/TRANS-PROC.CBL",
           "line_start": 89,
           "line_end": 89
         }
       },
       "sequence_rationale": "NON_ATOMIC_REPLACEMENT_SEQUENCE",
-      "auditor_rationale": "Static source audit: TRANS-PROC deletes canonical file at line 87 before renaming temporary file at line 89, establishing non-atomic replacement order."
+      "auditor_rationale": "Static source audit: TRANS-PROC.CBL lines 86-89 strictly orders command assignment and call for del ACCOUNTS.DAT before ren ACCOUNTS.TMP."
     },
     {
       "id": "prop.dataflow.report_gen_balance",
@@ -834,14 +1045,8 @@
     {
       "id": "prop.risk.trans_proc_non_atomic_update",
       "category": "BEHAVIORAL_RISK",
-      "semantic_key": "RISK:TRANS-PROC:DATA_INTEGRITY:CANONICAL_DATASET_UNAVAILABLE:HIGH",
-      "precondition": "CRASH_BETWEEN_FILE_OPERATIONS",
+      "semantic_key": "RISK:TRANS-PROC:DATA_INTEGRITY:NON_ATOMIC_EXTERNAL_MUTATION:DATA_INTEGRITY",
       "evidence_spans": {
-        "precondition_evidence": {
-          "file_path": "legacy/core-banking-system/TRANS-PROC.CBL",
-          "line_start": 86,
-          "line_end": 86
-        },
         "operation_evidence": {
           "file_path": "legacy/core-banking-system/TRANS-PROC.CBL",
           "line_start": 87,
@@ -853,19 +1058,13 @@
           "line_end": 88
         }
       },
-      "auditor_rationale": "Static source audit: Process termination or power loss between del (line 87) and ren (line 89) leaves canonical dataset unavailable while temp file remains."
+      "auditor_rationale": "Static source audit: Non-atomic external mutation between del (line 87) and ren (line 89) causes data loss if interrupted."
     },
     {
       "id": "prop.risk.init_db_missing_status",
       "category": "BEHAVIORAL_RISK",
-      "semantic_key": "RISK:INIT-DB:IO_ERROR_HANDLING:UNCHECKED_IO_ERROR:HIGH",
-      "precondition": "MISSING_FILE_STATUS_CLAUSE",
+      "semantic_key": "RISK:INIT-DB:IO_ERROR_HANDLING:MISSING_ERROR_STATUS:ERROR_VISIBILITY",
       "evidence_spans": {
-        "precondition_evidence": {
-          "file_path": "legacy/core-banking-system/INIT-DB.CBL",
-          "line_start": 7,
-          "line_end": 8
-        },
         "operation_evidence": {
           "file_path": "legacy/core-banking-system/INIT-DB.CBL",
           "line_start": 24,
@@ -877,19 +1076,13 @@
           "line_end": 8
         }
       },
-      "auditor_rationale": "Static source audit: INIT-DB SELECT ACCOUNT-FILE lacks FILE STATUS clause, leaving file open/write errors unhandled."
+      "auditor_rationale": "Static source audit: INIT-DB SELECT ACCOUNT-FILE lacks FILE STATUS clause, leaving file I/O operations unhandled."
     },
     {
       "id": "prop.risk.report_gen_missing_status",
       "category": "BEHAVIORAL_RISK",
-      "semantic_key": "RISK:REPORT-GEN:IO_ERROR_HANDLING:UNCHECKED_IO_ERROR:HIGH",
-      "precondition": "MISSING_FILE_STATUS_CLAUSE",
+      "semantic_key": "RISK:REPORT-GEN:IO_ERROR_HANDLING:MISSING_ERROR_STATUS:ERROR_VISIBILITY",
       "evidence_spans": {
-        "precondition_evidence": {
-          "file_path": "legacy/core-banking-system/REPORT-GEN.CBL",
-          "line_start": 7,
-          "line_end": 8
-        },
         "operation_evidence": {
           "file_path": "legacy/core-banking-system/REPORT-GEN.CBL",
           "line_start": 28,
@@ -901,19 +1094,13 @@
           "line_end": 8
         }
       },
-      "auditor_rationale": "Static source audit: REPORT-GEN SELECT ACCOUNT-FILE lacks FILE STATUS clause, leaving file open/read errors unhandled."
+      "auditor_rationale": "Static source audit: REPORT-GEN SELECT ACCOUNT-FILE lacks FILE STATUS clause, leaving file I/O operations unhandled."
     },
     {
       "id": "prop.risk.trans_proc_missing_status",
       "category": "BEHAVIORAL_RISK",
-      "semantic_key": "RISK:TRANS-PROC:IO_ERROR_HANDLING:UNCHECKED_IO_ERROR:HIGH",
-      "precondition": "MISSING_FILE_STATUS_CLAUSE",
+      "semantic_key": "RISK:TRANS-PROC:IO_ERROR_HANDLING:MISSING_ERROR_STATUS:ERROR_VISIBILITY",
       "evidence_spans": {
-        "precondition_evidence": {
-          "file_path": "legacy/core-banking-system/TRANS-PROC.CBL",
-          "line_start": 7,
-          "line_end": 8
-        },
         "operation_evidence": {
           "file_path": "legacy/core-banking-system/TRANS-PROC.CBL",
           "line_start": 46,
@@ -925,7 +1112,7 @@
           "line_end": 8
         }
       },
-      "auditor_rationale": "Static source audit: TRANS-PROC SELECT ACCOUNT-FILE lacks FILE STATUS clause, leaving file open/read errors unhandled."
+      "auditor_rationale": "Static source audit: TRANS-PROC SELECT ACCOUNT-FILE lacks FILE STATUS clause, leaving file I/O operations unhandled."
     },
     {
       "id": "prop.state_cmp.1000000003",

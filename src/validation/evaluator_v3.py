@@ -28,10 +28,12 @@ from src.cobol.system_atomic_facts import (
     DataTransferRelationFact,
     EvidenceSpan,
     FileBindingFact,
+    FileOperationFact,
     InternalCallResolutionFact,
     OperationSequenceFact,
     PlatformDependencyFact,
     ProgramDeclarationFact,
+    RecordFieldFact,
     RecordLayoutFact,
     RecordLayoutRelationFact,
     ResourceLifecycleFact,
@@ -121,8 +123,14 @@ class SystemEvaluatorV3:
     def _load_golden_dataset(self) -> None:
         """Load golden dataset and dynamically derive total expected facts."""
         data = json.loads(self.golden_dataset_path.read_text(encoding="utf-8"))
+        self.category_policies = data.get("category_policies", {})
         self.golden_propositions = data["propositions"]
-        self.expected_fact_count = len(self.golden_propositions)
+        self.required_golden_propositions = [
+            p
+            for p in self.golden_propositions
+            if self.category_policies.get(p["category"]) != "OPTIONAL_SUPPLEMENTARY"
+        ]
+        self.expected_fact_count = len(self.required_golden_propositions)
         self.golden_by_id = {p["id"]: p for p in self.golden_propositions}
         self.golden_by_semantic_key = {p["semantic_key"]: p for p in self.golden_propositions}
         self.golden_by_key_and_spans: dict[
@@ -203,13 +211,32 @@ class SystemEvaluatorV3:
 
         # 6. Record Layouts
         for lay in assessment_obj.record_layouts:
+            fields = [
+                RecordFieldFact(
+                    field_kind=f.field_kind,
+                    level=f.level,
+                    name=f.name,
+                    picture=f.picture,
+                    usage=f.usage,
+                    condition_values=tuple(f.condition_values),
+                )
+                for f in lay.fields
+            ]
             f_lay = RecordLayoutFact(
                 program_id=lay.program_id,
                 record_name=lay.record_name,
-                field_count=lay.field_count,
-                storage_format=lay.storage_format,
+                fields=tuple(fields),
             )
             candidate_items.append((f_lay, _single_span(lay.evidence)))
+
+        # File Operations (OPTIONAL_SUPPLEMENTARY)
+        for fo in assessment_obj.file_operations:
+            f_fo = FileOperationFact(
+                program_id=fo.program_id,
+                internal_file_name=fo.internal_file_name,
+                operation_verb=fo.operation_verb,
+            )
+            candidate_items.append((f_fo, _single_span(fo.evidence)))
 
         # 7. Record Layout Relations
         for rel in assessment_obj.record_layout_relations:
@@ -304,18 +331,27 @@ class SystemEvaluatorV3:
                 program_id=op.program_id,
                 first_operation=op.first_operation,
                 second_operation=op.second_operation,
-                sequence_rationale=op.sequence_rationale,
             )
             spans = {
-                "first_evidence": EvidenceSpan(
-                    op.first_evidence.file_path,
-                    op.first_evidence.line_start,
-                    op.first_evidence.line_end,
+                "first_assignment_evidence": EvidenceSpan(
+                    op.first_assignment_evidence.file_path,
+                    op.first_assignment_evidence.line_start,
+                    op.first_assignment_evidence.line_end,
                 ),
-                "second_evidence": EvidenceSpan(
-                    op.second_evidence.file_path,
-                    op.second_evidence.line_start,
-                    op.second_evidence.line_end,
+                "first_call_evidence": EvidenceSpan(
+                    op.first_call_evidence.file_path,
+                    op.first_call_evidence.line_start,
+                    op.first_call_evidence.line_end,
+                ),
+                "second_assignment_evidence": EvidenceSpan(
+                    op.second_assignment_evidence.file_path,
+                    op.second_assignment_evidence.line_start,
+                    op.second_assignment_evidence.line_end,
+                ),
+                "second_call_evidence": EvidenceSpan(
+                    op.second_call_evidence.file_path,
+                    op.second_call_evidence.line_start,
+                    op.second_call_evidence.line_end,
                 ),
             }
             candidate_items.append((f_op, spans))
@@ -344,16 +380,10 @@ class SystemEvaluatorV3:
             f_br = BehavioralRiskFact(
                 program_id=br.program_id,
                 risk_category=br.risk_category,
-                precondition=br.precondition,
-                possible_consequence=br.possible_consequence,
-                severity=br.severity,
+                risk_basis_kind=br.risk_basis_kind,
+                impact_category=br.impact_category,
             )
             spans = {
-                "precondition_evidence": EvidenceSpan(
-                    br.precondition_evidence.file_path,
-                    br.precondition_evidence.line_start,
-                    br.precondition_evidence.line_end,
-                ),
                 "operation_evidence": EvidenceSpan(
                     br.operation_evidence.file_path,
                     br.operation_evidence.line_start,
@@ -491,7 +521,9 @@ class SystemEvaluatorV3:
                 )
 
         unique_predicted_count = len(seen_assertions)
-        matched_expected_count = len(matched_golden_ids)
+        required_golden_ids = {p["id"] for p in self.required_golden_propositions}
+        matched_required_golden_ids = matched_golden_ids & required_golden_ids
+        matched_expected_count = len(matched_required_golden_ids)
         missing_expected_count = self.expected_fact_count - matched_expected_count
 
         precision = supported_count / unique_predicted_count if unique_predicted_count > 0 else 1.0
@@ -540,10 +572,12 @@ def load_golden_assessment(golden_dataset_path: Path | None = None) -> SystemAss
         DataStateComparison,
         DataTransferRelation,
         FileBinding,
+        FileOperation,
         InternalCallResolution,
         OperationSequence,
         PlatformDependency,
         ProgramDeclaration,
+        RecordField,
         RecordLayout,
         RecordLayoutRelation,
         ResourceLifecycle,
@@ -630,12 +664,37 @@ def load_golden_assessment(golden_dataset_path: Path | None = None) -> SystemAss
             )
         elif cat == "RECORD_LAYOUT":
             parts = key.split(":")
+            raw_fields = p.get("fields", [])
+            field_objs = []
+            for rf in raw_fields:
+                field_objs.append(
+                    RecordField(
+                        field_kind=rf.get("field_kind", "DATA_FIELD"),
+                        level=rf["level"],
+                        name=rf["name"],
+                        picture=rf.get("picture"),
+                        usage=rf.get("usage"),
+                        condition_values=rf.get("condition_values", []),
+                    )
+                )
             assessment.record_layouts.append(
                 RecordLayout(
                     program_id=parts[1],
                     record_name=parts[2],
-                    field_count=int(parts[3]),
-                    storage_format=parts[4],
+                    fields=field_objs,
+                    evidence=make_ev(spans["evidence"]),
+                )
+            )
+        elif cat == "FILE_OPERATION":
+            parts = key.split(":")
+            prog = parts[1]
+            internal_f = parts[2]
+            verb = parts[3]
+            assessment.file_operations.append(
+                FileOperation(
+                    program_id=prog,
+                    internal_file_name=internal_f,
+                    operation_verb=verb,
                     evidence=make_ev(spans["evidence"]),
                 )
             )
@@ -718,15 +777,15 @@ def load_golden_assessment(golden_dataset_path: Path | None = None) -> SystemAss
             parts = key.split(":")
             prog = parts[1]
             op1, op2 = parts[2].split("->")
-            rationale = p.get("sequence_rationale", "NON_ATOMIC_REPLACEMENT_SEQUENCE")
             assessment.operation_sequences.append(
                 OperationSequence(
                     program_id=prog,
                     first_operation=op1,
                     second_operation=op2,
-                    sequence_rationale=rationale,
-                    first_evidence=make_ev(spans["first_evidence"]),
-                    second_evidence=make_ev(spans["second_evidence"]),
+                    first_assignment_evidence=make_ev(spans["first_assignment_evidence"]),
+                    first_call_evidence=make_ev(spans["first_call_evidence"]),
+                    second_assignment_evidence=make_ev(spans["second_assignment_evidence"]),
+                    second_call_evidence=make_ev(spans["second_call_evidence"]),
                 )
             )
         elif cat == "COMPUTATION_DATAFLOW":
@@ -760,17 +819,14 @@ def load_golden_assessment(golden_dataset_path: Path | None = None) -> SystemAss
             parts = key.split(":")
             prog = parts[1]
             cat_risk = parts[2]
-            conseq = parts[3]
-            sev = parts[4]
-            precon = p.get("precondition", "UNHANDLED_CONDITION")
+            basis_kind = parts[3]
+            impact = parts[4]
             assessment.behavioral_risks.append(
                 BehavioralRisk(
                     program_id=prog,
                     risk_category=cat_risk,
-                    precondition=precon,
-                    possible_consequence=conseq,
-                    severity=sev,
-                    precondition_evidence=make_ev(spans["precondition_evidence"]),
+                    risk_basis_kind=basis_kind,
+                    impact_category=impact,
                     operation_evidence=make_ev(spans["operation_evidence"]),
                     affected_resource_evidence=make_ev(spans["affected_resource_evidence"]),
                 )

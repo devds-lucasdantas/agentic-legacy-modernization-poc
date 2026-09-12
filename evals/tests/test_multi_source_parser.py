@@ -47,9 +47,9 @@ def test_parser_coverage_certificate_zero_unsupported():
     assert cert.blank_line_count == 31
     assert cert.comment_line_count == 1
     assert cert.data_fixture_line_count == 3
-    assert cert.logical_statement_count == 208
-    assert cert.parsed_and_scored_count == 115
-    assert cert.recognized_but_unscored_count == 93
+    assert cert.logical_statement_count == 207
+    assert cert.parsed_and_scored_count == 118
+    assert cert.recognized_but_unscored_count == 89
     assert cert.unsupported_relevant_count == 0
     assert (
         cert.parsed_and_scored_count + cert.recognized_but_unscored_count
@@ -58,7 +58,7 @@ def test_parser_coverage_certificate_zero_unsupported():
     assert len(cert.certificate_sha256) == 64
     assert (
         cert.certificate_sha256
-        == "585ce714606325941445926b6bbae6852ae085813350d7eff0dc8187500618ab"
+        == "74148cdb6b5c28c576406db77a8c84ae171a7fd1eec568c4d5a15256ef08f177"
     )
 
 

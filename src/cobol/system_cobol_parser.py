@@ -29,10 +29,12 @@ from src.cobol.system_atomic_facts import (
     DataTransferRelationFact,
     EvidenceSpan,
     FileBindingFact,
+    FileOperationFact,
     InternalCallResolutionFact,
     OperationSequenceFact,
     PlatformDependencyFact,
     ProgramDeclarationFact,
+    RecordFieldFact,
     RecordLayoutFact,
     RecordLayoutRelationFact,
     ResourceLifecycleFact,
@@ -81,6 +83,29 @@ class ParserCoverageCertificate:
         """Convert certificate to serializable dictionary."""
         return asdict(self)
 
+    @property
+    def is_evaluation_blocked(self) -> bool:
+        """Return True if any procedural/declarative statement is unsupported relevant."""
+        return self.unsupported_relevant_count > 0
+
+
+@dataclass(frozen=True)
+class FileStatusCertificate:
+    """Host certificate verifying FILE STATUS declaration presence/absence per file binding."""
+
+    bindings_file_status: dict[tuple[str, str], bool]
+
+    def has_status(self, program_id: str, internal_file_name: str) -> bool:
+        return self.bindings_file_status.get(
+            (program_id.upper(), internal_file_name.upper()), False
+        )
+
+    def binding_exists(self, program_id: str, internal_file_name: str) -> bool:
+        return (
+            program_id.upper(),
+            internal_file_name.upper(),
+        ) in self.bindings_file_status
+
 
 # ---------------------------------------------------------------------------
 # Generic AST Node Definitions (Pure Syntax, Zero Fixture Semantics)
@@ -89,7 +114,7 @@ class ParserCoverageCertificate:
 
 @dataclass
 class ASTDataField:
-    """Declared record data field."""
+    """Declared record data field or condition name."""
 
     level: int
     name: str
@@ -97,6 +122,8 @@ class ASTDataField:
     usage: str  # DISPLAY, COMP-3, etc.
     line_start: int
     line_end: int
+    field_kind: str = "DATA_FIELD"  # DATA_FIELD or CONDITION_NAME
+    condition_values: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -107,6 +134,7 @@ class ASTRecordDeclaration:
     line_start: int
     line_end: int
     fields: list[ASTDataField] = field(default_factory=list)
+    owning_fd: str | None = None
 
 
 @dataclass
@@ -257,6 +285,7 @@ class SystemCobolParser:
         self.statements: list[ClassifiedStatement] = []
         self.compilation_units: list[ASTCompilationUnit] = []
         self.supported_facts: list[SupportedSystemFact] = []
+        self._file_status_certificate: FileStatusCertificate = FileStatusCertificate({})
         self._parsed = False
 
     def parse_system(self) -> ParserCoverageCertificate:
@@ -359,6 +388,23 @@ class SystemCobolParser:
             return self.parse_system()
         return self._certificate
 
+    @property
+    def file_status_certificate(self) -> FileStatusCertificate:
+        """Return host certificate for FILE STATUS declarations."""
+        if not self._parsed:
+            self.parse_system()
+        return self._file_status_certificate
+
+    def get_file_status_certificate(self) -> FileStatusCertificate:
+        """Return host certificate for FILE STATUS declarations."""
+        return self.file_status_certificate
+
+    @property
+    def is_evaluation_blocked(self) -> bool:
+        """Return True if parser encountered any unsupported relevant statements."""
+        cert = self.get_parser_coverage_certificate()
+        return cert.is_evaluation_blocked
+
     def get_supported_facts(self) -> list[SupportedSystemFact]:
         """Return all supported system facts extracted from AST."""
         if not self._parsed:
@@ -382,6 +428,7 @@ class SystemCobolParser:
         i = 0
         n = len(lines)
         current_record: ASTRecordDeclaration | None = None
+        current_fd: str | None = None
 
         while i < n:
             raw_line = lines[i]
@@ -509,8 +556,25 @@ class SystemCobolParser:
                 i += 1
                 continue
 
-            # DATA DIVISION / SECTIONS / FD
+            # DATA DIVISION / SECTIONS / FD / COPY
+            if first == "COPY":
+                self.statements.append(
+                    ClassifiedStatement(
+                        target_file.relative_path,
+                        line_num,
+                        line_num,
+                        "COPY",
+                        raw_line,
+                        StatementClassification.RECOGNIZED_BUT_UNSCORED,
+                        "Copybook inclusion directive",
+                    )
+                )
+                i += 1
+                continue
+
             if first in ("DATA", "FILE", "WORKING-STORAGE"):
+                if first in ("WORKING-STORAGE", "LOCAL-STORAGE", "LINKAGE"):
+                    current_fd = None
                 self.statements.append(
                     ClassifiedStatement(
                         target_file.relative_path,
@@ -526,6 +590,7 @@ class SystemCobolParser:
                 continue
 
             if first == "FD":
+                current_fd = tokens[1].rstrip(".") if len(tokens) > 1 else None
                 self.statements.append(
                     ClassifiedStatement(
                         target_file.relative_path,
@@ -547,6 +612,7 @@ class SystemCobolParser:
                     container_name=rec_name,
                     line_start=line_num,
                     line_end=line_num,
+                    owning_fd=current_fd,
                 )
                 unit.record_declarations.append(current_record)
                 self.statements.append(
@@ -585,6 +651,8 @@ class SystemCobolParser:
                     usage=usage_val,
                     line_start=line_num,
                     line_end=line_num,
+                    field_kind="DATA_FIELD",
+                    condition_values=[],
                 )
                 if current_record:
                     current_record.fields.append(ast_field)
@@ -605,6 +673,36 @@ class SystemCobolParser:
                 continue
 
             if first == "88":
+                cond_name = tokens[1].rstrip(".") if len(tokens) > 1 else ""
+                cond_vals: list[str] = []
+                val_tokens = [t.upper() for t in tokens]
+                start_idx = -1
+                for v_key in ("VALUE", "VALUES"):
+                    if v_key in val_tokens:
+                        start_idx = val_tokens.index(v_key) + 1
+                        if start_idx < len(tokens) and val_tokens[start_idx] in ("IS", "ARE"):
+                            start_idx += 1
+                        break
+                if start_idx != -1:
+                    for t in tokens[start_idx:]:
+                        t_clean = t.rstrip(".").strip("'\"")
+                        if t_clean and t.upper() not in ("THRU", "THROUGH", "OR"):
+                            cond_vals.append(t_clean)
+
+                ast_cond = ASTDataField(
+                    level=88,
+                    name=cond_name,
+                    picture=None,
+                    usage="DISPLAY",
+                    line_start=line_num,
+                    line_end=line_num,
+                    field_kind="CONDITION_NAME",
+                    condition_values=cond_vals,
+                )
+                if current_record:
+                    current_record.fields.append(ast_cond)
+                    current_record.line_end = line_num
+
                 self.statements.append(
                     ClassifiedStatement(
                         target_file.relative_path,
@@ -612,7 +710,7 @@ class SystemCobolParser:
                         line_num,
                         "CONDITION_88",
                         raw_line,
-                        StatementClassification.RECOGNIZED_BUT_UNSCORED,
+                        StatementClassification.PARSED_AND_SCORED,
                         "Condition level 88",
                     )
                 )
@@ -766,23 +864,37 @@ class SystemCobolParser:
                 continue
 
             if first in ("ADD", "SUBTRACT"):
-                op = tokens[1] if len(tokens) > 1 else ""
-                tgt = tokens[-1].rstrip(".") if len(tokens) > 2 else ""
+                start_l = line_num
+                full_text = raw_line
+                cur_toks = list(tokens)
+                while (
+                    not (
+                        "TO" in [t.upper() for t in cur_toks]
+                        or "FROM" in [t.upper() for t in cur_toks]
+                    )
+                    and (i + 1) < n
+                ):
+                    i += 1
+                    full_text += " " + lines[i].strip()
+                    cur_toks.extend([t for t in tokenize_cobol_line(lines[i]) if t != "."])
+                end_l = i + 1
+                op = cur_toks[1] if len(cur_toks) > 1 else ""
+                tgt = cur_toks[-1].rstrip(".") if len(cur_toks) > 2 else ""
                 arith_node = ASTArithmetic(
                     verb=first,
                     operand=op,
                     target=tgt,
-                    line_start=line_num,
-                    line_end=line_num,
+                    line_start=start_l,
+                    line_end=end_l,
                 )
                 unit.statements.append(arith_node)
                 self.statements.append(
                     ClassifiedStatement(
                         target_file.relative_path,
-                        line_num,
-                        line_num,
+                        start_l,
+                        end_l,
                         first,
-                        raw_line,
+                        full_text,
                         StatementClassification.PARSED_AND_SCORED,
                         f"Arithmetic {first} statement",
                     )
@@ -858,6 +970,7 @@ class SystemCobolParser:
                 "END-READ",
                 "AT",
                 "NOT",
+                "FROM",
             ):
                 self.statements.append(
                     ClassifiedStatement(
@@ -873,7 +986,7 @@ class SystemCobolParser:
                 i += 1
                 continue
 
-            # Default to recognized unscored if recognizable
+            # Non-allowlisted statements MUST be classified as UNSUPPORTED_RELEVANT
             self.statements.append(
                 ClassifiedStatement(
                     target_file.relative_path,
@@ -881,8 +994,8 @@ class SystemCobolParser:
                     line_num,
                     first,
                     raw_line,
-                    StatementClassification.RECOGNIZED_BUT_UNSCORED,
-                    "Statement syntax recognized",
+                    StatementClassification.UNSUPPORTED_RELEVANT,
+                    f"Unsupported procedural/declarative statement: {first}",
                 )
             )
             i += 1
@@ -1083,17 +1196,28 @@ class SystemCobolParser:
                 if not rec.fields:
                     continue
                 all_records.append((unit, rec))
-                usages = {f.usage for f in rec.fields}
-                storage_fmt = "COMP-3" if "COMP-3" in usages else "DISPLAY"
+                field_facts = tuple(
+                    RecordFieldFact(
+                        field_kind=f.field_kind,
+                        level=f.level,
+                        name=f.name,
+                        picture=f.picture,
+                        usage=f.usage if f.field_kind == "DATA_FIELD" else None,
+                        condition_values=tuple(f.condition_values)
+                        if f.field_kind == "CONDITION_NAME"
+                        else (),
+                    )
+                    for f in rec.fields
+                )
+                rec_tag = rec.container_name.lower().replace("-", "_")
                 self.supported_facts.append(
                     SupportedSystemFact(
                         fact=RecordLayoutFact(
                             program_id=prog_name,
                             record_name=rec.container_name,
-                            field_count=len(rec.fields),
-                            storage_format=storage_fmt,
+                            fields=field_facts,
                         ),
-                        proposition_id=f"prop.layout.{prog_name.lower()}_{rec.container_name.lower()}",
+                        proposition_id=f"prop.layout.{prog_name.lower()}_{rec_tag}",
                         evidence_spans={
                             "evidence": EvidenceSpan(unit.file_path, rec.line_start, rec.line_end)
                         },
@@ -1125,6 +1249,9 @@ class SystemCobolParser:
                     pair_key = (name_a, name_b)
                     if pair_key not in seen_pairs:
                         seen_pairs.add(pair_key)
+                        tag_a = rec_a.container_name.lower().replace("-", "_")
+                        tag_b = rec_b.container_name.lower().replace("-", "_")
+                        prop_rel_id = f"prop.relation.{tag_a}_{tag_b}_{idx_a}_{idx_b}"
                         self.supported_facts.append(
                             SupportedSystemFact(
                                 fact=RecordLayoutRelationFact(
@@ -1132,7 +1259,7 @@ class SystemCobolParser:
                                     layout_b_name=name_b,
                                     relation_type=rel,
                                 ),
-                                proposition_id=f"prop.relation.{rec_a.container_name.lower()}_{rec_b.container_name.lower()}_{idx_a}_{idx_b}",
+                                proposition_id=prop_rel_id,
                                 evidence_spans={
                                     "evidence_a": EvidenceSpan(
                                         unit_a.file_path, rec_a.line_start, rec_a.line_end
@@ -1214,16 +1341,21 @@ class SystemCobolParser:
                             SupportedSystemFact(
                                 fact=OperationSequenceFact(
                                     program_id=caller,
-                                    first_operation="DELETE_DATASET",
-                                    second_operation="RENAME_TEMPORARY_DATASET",
-                                    sequence_rationale="NON_ATOMIC_REPLACEMENT_SEQUENCE",
+                                    first_operation="DELETE",
+                                    second_operation="RENAME",
                                 ),
                                 proposition_id=f"prop.op_seq.{caller.lower()}_del_ren",
                                 evidence_spans={
-                                    "first_evidence": EvidenceSpan(
+                                    "first_assignment_evidence": EvidenceSpan(
+                                        unit.file_path, m1.line_start, m1.line_end
+                                    ),
+                                    "first_call_evidence": EvidenceSpan(
                                         unit.file_path, c1.line_start, c1.line_end
                                     ),
-                                    "second_evidence": EvidenceSpan(
+                                    "second_assignment_evidence": EvidenceSpan(
+                                        unit.file_path, m2.line_start, m2.line_end
+                                    ),
+                                    "second_call_evidence": EvidenceSpan(
                                         unit.file_path, c2.line_start, c2.line_end
                                     ),
                                 },
@@ -1235,15 +1367,11 @@ class SystemCobolParser:
                                 fact=BehavioralRiskFact(
                                     program_id=caller,
                                     risk_category="DATA_INTEGRITY",
-                                    precondition="PROCESS_FAILURE_BETWEEN_COMMANDS",
-                                    possible_consequence="CANONICAL_DATASET_UNAVAILABLE",
-                                    severity="HIGH",
+                                    risk_basis_kind="NON_ATOMIC_EXTERNAL_MUTATION",
+                                    impact_category="DATA_INTEGRITY",
                                 ),
                                 proposition_id=f"prop.risk.{caller.lower()}_non_atomic_update",
                                 evidence_spans={
-                                    "precondition_evidence": EvidenceSpan(
-                                        unit.file_path, m1.line_start, m1.line_end
-                                    ),
                                     "operation_evidence": EvidenceSpan(
                                         unit.file_path, c1.line_start, c2.line_end
                                     ),
@@ -1281,23 +1409,82 @@ class SystemCobolParser:
                             )
                         )
 
-        # 8. Resource Lifecycles & Missing Status Risks
+        # Build mapping of record name -> owning FD
+        record_to_fd: dict[str, str] = {}
+        for unit in self.compilation_units:
+            for rec in unit.record_declarations:
+                if rec.owning_fd:
+                    record_to_fd[rec.container_name.upper()] = rec.owning_fd.upper()
+
+        # Build FileStatusCertificate
+        status_map: dict[tuple[str, str], bool] = {}
+        for unit in self.compilation_units:
+            p_id = unit.program_id or Path(unit.file_path).stem
+            for fb in unit.file_bindings:
+                status_map[(p_id.upper(), fb.internal_file_name.upper())] = fb.has_file_status
+        self._file_status_certificate = FileStatusCertificate(status_map)
+
+        # 8. File Operations & Resource Lifecycles & Missing Status Risks
         for unit in self.compilation_units:
             caller = unit.program_id or "UNKNOWN"
+            # Emit discrete FileOperationFacts
+            for op_idx, stmt in enumerate(unit.statements):
+                if isinstance(stmt, ASTFileOp):
+                    target_res = stmt.internal_file_name
+                    if stmt.verb == "WRITE" and target_res.upper() in record_to_fd:
+                        target_res = record_to_fd[target_res.upper()]
+                    if stmt.verb == "OPEN":
+                        op_verb = (
+                            f"OPEN_{stmt.access_mode}"
+                            if stmt.access_mode in ("INPUT", "OUTPUT")
+                            else "OPEN"
+                        )
+                    else:
+                        op_verb = stmt.verb
+                    f_tag = target_res.lower().replace("-", "_")
+                    prop_op_id = f"prop.file_op.{caller.lower()}_{f_tag}_{op_idx}"
+                    self.supported_facts.append(
+                        SupportedSystemFact(
+                            fact=FileOperationFact(
+                                program_id=caller,
+                                internal_file_name=target_res,
+                                operation_verb=op_verb,
+                            ),
+                            proposition_id=prop_op_id,
+                            evidence_spans={
+                                "evidence": EvidenceSpan(
+                                    unit.file_path, stmt.line_start, stmt.line_end
+                                )
+                            },
+                        )
+                    )
+
+            # Resource Lifecycles per file binding
             for fb in unit.file_bindings:
                 f_name = fb.internal_file_name
-                ops_in_file: list[ASTFileOp] = [
+                ops_in_file = [
                     s
                     for s in unit.statements
-                    if isinstance(s, ASTFileOp) and s.internal_file_name == f_name
+                    if isinstance(s, ASTFileOp)
+                    and (
+                        s.internal_file_name.upper() == f_name.upper()
+                        or record_to_fd.get(s.internal_file_name.upper()) == f_name.upper()
+                    )
                 ]
                 if ops_in_file:
                     first_op = ops_in_file[0]
                     mode = first_op.access_mode or "INPUT"
-                    verbs = tuple(op.verb for op in ops_in_file)
+                    verbs = tuple(
+                        f"OPEN_{first_op.access_mode}"
+                        if op.verb == "OPEN" and first_op.access_mode
+                        else op.verb
+                        for op in ops_in_file
+                    )
                     span_start = ops_in_file[0].line_start
                     span_end = ops_in_file[-1].line_end
 
+                    f_tag = f_name.lower().replace("-", "_")
+                    prop_lc_id = f"prop.lifecycle.{caller.lower()}_{f_tag}"
                     self.supported_facts.append(
                         SupportedSystemFact(
                             fact=ResourceLifecycleFact(
@@ -1306,7 +1493,7 @@ class SystemCobolParser:
                                 access_mode=mode,
                                 ordered_operations=verbs,
                             ),
-                            proposition_id=f"prop.lifecycle.{caller.lower()}_{f_name.lower()}",
+                            proposition_id=prop_lc_id,
                             evidence_spans={
                                 "evidence": EvidenceSpan(unit.file_path, span_start, span_end)
                             },
@@ -1315,20 +1502,22 @@ class SystemCobolParser:
 
                     # Missing File Status Risk
                     if not fb.has_file_status:
+                        f_tag = f_name.lower().replace("-", "_")
+                        prop_risk_id = (
+                            f"prop.risk.{caller.lower()}_missing_status"
+                            if f_name == "ACCOUNT-FILE"
+                            else f"prop.risk.{caller.lower()}_{f_tag}_missing_status"
+                        )
                         self.supported_facts.append(
                             SupportedSystemFact(
                                 fact=BehavioralRiskFact(
                                     program_id=caller,
                                     risk_category="IO_ERROR_HANDLING",
-                                    precondition="UNCHECKED_FILE_STATUS",
-                                    possible_consequence="UNCHECKED_IO_ERROR",
-                                    severity="HIGH",
+                                    risk_basis_kind="MISSING_ERROR_STATUS",
+                                    impact_category="ERROR_VISIBILITY",
                                 ),
-                                proposition_id=f"prop.risk.{caller.lower()}_{f_name.lower()}_missing_status",
+                                proposition_id=prop_risk_id,
                                 evidence_spans={
-                                    "precondition_evidence": EvidenceSpan(
-                                        unit.file_path, fb.line_start, fb.line_end
-                                    ),
                                     "operation_evidence": EvidenceSpan(
                                         unit.file_path, span_start, span_end
                                     ),
@@ -1368,16 +1557,18 @@ class SystemCobolParser:
         self, rec_a: ASTRecordDeclaration, rec_b: ASTRecordDeclaration
     ) -> str | None:
         """Generic structural comparison between two record layouts."""
-        if len(rec_a.fields) != len(rec_b.fields) or not rec_a.fields:
+        data_a = [f for f in rec_a.fields if f.field_kind == "DATA_FIELD"]
+        data_b = [f for f in rec_b.fields if f.field_kind == "DATA_FIELD"]
+        if len(data_a) != len(data_b) or not data_a:
             return None
 
-        pics_a = [f.picture for f in rec_a.fields]
-        pics_b = [f.picture for f in rec_b.fields]
+        pics_a = [f.picture for f in data_a]
+        pics_b = [f.picture for f in data_b]
         if pics_a != pics_b:
             return None
 
-        usages_a = [f.usage for f in rec_a.fields]
-        usages_b = [f.usage for f in rec_b.fields]
+        usages_a = [f.usage for f in data_a]
+        usages_b = [f.usage for f in data_b]
 
         if usages_a != usages_b:
             return "REPRESENTATION_MISMATCH"
@@ -1422,6 +1613,8 @@ class SystemCobolParser:
             field_offsets: dict[str, tuple[int, int, int]] = {}
             curr_offset = 0
             for f in rec_decl.fields:
+                if f.field_kind != "DATA_FIELD":
+                    continue
                 f_width, f_decs = parse_cobol_picture(f.picture)
                 field_offsets[f.name.upper()] = (curr_offset, curr_offset + f_width, f_decs)
                 curr_offset += f_width
@@ -1429,7 +1622,10 @@ class SystemCobolParser:
             if not field_offsets:
                 continue
 
-            key_field_name = rec_decl.fields[0].name.upper()
+            key_field = next((f for f in rec_decl.fields if f.field_kind == "DATA_FIELD"), None)
+            if not key_field:
+                continue
+            key_field_name = key_field.name.upper()
             key_start, key_end, _ = field_offsets[key_field_name]
 
             # Track procedural field moves leading up to each WRITE

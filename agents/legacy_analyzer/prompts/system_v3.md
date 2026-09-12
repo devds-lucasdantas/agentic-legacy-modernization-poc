@@ -15,7 +15,7 @@ Your mission is to perform a rigorous, source-grounded architectural and behavio
    - For calls whose target is an internal compilation unit within the bundle, link the CALL statement occurrence to the target's `PROGRAM-ID` declaration.
 
 4. **Record Layouts (`record_layouts`) [REQUIRED_EXHAUSTIVE] & Representation Relations (`record_layout_relations`) [REQUIRED_PREREGISTERED_CORE]:**
-   - Extract all record definitions under 01 levels, specifying field names, PICTURE clauses, and storage formats (`DISPLAY`, `COMP-3`, etc.).
+   - Extract all record definitions under 01 levels, specifying ordered elementary data fields and level-88 condition names.
    - Compare record representations across files and copybooks, classifying core pairs as `IDENTICAL`, `EQUIVALENT`, or `REPRESENTATION_MISMATCH`. Additional verified layout comparisons are permitted as supplementary.
 
 5. **Dataset Bindings (`file_bindings`) [REQUIRED_EXHAUSTIVE]:**
@@ -40,7 +40,7 @@ Your mission is to perform a rigorous, source-grounded architectural and behavio
     - Document the operational sequence and access mode (`INPUT`, `OUTPUT`) for each internal file handle.
 
 12. **Operation Sequences (`operation_sequences`) [REQUIRED_EXHAUSTIVE]:**
-    - Document critical temporal orderings between operations where sequence affects correctness.
+    - Document critical temporal orderings between operations (such as DELETE followed by RENAME) where sequence affects correctness, with role-bound evidence for command assignments and execution calls.
 
 13. **Computation Dataflows (`computation_dataflows`) [REQUIRED_PREREGISTERED_CORE]:**
     - Track core computational accumulations across fields. Additional verified dataflow steps are permitted as supplementary.
@@ -49,7 +49,7 @@ Your mission is to perform a rigorous, source-grounded architectural and behavio
     - Identify environment-specific or operating-system-dependent commands and conventions.
 
 15. **Behavioral Risks (`behavioral_risks`) [REQUIRED_PREREGISTERED_CORE]:**
-    - Document core operational risks grounded in source evidence, specifying the precondition, unhandled operation, and potential consequence. Additional grounded operational risks are permitted as supplementary.
+    - Document core operational risks grounded in source evidence, specifying the risk category, asserted risk basis kind, and impact category. Additional grounded operational risks are permitted as supplementary.
 
 16. **Data State Comparisons (`data_state_comparisons`) [REQUIRED_EXHAUSTIVE]:**
     - Identify discrepancies between persistent data file records and source code initializer values, categorizing causal provenance.
