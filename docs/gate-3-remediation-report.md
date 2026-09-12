@@ -1,10 +1,12 @@
-# GATE 3 POST-ASTRA REMEDIATION HOTFIX — AUDIT REPORT
+# GATE 3 POST-ASTRA REMEDIATION HOTFIX (H4) — AUDIT REPORT
 
 **Generated mechanically from repository data and offline verification.**
 
 ## 1. Provenance and Repository State
-- **Audited Functional Hotfix Candidate SHA (Commit H3-0)**: `76edc67922c649f3da9f59de0347b96e9a68a374`
-- **Report Commit SHA (Commit H3)**: `PENDING_COMMIT`
+- **Audited Functional Hotfix Candidate SHA (Commit H4-0)**: `cc80659f3d981ca9344b3f5edae00f909d30e311`
+- **Report Source SHA**: `cc80659f3d981ca9344b3f5edae00f909d30e311`
+- **Prior Functional Candidate SHA (Commit H3-0)**: `76edc67922c649f3da9f59de0347b96e9a68a374`
+- **Prior Report HEAD (Commit H3)**: `f8ece1ef988c062af8e03ccea79a34ea35142a13`
 - **Prior Remediated Candidate SHA (Commit H2-0)**: `3ec2ee1592cdf2cb44991d960a05d5b6c125546b`
 - **Prior Report HEAD (Commit H2)**: `3d23be23d3d13f958f420973d67c1aa1e0a19b7d`
 - **Legacy Repository Status**: `UNTOUCHED / CLEAN` (all 6 legacy fixture files byte-identical)
@@ -12,9 +14,12 @@
 - **Live Calls Made**: `0`
 - **Baseline-v1 Executions Run**: `0`
 - **Authorization Commit A**: `NOT CREATED` (strictly deferred)
+- **Spec Version**: `3.4.1`
 
 ### Recent Forward Git Commits
 ```text
+cc80659 fix(gate-3): initialize assessment before post-response validation to prevent UnboundLocalError (H4-0)
+f8ece1e docs(gate-3): add post-astra remediation hotfix audit report for H3-0 (H3)
 76edc67 fix(gate-3): post-astra remediation hotfix for system understanding (H3-0)
 3d23be2 docs(gate-3): record post-astra remediation audit report (H2)
 3ec2ee1 feat(gate-3): post-astra remediation for system analysis (H2-0)
@@ -25,6 +30,30 @@
 ---
 
 ## 2. Remediation Hotfix Audit & Implementation Details
+
+### Blocker: Post-Response Validation Failure Uses Unbound Assessment
+- **Defect Description**: In `scripts/run-gate-3.py`, `assessment` was only assigned inside the `try:` block of `agent.validate_and_parse_response(...)`. When any validation exception occurred before successful assignment (non-completed provider status, provider refusal, response model mismatch, malformed structured output, or Pydantic validation failure), `assessment` was unbound in the local scope. Consequently, `finalize_post_model_failure(..., assessment=assessment, ...)` raised `UnboundLocalError` inside the exception handler itself, completely defeating terminal failure evidence preservation.
+- **Fix**:
+  - Declared `assessment: SystemAssessment | None = None` prior to post-response execution paths.
+  - Explicitly reset `assessment = None` immediately prior to the live post-response `try: assessment = agent.validate_and_parse_response(...)` block.
+  - Handled error classification robustly across `RESPONSE_STATUS`, `RESPONSE_REFUSAL` (covering `ResponseRefusedError` and refusal text), `RESPONSE_MODEL_MISMATCH`, and `MALFORMED_OUTPUT`.
+  - Added assertion `assert assessment is not None` prior to deterministic evaluation.
+- **Integrated Failure-Path Regressions**: Implemented 5 integration-level runner tests in `evals/tests/test_gate_3_remediation_regressions.py` exercising the real live child execution path (`execute_internal_child`):
+  1. `test_integrated_child_failure_response_status`: Response status != completed (`failed`) -> `RESPONSE_STATUS`.
+  2. `test_integrated_child_failure_provider_refusal`: Provider refusal -> `RESPONSE_REFUSAL`.
+  3. `test_integrated_child_failure_model_mismatch`: Response model mismatch (`gpt-4o` vs `gpt-5-mini`) -> `RESPONSE_MODEL_MISMATCH`.
+  4. `test_integrated_child_failure_malformed_output`: Malformed structured output / Pydantic validation failure -> `MALFORMED_OUTPUT`.
+  5. `test_integrated_child_failure_evaluator_exception`: Evaluator exception with successfully parsed assessment -> `EVALUATOR`.
+  For each scenario, proved through the real child execution path:
+  - `invoke_raw` call counter == 1 (strictly single call, zero retries)
+  - `raw-response.json` exists on disk and is persisted immediately
+  - `terminal-result.json` exists with status == `FAILED` and appropriate `error_phase`
+  - `manifest.json` exists and hashes all preserved immutable artifacts
+  - In Scenario 5 (evaluator failure), parsed `model-assessment.json` is preserved and hashed in `manifest.json`
+  - `reservation-state.json` is transitioned to `FAILED`
+  - Subsequent reuse of the run label is refused (`check_existing_reservation` raises `RuntimeError`)
+  - No second model invocation occurs on subsequent execution attempt
+  - No `UnboundLocalError` escapes
 
 ### Blocker 1: Direct Child Reservation Must Fail Closed
 - **Mandatory Reservation State**: In official live execution mode (`--internal-child-exec`), `reservation-state.json` is required to exist and parse strictly before configuration, credential loading, or model instantiation.
@@ -45,7 +74,7 @@
 - **Independent Contract Verification**: After loading the spec blob from commit $A$, the child independently establishes:
   - `spec["candidate_git_sha"] == authorized_git_sha`
   - `spec["run_label"] == CLI run_label`
-  - Full contract validation: gate (`3`), versions (`3.4.1`), reasoning effort (`high`), retry/attempt limits (0 retries, 1 attempt), requested model (`gpt-5-mini`), hashes, fingerprint format, and target bundle.
+  - Full contract validation: gate (`3`), versions (`3.4.1`), reasoning effort (`low`), retry/attempt limits (0 retries, 1 attempt), requested model (`gpt-5-mini`), hashes, fingerprint format, and target bundle.
 - **Official Live Execution Direct Binding**:
   - Direct child independently verifies `git rev-parse HEAD == authorization_commit_sha`.
   - Verifies working tree and executable overlays are clean (`verify_clean_worktree`, `verify_no_executable_overlays`).
@@ -156,17 +185,17 @@ All system components have been coherently updated to version **3.4.1**:
 | Formatting | `ruff format --check .` | Repository-wide | **PASS** | 64 files checked, 0 violations |
 | Type Checking | `mypy` | `src agents scripts tests evals` | **PASS** | 49 source files, 0 issues |
 | Dependencies | `pip check` | Active environment | **PASS** | No broken requirements |
-| Unit & Regression Tests | `pytest -v` | All test modules | **PASS** | **241 / 241 passed (100%)** in 185.86s |
+| Integrated Failure Tests | `pytest -k test_integrated_child_failure` | 5 failure scenarios | **PASS** | **5 / 5 passed (100%)** in 11.81s |
+| Full Test Suite | `pytest` | All test modules | **PASS** | **246 / 246 passed (100%)** in 188.25s |
 
 ---
 
 ## 6. Audit Conclusion and Freeze Recommendation
-Commit $H_{3-0}$ (`76edc67922c649f3da9f59de0347b96e9a68a374`) satisfies all 5 blocker/requirement remediation criteria:
-1. Child reservation fails closed before model access without silent exception handling.
-2. Direct child binds strictly to committed spec $A$ and validates Head/worktree integrity.
-3. Centralized post-invocation failure evidence preservation is enforced with permanent consumption.
-4. Preregistered core is restored to 59 facts with verified supplementary resource-scoped matching.
-5. Risk ontology is made deterministic with Pydantic Literal enums and wire schema constraints.
-6. The entire contract is coherently aligned at version 3.4.1.
+Commit $H_{4-0}$ (`cc80659f3d981ca9344b3f5edae00f909d30e311`) satisfies all functional and non-functional remediation criteria:
+1. Nullable `assessment` is declared explicitly before post-response parsing, eliminating `UnboundLocalError`.
+2. Post-provider returned failures across all 4 provider return failure modes (status, refusal, model mismatch, malformed/Pydantic validation failure) and evaluator exceptions are verified through integrated runner tests.
+3. In all failure modes, exactly 1 model call is made, raw responses and terminal failures are preserved, manifests hash immutable artifacts, and reservations become permanently failed with re-entry strictly refused.
+4. Reasoning effort is verified to be `low` across runtime validators and documentation.
+5. Golden dataset and components remain coherently synchronized at contract version 3.4.1.
 
 Zero live calls were made, baseline-v1 was not executed, commit A was not created, and legacy files/Gate 2 remain untouched.
