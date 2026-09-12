@@ -49,7 +49,9 @@ def _build_oracle() -> tuple[SystemCobolParser, SystemSupportIndex, SystemEvalua
     bundle = read_system_bundle(repo_root=REPO_ROOT)
     parser = SystemCobolParser(bundle)
     facts = parser.get_supported_facts()
-    index = SystemSupportIndex(facts, bundle)
+    index = SystemSupportIndex(
+        facts, bundle, file_status_certificate=parser.file_status_certificate
+    )
     evaluator = SystemEvaluatorV3(index)
     return parser, index, evaluator
 

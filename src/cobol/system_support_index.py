@@ -141,23 +141,106 @@ class SystemSupportIndex:
                     isinstance(candidate_fact, BehavioralRiskFact)
                     and candidate_fact.risk_basis_kind == "MISSING_ERROR_STATUS"
                 ):
-                    if self.file_status_certificate is not None:
-                        is_proven = False
-                        for (
-                            p_id,
-                            f_name,
-                        ), has_status in self.file_status_certificate.bindings_file_status.items():
-                            if p_id == candidate_fact.program_id and not has_status:
-                                if f_name.lower().replace("-", "_") in sf.proposition_id.lower():
-                                    is_proven = True
-                                    break
-                        if not is_proven:
-                            return (
-                                False,
-                                "Whole-scope certificate does not prove absence of FILE STATUS "
-                                f"for {candidate_fact.program_id}",
-                                None,
+                    if self.file_status_certificate is None:
+                        raise RuntimeError(
+                            "Whole-scope FileStatusCertificate is required to evaluate "
+                            "MISSING_ERROR_STATUS behavioral risk."
+                        )
+
+                    cand_res_span = candidate_spans.get("affected_resource_evidence")
+                    cand_op_span = candidate_spans.get("operation_evidence")
+                    if cand_res_span is None or cand_op_span is None:
+                        return (
+                            False,
+                            "MISSING_ERROR_STATUS requires both affected_resource_evidence "
+                            "and operation_evidence",
+                            None,
+                        )
+
+                    # 1. Structurally identify the file binding from affected_resource_evidence
+                    target_record = None
+                    for (
+                        p_id,
+                        _f_name,
+                    ), rec in self.file_status_certificate.bindings.items():
+                        if p_id.upper() == candidate_fact.program_id.upper():
+                            res_file = rec.resource_span.file_path.replace("\\", "/")
+                            cand_res_file = cand_res_span.file_path.replace("\\", "/")
+                            path_match = (
+                                res_file == cand_res_file
+                                or res_file.endswith("/" + cand_res_file)
+                                or cand_res_file.endswith("/" + res_file)
                             )
+                            if (
+                                path_match
+                                and cand_res_span.line_start == rec.resource_span.line_start
+                                and cand_res_span.line_end == rec.resource_span.line_end
+                            ):
+                                target_record = rec
+                                break
+
+                    if target_record is None:
+                        return (
+                            False,
+                            "Affected resource evidence does not match any known file binding in "
+                            f"{candidate_fact.program_id}",
+                            None,
+                        )
+
+                    # 2. Certificate must contain that exact binding
+                    if not self.file_status_certificate.binding_exists(
+                        candidate_fact.program_id, target_record.internal_file_name
+                    ):
+                        return (
+                            False,
+                            f"Binding {target_record.internal_file_name} in "
+                            f"{candidate_fact.program_id} missing from host certificate",
+                            None,
+                        )
+
+                    # 3. Certificate must prove has_file_status == False
+                    if target_record.has_file_status:
+                        return (
+                            False,
+                            "Whole-scope certificate proves FILE STATUS is declared for "
+                            f"{target_record.internal_file_name} in {candidate_fact.program_id}",
+                            None,
+                        )
+
+                    # 4. Grounded file operation evidence must match that same binding
+                    if target_record.operations_span is None:
+                        return (
+                            False,
+                            f"No grounded file operations exist for "
+                            f"{target_record.internal_file_name} in {candidate_fact.program_id}",
+                            None,
+                        )
+
+                    op_file = target_record.operations_span.file_path.replace("\\", "/")
+                    cand_op_file = cand_op_span.file_path.replace("\\", "/")
+                    op_path_match = (
+                        op_file == cand_op_file
+                        or op_file.endswith("/" + cand_op_file)
+                        or cand_op_file.endswith("/" + op_file)
+                    )
+                    if (
+                        not op_path_match
+                        or cand_op_span.line_start != target_record.operations_span.line_start
+                        or cand_op_span.line_end != target_record.operations_span.line_end
+                    ):
+                        return (
+                            False,
+                            f"Operation evidence does not match operations on "
+                            f"{target_record.internal_file_name} in {candidate_fact.program_id}",
+                            None,
+                        )
+
+                    return (
+                        True,
+                        "Supported by exact role-bound ground-truth AST fact and host "
+                        "file status certificate",
+                        sf,
+                    )
                 return True, "Supported by exact role-bound ground-truth AST fact", sf
 
         return (

@@ -381,12 +381,12 @@ def verify_snapshot_against_git_objects(
 
 
 def create_git_snapshot_archive(
-    expected_git_sha: str, temp_dir: Path, repo_root: Path = REPO_ROOT, allow_dirty: bool = False
+    candidate_git_sha: str, temp_dir: Path, repo_root: Path = REPO_ROOT, allow_dirty: bool = False
 ) -> Path:
     """Extract application snapshot from authorized Git commit tree via git archive."""
     sanitized_env = get_sanitized_git_env()
     archive_proc = subprocess.Popen(
-        ["git", "archive", "--format=tar", expected_git_sha],
+        ["git", "archive", "--format=tar", candidate_git_sha],
         cwd=repo_root,
         env=sanitized_env,
         stdout=subprocess.PIPE,
@@ -494,11 +494,11 @@ def load_authorization_spec(spec_path: Path) -> tuple[dict[str, Any], str]:
     missing = required_keys - set(spec.keys())
     if missing:
         raise ValueError(f"Authorization spec missing required keys: {sorted(missing)}")
-    if "candidate_git_sha" not in spec and "expected_git_sha" not in spec:
-        raise ValueError(
-            "Authorization spec must contain 'candidate_git_sha' or 'expected_git_sha'"
-        )
-    spec["candidate_git_sha"] = spec.get("candidate_git_sha") or spec.get("expected_git_sha", "")
+    if "candidate_git_sha" not in spec:
+        raise ValueError("Authorization spec must contain 'candidate_git_sha'")
+    if "expected_git_sha" in spec:
+        raise ValueError("Authorization spec must not contain legacy 'expected_git_sha'")
+    spec["candidate_git_sha"] = spec.get("candidate_git_sha", "")
     if spec.get("gate") != 3:
         raise ValueError(f"Authorization spec gate must be 3, got: {spec.get('gate')}")
     if spec.get("spec_version") != "3.3.0":
@@ -647,7 +647,7 @@ def execute_gate_3(
     if spec["run_label"] != run_label:
         raise ValueError(f"Run label mismatch: CLI={run_label}, spec={spec['run_label']}")
 
-    candidate_sha = (spec.get("candidate_git_sha") or spec.get("expected_git_sha", "")).strip()
+    candidate_sha = spec["candidate_git_sha"].strip()
 
     if not candidate_sha and not synthetic and not dry_run:
         raise RuntimeError(
@@ -871,6 +871,47 @@ def execute_internal_child(args: argparse.Namespace) -> int:
         print(
             f"ERROR: Golden dataset SHA mismatch: actual={actual_golden_sha}, "
             f"expected={spec['golden_dataset_sha256']}",
+            file=sys.stderr,
+        )
+        return 1
+
+    # Step 4.5: Version contract checks
+    golden_json = json.loads(golden_file.read_text(encoding="utf-8"))
+    actual_golden_version = golden_json.get("version")
+    if actual_golden_version != spec["golden_dataset_version"]:
+        print(
+            f"ERROR: Golden dataset version mismatch: actual={actual_golden_version}, "
+            f"expected={spec['golden_dataset_version']}",
+            file=sys.stderr,
+        )
+        return 1
+
+    from agents.legacy_analyzer.schemas.system_assessment import SCHEMA_VERSION
+
+    if SCHEMA_VERSION != spec["schema_version"]:
+        print(
+            f"ERROR: Schema version mismatch: actual={SCHEMA_VERSION}, "
+            f"expected={spec['schema_version']}",
+            file=sys.stderr,
+        )
+        return 1
+
+    from src.validation.evaluator_v3 import EVALUATOR_VERSION
+
+    if EVALUATOR_VERSION != spec["evaluator_version"]:
+        print(
+            f"ERROR: Evaluator version mismatch: actual={EVALUATOR_VERSION}, "
+            f"expected={spec['evaluator_version']}",
+            file=sys.stderr,
+        )
+        return 1
+
+    from agents.legacy_analyzer.system_agent import PROMPT_VERSION
+
+    if PROMPT_VERSION != spec["prompt_version"]:
+        print(
+            f"ERROR: Prompt version mismatch: actual={PROMPT_VERSION}, "
+            f"expected={spec['prompt_version']}",
             file=sys.stderr,
         )
         return 1
@@ -1106,7 +1147,9 @@ def execute_internal_child(args: argparse.Namespace) -> int:
     # Step 12: Deterministic evaluation using SystemEvaluatorV3
     parser = SystemCobolParser(bundle)
     facts = parser.get_supported_facts()
-    index = SystemSupportIndex(facts, bundle)
+    index = SystemSupportIndex(
+        facts, bundle, file_status_certificate=parser.file_status_certificate
+    )
     evaluator = SystemEvaluatorV3(index, golden_dataset_path=golden_file)
     eval_result, predictions = evaluator.evaluate_assessment(assessment)
 

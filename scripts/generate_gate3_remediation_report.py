@@ -99,14 +99,16 @@ def generate_report() -> str:
 
     # Build report
     lines = [
-        "# GATE 3 REMEDIATION ROUND 3 — EXECUTION AND AUDIT REPORT",
+        "# GATE 3 REMEDIATION AND PRE-ASTRA HOTFIX — AUDIT REPORT",
         "",
         "**Generated mechanically from repository data without manual constants.**",
         "",
         "## 1. Provenance and Repository State",
-        f"- **Audited Candidate SHA (Commit C0)**: `{git_head}`",
+        f"- **Audited Hotfix Candidate SHA (Commit H0)**: `{git_head}`",
         f"- **Report Source SHA**: `{git_head}`",
         "- **Preserved Remote Anchor**: `e8bd484`",
+        "- **Pre-Hotfix Candidate SHA (Commit C)**: `6a7267c4ee00b21fc13813ff3021f196eb0064f2`",
+        "- **Base Candidate SHA (Commit C0)**: `48123358a2023dae91b56cb4437c9eeeb5a967f7`",
         (
             f"- **Legacy Repository Status**: "
             f"`{'UNTOUCHED / CLEAN' if legacy_gate2_clean else 'ERROR'}`"
@@ -147,9 +149,10 @@ def generate_report() -> str:
         f"- **Requested Model**: `{requested_model}`",
         f"- **Foundry Project Fingerprint**: `{foundry_fingerprint}`",
         (
-            f"- **Candidate Git SHA (Candidate C)**: `{candidate_git_sha}` "
-            "(empty string enforces no live calls on candidate commit C)"
+            f"- **Candidate Git SHA**: `{candidate_git_sha}` "
+            "(empty string enforces no live calls on candidate commit)"
         ),
+        "- **Legacy `expected_git_sha`**: `REMOVED` (forbids legacy ambiguity in Gate 3)",
         f"- **Composite Source Bundle SHA256**: `{bundle_sha256}`",
         f"- **Source Manifest SHA256**: `{source_manifest_sha256}`",
         f"- **Production Prompt SHA256**: `{prompt_sha256}`",
@@ -175,8 +178,15 @@ def generate_report() -> str:
             "offsets, and excluded from representation compatibility."
         ),
         (
-            "- **File Status Ownership**: Owned by SELECT file binding; whole-scope host "
-            "certificate proves absence before granting MISSING_ERROR_STATUS risk credit."
+            "- **File Status Ownership & Official Wiring**: Owned by SELECT file binding. "
+            "Wired into official evaluation runner: `SystemSupportIndex(facts, bundle, "
+            "file_status_certificate=parser.file_status_certificate)`. Mandatory in official mode "
+            "(raises RuntimeError if missing on MISSING_ERROR_STATUS)."
+        ),
+        (
+            "- **Structural Binding Verification**: Binding identity resolved structurally "
+            "via `affected_resource_evidence` matching `resource_span` and `operation_evidence` "
+            "matching `operations_span`. Proposition-ID substring heuristics completely eliminated."
         ),
         (
             "- **Generic File Operations**: WRITE statements resolve to owning FD and emit "
@@ -196,6 +206,17 @@ def generate_report() -> str:
         (
             "- **Structured Operation Sequence**: Scored with 4 role-bound spans "
             "(first_operation, second_operation, first_resource, second_resource)."
+        ),
+        (
+            "- **Prompt Leakage Removed**: Replaced fixture-specific text with neutral temporal "
+            "ordering instruction; verified prompt SHA256."
+        ),
+        (
+            "- **Version Contract Verification**: Preflight parses and verifies actual golden JSON "
+            "`version == spec['golden_dataset_version']`, "
+            "`SCHEMA_VERSION == spec['schema_version']`, "
+            "`EVALUATOR_VERSION == spec['evaluator_version']`, and "
+            "`PROMPT_VERSION == spec['prompt_version']`."
         ),
         (
             "- **Runner Spec Git Object Plumbing**: Retrieves baseline spec from authorization "

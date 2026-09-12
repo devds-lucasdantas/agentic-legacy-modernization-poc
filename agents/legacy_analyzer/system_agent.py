@@ -24,8 +24,14 @@ from openai.types.responses import ResponseOutputRefusal
 from openai.types.shared_params import Reasoning
 
 from agents.legacy_analyzer.config import FoundryConfig, load_config
-from agents.legacy_analyzer.schemas.system_assessment import SystemAssessment
+from agents.legacy_analyzer.schemas.system_assessment import (
+    SCHEMA_VERSION,
+    SystemAssessment,
+)
 from src.cobol.multi_source_reader import MultiSourceBundle, read_system_bundle
+from src.validation.evaluator_v3 import EVALUATOR_VERSION
+
+PROMPT_VERSION: str = "gate3-system-v3.3"
 
 ReasoningEffort = Literal[
     "none",
@@ -55,9 +61,9 @@ class SystemExecutionMetadata:
     model_version: str | None = None
     reasoning_effort: ReasoningEffort = "low"
     git_commit_sha: str = ""
-    schema_version: str = "3.0.0"
-    prompt_version: str = "gate3-system-v3.0"
-    evaluator_version: str = "3.0.0"
+    schema_version: str = SCHEMA_VERSION
+    prompt_version: str = PROMPT_VERSION
+    evaluator_version: str = EVALUATOR_VERSION
     response_id: str | None = None
     elapsed_seconds: float = 0.0
     input_tokens: int | None = None

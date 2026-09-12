@@ -31,6 +31,8 @@ Verifies:
 import json
 from pathlib import Path
 
+import pytest
+
 from agents.legacy_analyzer.schemas.system_assessment import (
     FileOperation,
     SourceEvidence,
@@ -42,12 +44,18 @@ from src.cobol.multi_source_reader import (
     read_system_bundle,
 )
 from src.cobol.system_atomic_facts import (
+    EvidenceSpan,
     FileOperationFact,
     RecordLayoutFact,
     RecordLayoutRelationFact,
     TerminationSiteFact,
 )
-from src.cobol.system_cobol_parser import SystemCobolParser, parse_cobol_picture
+from src.cobol.system_cobol_parser import (
+    FileBindingStatusRecord,
+    FileStatusCertificate,
+    SystemCobolParser,
+    parse_cobol_picture,
+)
 from src.cobol.system_support_index import SystemSupportIndex
 from src.validation.evaluator_v3 import SystemEvaluatorV3, load_golden_assessment
 
@@ -59,7 +67,9 @@ def _build_oracle() -> tuple[SystemCobolParser, SystemSupportIndex, SystemEvalua
     bundle = read_system_bundle(repo_root=REPO_ROOT)
     parser = SystemCobolParser(bundle)
     facts = parser.get_supported_facts()
-    index = SystemSupportIndex(facts, bundle)
+    index = SystemSupportIndex(
+        facts, bundle, file_status_certificate=parser.file_status_certificate
+    )
     evaluator = SystemEvaluatorV3(index)
     return parser, index, evaluator
 
@@ -136,7 +146,9 @@ def test_level_88_value_mutation_changes_layout_identity_leaves_storage_unchange
     parser_orig, index_orig, evaluator_orig = _build_oracle()
     parser_mut = SystemCobolParser(bundle_mut)
     facts_mut = parser_mut.get_supported_facts()
-    index_mut = SystemSupportIndex(facts_mut, bundle_mut)
+    index_mut = SystemSupportIndex(
+        facts_mut, bundle_mut, file_status_certificate=parser_mut.file_status_certificate
+    )
 
     # 1. Full RecordLayout identity must change
     orig_layout = next(
@@ -295,7 +307,9 @@ def test_behavioral_risk_rejected_if_file_status_present(tmp_path: Path):
     )
     parser_mut = SystemCobolParser(bundle_mut)
     facts_mut = parser_mut.get_supported_facts()
-    index_mut = SystemSupportIndex(facts_mut, bundle_mut)
+    index_mut = SystemSupportIndex(
+        facts_mut, bundle_mut, file_status_certificate=parser_mut.file_status_certificate
+    )
 
     # Certificate should now record FILE STATUS present for TRANS-PROC ACCOUNT-FILE
     cert = parser_mut.file_status_certificate
@@ -315,6 +329,127 @@ def test_behavioral_risk_rejected_if_file_status_present(tmp_path: Path):
     assert tx_pred.is_supported is False, (
         "MISSING_ERROR_STATUS must be rejected when FILE STATUS is declared"
     )
+
+
+def test_certificate_contradictory_presence_rejects_missing_error_status():
+    """Construct normal source facts with an intentionally contradictory certificate marking
+    the relevant binding as FILE STATUS present.
+    An otherwise perfectly grounded MISSING_ERROR_STATUS assertion MUST be rejected.
+    """
+    bundle = read_system_bundle(repo_root=REPO_ROOT)
+    parser = SystemCobolParser(bundle)
+    normal_facts = parser.get_supported_facts()
+    normal_cert = parser.file_status_certificate
+
+    # Build contradictory certificate: duplicate bindings but flip has_file_status to True
+    contradictory_bindings = {}
+    for key, rec in normal_cert.bindings.items():
+        contradictory_bindings[key] = FileBindingStatusRecord(
+            program_id=rec.program_id,
+            internal_file_name=rec.internal_file_name,
+            has_file_status=True,  # Contradictory: claims FILE STATUS is present
+            resource_span=rec.resource_span,
+            operations_span=rec.operations_span,
+        )
+    contradictory_cert = FileStatusCertificate(bindings=contradictory_bindings)
+
+    index = SystemSupportIndex(normal_facts, bundle, file_status_certificate=contradictory_cert)
+    evaluator = SystemEvaluatorV3(index)
+    golden = load_golden_assessment()
+    res, preds = evaluator.evaluate_assessment(golden)
+
+    # Every MISSING_ERROR_STATUS prediction must now be REJECTED because the certificate
+    # claims FILE STATUS is declared.
+    missing_status_preds = [
+        p
+        for p in preds
+        if p.fact_category == "BEHAVIORAL_RISK" and "MISSING_ERROR_STATUS" in p.semantic_key
+    ]
+    assert len(missing_status_preds) > 0
+    for p in missing_status_preds:
+        assert p.is_supported is False, (
+            f"Expected {p.semantic_key} to be rejected due to "
+            "contradictory certificate, but got supported"
+        )
+        assert "FILE STATUS is declared" in (p.rejection_reason or "")
+
+
+def test_certificate_missing_in_official_mode_raises_error():
+    """SystemSupportIndex with file_status_certificate=None must raise an explicit RuntimeError
+    when evaluating any MISSING_ERROR_STATUS assertion."""
+    bundle = read_system_bundle(repo_root=REPO_ROOT)
+    parser = SystemCobolParser(bundle)
+    facts = parser.get_supported_facts()
+
+    index_no_cert = SystemSupportIndex(facts, bundle, file_status_certificate=None)
+    evaluator = SystemEvaluatorV3(index_no_cert)
+    golden = load_golden_assessment()
+
+    with pytest.raises(RuntimeError) as exc_info:
+        evaluator.evaluate_assessment(golden)
+    assert "FileStatusCertificate is required" in str(exc_info.value)
+
+
+def test_certificate_correct_absence_supported():
+    """Verify that with the correct host absence certificate (has_file_status=False),
+    all golden MISSING_ERROR_STATUS assertions are supported."""
+    bundle = read_system_bundle(repo_root=REPO_ROOT)
+    parser = SystemCobolParser(bundle)
+    facts = parser.get_supported_facts()
+
+    index = SystemSupportIndex(
+        facts, bundle, file_status_certificate=parser.file_status_certificate
+    )
+    evaluator = SystemEvaluatorV3(index)
+    golden = load_golden_assessment()
+    res, preds = evaluator.evaluate_assessment(golden)
+
+    missing_status_preds = [
+        p
+        for p in preds
+        if p.fact_category == "BEHAVIORAL_RISK" and "MISSING_ERROR_STATUS" in p.semantic_key
+    ]
+    assert len(missing_status_preds) == 3
+    for p in missing_status_preds:
+        assert p.is_supported is True, f"Expected {p.semantic_key} to be supported"
+
+
+def test_certificate_wrong_binding_rejected():
+    """Certificate missing the exact binding or with mismatched binding coordinates
+    must reject the MISSING_ERROR_STATUS assertion."""
+    bundle = read_system_bundle(repo_root=REPO_ROOT)
+    parser = SystemCobolParser(bundle)
+    facts = parser.get_supported_facts()
+
+    wrong_rec = FileBindingStatusRecord(
+        program_id="UNRELATED-PROG",
+        internal_file_name="UNRELATED-FILE",
+        has_file_status=False,
+        resource_span=EvidenceSpan(
+            file_path="legacy/core-banking-system/TRANS-PROC.CBL",
+            line_start=1,
+            line_end=2,
+        ),
+        operations_span=None,
+    )
+    wrong_cert = FileStatusCertificate(bindings={("UNRELATED-PROG", "UNRELATED-FILE"): wrong_rec})
+
+    index = SystemSupportIndex(facts, bundle, file_status_certificate=wrong_cert)
+    evaluator = SystemEvaluatorV3(index)
+    golden = load_golden_assessment()
+    res, preds = evaluator.evaluate_assessment(golden)
+
+    missing_status_preds = [
+        p
+        for p in preds
+        if p.fact_category == "BEHAVIORAL_RISK" and "MISSING_ERROR_STATUS" in p.semantic_key
+    ]
+    assert len(missing_status_preds) > 0
+    for p in missing_status_preds:
+        assert p.is_supported is False, f"Expected {p.semantic_key} to be rejected"
+        assert "Affected resource evidence does not match any known file binding" in (
+            p.rejection_reason or ""
+        )
 
 
 # ===========================================================================

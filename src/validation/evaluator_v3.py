@@ -42,6 +42,8 @@ from src.cobol.system_atomic_facts import (
 )
 from src.cobol.system_support_index import SystemSupportIndex
 
+EVALUATOR_VERSION: str = "3.3.0"
+
 
 def _single_span(ev: Any) -> dict[str, EvidenceSpan]:
     return {"evidence": EvidenceSpan(ev.file_path, ev.line_start, ev.line_end)}

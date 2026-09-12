@@ -95,7 +95,11 @@ def test_system_support_index_exact_verification():
     """Verify that SystemSupportIndex deterministically verifies valid and invalid assertions."""
     bundle = read_system_bundle(repo_root=REPO_ROOT)
     parser = SystemCobolParser(bundle)
-    index = SystemSupportIndex(parser.get_supported_facts(), bundle)
+    index = SystemSupportIndex(
+        parser.get_supported_facts(),
+        bundle,
+        file_status_certificate=parser.file_status_certificate,
+    )
 
     # Positive test: Program declaration
     valid_decl = ProgramDeclarationFact(

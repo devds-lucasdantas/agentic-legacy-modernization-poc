@@ -90,21 +90,33 @@ class ParserCoverageCertificate:
 
 
 @dataclass(frozen=True)
+class FileBindingStatusRecord:
+    """Detailed host record of a file binding's declarations and grounded operations."""
+
+    program_id: str
+    internal_file_name: str
+    has_file_status: bool
+    resource_span: EvidenceSpan
+    operations_span: EvidenceSpan | None
+
+
+@dataclass(frozen=True)
 class FileStatusCertificate:
     """Host certificate verifying FILE STATUS declaration presence/absence per file binding."""
 
-    bindings_file_status: dict[tuple[str, str], bool]
+    bindings: dict[tuple[str, str], FileBindingStatusRecord]
 
     def has_status(self, program_id: str, internal_file_name: str) -> bool:
-        return self.bindings_file_status.get(
-            (program_id.upper(), internal_file_name.upper()), False
-        )
+        rec = self.bindings.get((program_id.upper(), internal_file_name.upper()))
+        return rec.has_file_status if rec is not None else False
 
     def binding_exists(self, program_id: str, internal_file_name: str) -> bool:
-        return (
-            program_id.upper(),
-            internal_file_name.upper(),
-        ) in self.bindings_file_status
+        return (program_id.upper(), internal_file_name.upper()) in self.bindings
+
+    @property
+    def bindings_file_status(self) -> dict[tuple[str, str], bool]:
+        """Compatibility dictionary mapping (program_id, internal_file_name) -> has_file_status."""
+        return {k: v.has_file_status for k, v in self.bindings.items()}
 
 
 # ---------------------------------------------------------------------------
@@ -1417,12 +1429,36 @@ class SystemCobolParser:
                     record_to_fd[rec.container_name.upper()] = rec.owning_fd.upper()
 
         # Build FileStatusCertificate
-        status_map: dict[tuple[str, str], bool] = {}
+        binding_records: dict[tuple[str, str], FileBindingStatusRecord] = {}
         for unit in self.compilation_units:
             p_id = unit.program_id or Path(unit.file_path).stem
             for fb in unit.file_bindings:
-                status_map[(p_id.upper(), fb.internal_file_name.upper())] = fb.has_file_status
-        self._file_status_certificate = FileStatusCertificate(status_map)
+                f_name = fb.internal_file_name
+                ops_in_file = [
+                    s
+                    for s in unit.statements
+                    if isinstance(s, ASTFileOp)
+                    and (
+                        s.internal_file_name.upper() == f_name.upper()
+                        or record_to_fd.get(s.internal_file_name.upper()) == f_name.upper()
+                    )
+                ]
+                res_span = EvidenceSpan(unit.file_path, fb.line_start, fb.line_end)
+                if ops_in_file:
+                    op_span = EvidenceSpan(
+                        unit.file_path, ops_in_file[0].line_start, ops_in_file[-1].line_end
+                    )
+                else:
+                    op_span = None
+                status_rec = FileBindingStatusRecord(
+                    program_id=p_id,
+                    internal_file_name=f_name,
+                    has_file_status=fb.has_file_status,
+                    resource_span=res_span,
+                    operations_span=op_span,
+                )
+                binding_records[(p_id.upper(), f_name.upper())] = status_rec
+        self._file_status_certificate = FileStatusCertificate(binding_records)
 
         # 8. File Operations & Resource Lifecycles & Missing Status Risks
         for unit in self.compilation_units:

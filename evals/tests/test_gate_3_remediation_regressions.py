@@ -284,6 +284,7 @@ def test_authorization_sha_non_self_referential_design():
     # In candidate C, candidate_git_sha is empty string, forbidding live runs until commit A
     assert "candidate_git_sha" in data
     assert data["candidate_git_sha"] == ""
+    assert "expected_git_sha" not in data
 
     # Verify run-gate-3 loads authorization spec with candidate_git_sha
     mod = get_run_gate_3_module()

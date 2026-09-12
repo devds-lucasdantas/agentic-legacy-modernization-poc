@@ -9,6 +9,8 @@ Strictly adheres to:
 
 from pydantic import BaseModel, ConfigDict, Field
 
+SCHEMA_VERSION: str = "3.3.0"
+
 
 class SourceEvidence(BaseModel):
     """Exact physical line coordinate span within a verified bundle file."""

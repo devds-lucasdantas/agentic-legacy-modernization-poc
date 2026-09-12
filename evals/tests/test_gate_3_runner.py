@@ -57,7 +57,8 @@ def test_load_authorization_spec_valid():
     assert len(sha256) == 64
 
     # Blocker 10 required fields
-    assert "expected_git_sha" in spec
+    assert "candidate_git_sha" in spec
+    assert "expected_git_sha" not in spec
     assert spec["reasoning_effort"] == "low"
     assert len(spec["prompt_sha256"]) == 64
     assert len(spec["wire_schema_sha256"]) == 64
@@ -147,11 +148,11 @@ def test_verify_schema_and_prompt_hashes_passes():
 
 
 def test_live_execution_refused_when_unfrozen(tmp_path: Path):
-    """Verify live execution is strictly refused when candidate expected_git_sha is empty."""
+    """Verify live execution is strictly refused when candidate_git_sha is empty."""
     mod = get_run_gate_3_module()
     spec_path = REPO_ROOT / mod.DEFAULT_AUTH_SPEC_PATH
     spec, _ = mod.load_authorization_spec(spec_path)
-    assert spec["expected_git_sha"] == ""
+    assert spec["candidate_git_sha"] == ""
 
     out_dir = tmp_path / "live_refused"
     with pytest.raises(RuntimeError, match="Candidate commit is not frozen"):
