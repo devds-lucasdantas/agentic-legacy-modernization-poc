@@ -280,7 +280,7 @@ def test_duplicate_truth_bearing_collection_absence():
 
 def test_authorization_sha_non_self_referential_design():
     """Verify candidate C has empty candidate_git_sha and two-phase contract."""
-    auth_path = REPO_ROOT / "evals" / "baselines" / "gate-3-baseline-v1.json"
+    auth_path = REPO_ROOT / "evals" / "baselines" / "gate-3-baseline-v2.json"
     data = json.loads(auth_path.read_text(encoding="utf-8"))
 
     # In candidate C, candidate_git_sha is empty string, forbidding live runs until commit A
@@ -303,6 +303,8 @@ def test_irrevocable_run_label_reservation_refusal(tmp_path: Path):
     """Verify existing run-state (RESERVED, MODEL_INVOCATION, FAILED, COMPLETED) aborts."""
     mod = get_run_gate_3_module()
     spec_path = REPO_ROOT / mod.DEFAULT_AUTH_SPEC_PATH
+    spec, _ = mod.load_authorization_spec(spec_path)
+    run_label = spec["run_label"]
     out_dir = tmp_path / "reserved_run"
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -315,7 +317,7 @@ def test_irrevocable_run_label_reservation_refusal(tmp_path: Path):
             repo_root=REPO_ROOT,
             auth_spec_path=spec_path,
             output_dir=out_dir,
-            run_label="baseline-v1",
+            run_label=run_label,
             synthetic=True,
             allow_dirty=True,
         )
@@ -327,7 +329,7 @@ def test_irrevocable_run_label_reservation_refusal(tmp_path: Path):
             repo_root=REPO_ROOT,
             auth_spec_path=spec_path,
             output_dir=out_dir,
-            run_label="baseline-v1",
+            run_label=run_label,
             synthetic=True,
             allow_dirty=True,
         )
@@ -339,7 +341,7 @@ def test_irrevocable_run_label_reservation_refusal(tmp_path: Path):
             repo_root=REPO_ROOT,
             auth_spec_path=spec_path,
             output_dir=out_dir,
-            run_label="baseline-v1",
+            run_label=run_label,
             synthetic=True,
             allow_dirty=True,
         )
@@ -351,7 +353,7 @@ def test_irrevocable_run_label_reservation_refusal(tmp_path: Path):
             repo_root=REPO_ROOT,
             auth_spec_path=spec_path,
             output_dir=out_dir,
-            run_label="baseline-v1",
+            run_label=run_label,
             synthetic=True,
             allow_dirty=True,
         )
@@ -404,13 +406,14 @@ def test_complete_immutable_artifact_preservation(tmp_path: Path):
     """
     mod = get_run_gate_3_module()
     spec_path = REPO_ROOT / mod.DEFAULT_AUTH_SPEC_PATH
+    spec, _ = mod.load_authorization_spec(spec_path)
     out_dir = tmp_path / "immut_out"
 
     exit_code = mod.execute_gate_3(
         repo_root=REPO_ROOT,
         auth_spec_path=spec_path,
         output_dir=out_dir,
-        run_label="baseline-v1",
+        run_label=spec["run_label"],
         synthetic=True,
         dry_run=False,
         allow_dirty=True,
@@ -1179,12 +1182,6 @@ def test_risk_ontology_wire_schema_deterministic():
     expected_risk_categories = {
         "IO_ERROR_HANDLING",
         "DATA_INTEGRITY",
-        "CONTROL_FLOW",
-        "PORTABILITY",
-        "RESOURCE_LIFECYCLE",
-        "CONCURRENCY_ERROR",
-        "DATA_CORRUPTION",
-        "CONFIGURATION",
     }
     assert set(props["risk_category"]["enum"]) == expected_risk_categories
 
@@ -1192,26 +1189,13 @@ def test_risk_ontology_wire_schema_deterministic():
     expected_basis_kinds = {
         "MISSING_ERROR_STATUS",
         "NON_ATOMIC_EXTERNAL_MUTATION",
-        "NON_RETURNING_TERMINATION",
-        "UNCHECKED_EXTERNAL_RESULT",
-        "INVALID_INPUT_HANDLING",
-        "RESOURCE_LIFECYCLE_FAILURE",
-        "RESOURCE_LEAK",
-        "DEADLOCK_RISK",
-        "INCORRECT_PRECISION",
-        "INCOMPLETE_INITIALIZATION",
     }
     assert set(props["risk_basis_kind"]["enum"]) == expected_basis_kinds
 
     assert "enum" in props["impact_category"], "impact_category missing enum in wire schema!"
     expected_impact_categories = {
-        "AVAILABILITY",
         "ERROR_VISIBILITY",
-        "CONTROL_FLOW",
         "DATA_INTEGRITY",
-        "PORTABILITY",
-        "SECURITY_INTEGRITY",
-        "PERFORMANCE",
     }
     assert set(props["impact_category"]["enum"]) == expected_impact_categories
 

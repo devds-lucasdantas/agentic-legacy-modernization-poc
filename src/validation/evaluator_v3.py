@@ -42,7 +42,7 @@ from src.cobol.system_atomic_facts import (
 )
 from src.cobol.system_support_index import SystemSupportIndex
 
-EVALUATOR_VERSION: str = "3.4.3"
+EVALUATOR_VERSION: str = "3.5.0"
 
 
 def _single_span(ev: Any) -> dict[str, EvidenceSpan]:

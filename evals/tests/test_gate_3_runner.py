@@ -48,11 +48,11 @@ def test_load_authorization_spec_valid():
     spec, sha256 = mod.load_authorization_spec(spec_path)
 
     assert spec["gate"] == 3
-    assert spec["run_label"] == "baseline-v1"
+    assert spec["run_label"] == "baseline-v2"
     assert spec["requested_model"] == "gpt-5-mini"
-    assert spec["schema_version"] == "3.4.3"
-    assert spec["evaluator_version"] == "3.4.3"
-    assert spec["golden_dataset_version"] == "3.4.3"
+    assert spec["schema_version"] == "3.5.0"
+    assert spec["evaluator_version"] == "3.5.0"
+    assert spec["golden_dataset_version"] == "3.5.0"
     assert len(spec["target_bundle"]) == 6
     assert len(sha256) == 64
 
@@ -160,7 +160,7 @@ def test_live_execution_refused_when_unfrozen(tmp_path: Path):
             repo_root=REPO_ROOT,
             auth_spec_path=spec_path,
             output_dir=out_dir,
-            run_label="baseline-v1",
+            run_label=spec["run_label"],
             synthetic=False,
             dry_run=False,
             allow_dirty=True,
@@ -171,13 +171,14 @@ def test_dry_run_preflight_passes(tmp_path: Path):
     """Verify dry-run preflight completes without requiring live credentials or calling models."""
     mod = get_run_gate_3_module()
     spec_path = REPO_ROOT / mod.DEFAULT_AUTH_SPEC_PATH
+    spec, _ = mod.load_authorization_spec(spec_path)
     out_dir = tmp_path / "dry_run_out"
 
     exit_code = mod.execute_gate_3(
         repo_root=REPO_ROOT,
         auth_spec_path=spec_path,
         output_dir=out_dir,
-        run_label="baseline-v1",
+        run_label=spec["run_label"],
         synthetic=False,
         dry_run=True,
         allow_dirty=True,
@@ -193,13 +194,14 @@ def test_synthetic_execution_end_to_end(tmp_path: Path):
     """Verify offline synthetic evaluation runs end-to-end and produces all required artifacts."""
     mod = get_run_gate_3_module()
     spec_path = REPO_ROOT / mod.DEFAULT_AUTH_SPEC_PATH
+    spec, _ = mod.load_authorization_spec(spec_path)
     out_dir = tmp_path / "synthetic_out"
 
     exit_code = mod.execute_gate_3(
         repo_root=REPO_ROOT,
         auth_spec_path=spec_path,
         output_dir=out_dir,
-        run_label="baseline-v1",
+        run_label=spec["run_label"],
         synthetic=True,
         dry_run=False,
         allow_dirty=True,

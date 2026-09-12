@@ -251,7 +251,7 @@ def test_behavioral_risk_missing_error_status_verification():
         and r.risk_basis_kind == "MISSING_ERROR_STATUS"
         and r.affected_resource_evidence.line_start == 7
     )
-    tx_risk.risk_basis_kind = "INVALID_INPUT_HANDLING"
+    tx_risk.risk_basis_kind = "INVALID_INPUT_HANDLING"  # type: ignore[assignment]
     res_bad_basis, preds_bad_basis = evaluator.evaluate_assessment(bad_basis_assessment)
     bad_pred = next(
         p

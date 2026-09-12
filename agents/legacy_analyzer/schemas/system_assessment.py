@@ -9,53 +9,52 @@ Strictly adheres to:
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-SCHEMA_VERSION: str = "3.4.3"
+SCHEMA_VERSION: str = "3.5.0"
 
 RiskCategory = Literal[
     "IO_ERROR_HANDLING",
     "DATA_INTEGRITY",
-    "CONTROL_FLOW",
-    "PORTABILITY",
-    "RESOURCE_LIFECYCLE",
-    "CONCURRENCY_ERROR",
-    "DATA_CORRUPTION",
-    "CONFIGURATION",
 ]
 
 RiskBasisKind = Literal[
     "MISSING_ERROR_STATUS",
     "NON_ATOMIC_EXTERNAL_MUTATION",
-    "NON_RETURNING_TERMINATION",
-    "UNCHECKED_EXTERNAL_RESULT",
-    "INVALID_INPUT_HANDLING",
-    "RESOURCE_LIFECYCLE_FAILURE",
-    "RESOURCE_LEAK",
-    "DEADLOCK_RISK",
-    "INCORRECT_PRECISION",
-    "INCOMPLETE_INITIALIZATION",
 ]
 
 ImpactCategory = Literal[
-    "AVAILABILITY",
     "ERROR_VISIBILITY",
-    "CONTROL_FLOW",
     "DATA_INTEGRITY",
-    "PORTABILITY",
-    "SECURITY_INTEGRITY",
-    "PERFORMANCE",
+]
+
+LifecycleOperationVerb = Literal[
+    "OPEN_INPUT",
+    "OPEN_OUTPUT",
+    "OPEN_IO",
+    "OPEN_EXTEND",
+    "READ",
+    "WRITE",
+    "REWRITE",
+    "DELETE",
+    "CLOSE",
 ]
 
 
 class SourceEvidence(BaseModel):
-    """Exact physical line coordinate span within a verified bundle file."""
+    """Exact physical line coordinate span occupied by that statement only within a file."""
 
     model_config = ConfigDict(extra="forbid")
 
     file_path: str = Field(description="Normalized repository relative path of the source file")
-    line_start: int = Field(ge=1, description="1-indexed physical start line (inclusive)")
-    line_end: int = Field(ge=1, description="1-indexed physical end line (inclusive)")
+    line_start: int = Field(
+        ge=1,
+        description="1-indexed physical start line occupied by the statement only (inclusive)",
+    )
+    line_end: int = Field(
+        ge=1,
+        description="1-indexed physical end line occupied by the statement only (inclusive)",
+    )
 
 
 class ProgramDeclaration(BaseModel):
@@ -63,8 +62,12 @@ class ProgramDeclaration(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    program_id: str = Field(description="Program identifier from PROGRAM-ID division")
-    evidence: SourceEvidence
+    program_id: str = Field(
+        description="Program identifier from PROGRAM-ID division (logical identifier only)"
+    )
+    evidence: SourceEvidence = Field(
+        description="Exact physical line span occupied by the PROGRAM-ID declaration statement only"
+    )
 
 
 class CallOccurrence(BaseModel):
@@ -80,7 +83,9 @@ class CallOccurrence(BaseModel):
     argument_identifier: str | None = Field(
         default=None, description="Identifier passed in USING clause if present"
     )
-    evidence: SourceEvidence
+    evidence: SourceEvidence = Field(
+        description="Exact physical line span occupied by the CALL statement only"
+    )
 
 
 class CallEdge(BaseModel):
@@ -93,7 +98,9 @@ class CallEdge(BaseModel):
     call_mechanism: str = Field(
         description="Invocation mechanism: LITERAL_TARGET or DYNAMIC_TARGET"
     )
-    evidence: SourceEvidence
+    evidence: SourceEvidence = Field(
+        description="Exact physical line span occupied by the representative CALL statement"
+    )
 
 
 class InternalCallResolution(BaseModel):
@@ -103,9 +110,13 @@ class InternalCallResolution(BaseModel):
 
     caller_program: str = Field(description="Calling program identifier")
     callee_program: str = Field(description="Callee program identifier resolved to internal file")
-    call_evidence: SourceEvidence = Field(description="Evidence of the CALL statement")
+    call_evidence: SourceEvidence = Field(
+        description="Exact physical line span occupied by the CALL statement in caller"
+    )
     target_declaration_evidence: SourceEvidence = Field(
-        description="Evidence of the target PROGRAM-ID declaration"
+        description=(
+            "Exact physical line span occupied by the target PROGRAM-ID declaration in callee"
+        )
     )
 
 
@@ -114,21 +125,66 @@ class RecordField(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    field_kind: str = Field(
+    field_kind: Literal["DATA_FIELD", "CONDITION_NAME"] = Field(
         description=(
             "Field classification: DATA_FIELD (storage-bearing) or CONDITION_NAME (level-88)"
         )
     )
     level: int = Field(description="COBOL level number (e.g. 5, 88)")
     name: str = Field(description="Field or condition identifier")
-    picture: str | None = Field(default=None, description="PICTURE clause if DATA_FIELD")
-    usage: str | None = Field(
-        default=None, description="Storage USAGE if DATA_FIELD: DISPLAY, COMP-3, BINARY"
+    picture: str | None = Field(
+        default=None,
+        description=(
+            "Canonical PICTURE clause body without 'PIC'/'PICTURE' keyword or terminal period"
+        ),
+    )
+    usage: Literal["DISPLAY", "COMP-3", "BINARY"] | None = Field(
+        default=None,
+        description=(
+            "Explicit storage USAGE: DISPLAY, COMP-3, BINARY "
+            "(implicit COBOL usage must be explicit DISPLAY)"
+        ),
     )
     condition_values: list[str] = Field(
         default_factory=list,
         description="Declared literal values for CONDITION_NAME (level-88)",
     )
+
+    @field_validator("picture")
+    @classmethod
+    def validate_picture(cls, v: str | None) -> str | None:
+        if v is not None:
+            stripped = v.strip()
+            upper = stripped.upper()
+            if upper.startswith("PIC ") or upper.startswith("PICTURE "):
+                raise ValueError(
+                    "picture must be canonical specification without 'PIC'/'PICTURE' keyword, "
+                    f"got '{v}'"
+                )
+            if stripped.endswith("."):
+                raise ValueError(f"picture must not contain terminal period '.', got '{v}'")
+        return v
+
+    @model_validator(mode="after")
+    def validate_field_usage_and_picture(self) -> "RecordField":
+        if self.field_kind == "DATA_FIELD":
+            if self.usage is None:
+                raise ValueError(
+                    f"DATA_FIELD '{self.name}' must explicitly declare usage "
+                    "('DISPLAY', 'COMP-3', 'BINARY'); implicit COBOL usage must be explicit DISPLAY"
+                )
+            if self.picture is None:
+                raise ValueError(f"DATA_FIELD '{self.name}' must provide picture specification")
+        elif self.field_kind == "CONDITION_NAME":
+            if self.usage is not None:
+                raise ValueError(
+                    f"CONDITION_NAME '{self.name}' must have null usage, got '{self.usage}'"
+                )
+            if self.picture is not None:
+                raise ValueError(
+                    f"CONDITION_NAME '{self.name}' must have null picture, got '{self.picture}'"
+                )
+        return self
 
 
 class RecordLayout(BaseModel):
@@ -136,12 +192,29 @@ class RecordLayout(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    program_id: str = Field(description="Program or copybook declaring the record layout")
+    program_id: str = Field(
+        description="Canonical logical container identifier without path or file extension"
+    )
     record_name: str = Field(description="01 Record layout identifier")
     fields: list[RecordField] = Field(
         default_factory=list, description="Ordered elementary data fields and condition names"
     )
-    evidence: SourceEvidence
+    evidence: SourceEvidence = Field(
+        description=(
+            "Exact physical line span occupied by the 01 record declaration "
+            "and its constituent fields"
+        )
+    )
+
+    @field_validator("program_id")
+    @classmethod
+    def validate_program_id(cls, v: str) -> str:
+        if "/" in v or "\\" in v or v.upper().endswith(".CPY") or v.upper().endswith(".CBL"):
+            raise ValueError(
+                f"program_id must be canonical logical identifier without path or file extension, "
+                f"got '{v}'"
+            )
+        return v
 
 
 class RecordLayoutRelation(BaseModel):
@@ -149,13 +222,17 @@ class RecordLayoutRelation(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    layout_a_name: str = Field(description="First layout identifier (e.g. container:field)")
-    layout_b_name: str = Field(description="Second layout identifier (e.g. container:field)")
+    layout_a_name: str = Field(
+        description="First layout identifier formatted as container:record (e.g. CONTAINER:RECORD)"
+    )
+    layout_b_name: str = Field(
+        description="Second layout identifier formatted as container:record (e.g. CONTAINER:RECORD)"
+    )
     relation_type: str = Field(
         description="Relationship classification: IDENTICAL, EQUIVALENT, or REPRESENTATION_MISMATCH"
     )
-    evidence_a: SourceEvidence = Field(description="Source evidence for layout A")
-    evidence_b: SourceEvidence = Field(description="Source evidence for layout B")
+    evidence_a: SourceEvidence = Field(description="Exact source evidence for layout A")
+    evidence_b: SourceEvidence = Field(description="Exact source evidence for layout B")
 
 
 class FileBinding(BaseModel):
@@ -167,7 +244,9 @@ class FileBinding(BaseModel):
     internal_file_name: str = Field(description="COBOL FD / SELECT file identifier")
     external_file_name: str = Field(description="Target dataset literal assigned")
     organization: str = Field(description="File organization: LINE_SEQUENTIAL, SEQUENTIAL, etc.")
-    evidence: SourceEvidence
+    evidence: SourceEvidence = Field(
+        description="Exact physical line span occupied by the SELECT ... ASSIGN statement only"
+    )
 
 
 class FileOperation(BaseModel):
@@ -180,7 +259,9 @@ class FileOperation(BaseModel):
     operation_verb: str = Field(
         description="COBOL I/O verb: OPEN_INPUT, OPEN_OUTPUT, READ, WRITE, CLOSE"
     )
-    evidence: SourceEvidence
+    evidence: SourceEvidence = Field(
+        description="Exact physical line span occupied by the file I/O statement only"
+    )
 
 
 class TerminationSite(BaseModel):
@@ -190,7 +271,9 @@ class TerminationSite(BaseModel):
 
     program_id: str = Field(description="Program containing the termination statement")
     statement_type: str = Field(description="Termination verb: STOP_RUN, GOBACK, EXIT_PROGRAM")
-    evidence: SourceEvidence
+    evidence: SourceEvidence = Field(
+        description="Exact physical line span occupied by the termination statement only"
+    )
 
 
 class CallerContinuationConstraint(BaseModel):
@@ -203,9 +286,11 @@ class CallerContinuationConstraint(BaseModel):
     constraint_type: str = Field(
         description="Constraint effect: PROCESS_TERMINATION_ON_CALL or RETURN_TO_CALLER"
     )
-    call_evidence: SourceEvidence = Field(description="Evidence of the CALL statement")
+    call_evidence: SourceEvidence = Field(
+        description="Exact physical line span occupied by the CALL statement in caller"
+    )
     callee_termination_evidence: SourceEvidence = Field(
-        description="Evidence of the subprogram termination statement"
+        description="Exact physical line span occupied by the termination statement in callee"
     )
 
 
@@ -217,32 +302,57 @@ class CommandInvocation(BaseModel):
     program_id: str = Field(description="Program executing the command")
     command_template: str = Field(description="Command string literal or assembled template")
     target_operand: str = Field(description="Buffer variable passed to runtime system interface")
-    assignment_evidence: SourceEvidence = Field(description="Evidence of MOVE literal TO buffer")
-    call_evidence: SourceEvidence = Field(description="Evidence of CALL 'SYSTEM' USING buffer")
+    assignment_evidence: SourceEvidence = Field(
+        description="Exact physical line span of MOVE literal TO buffer"
+    )
+    call_evidence: SourceEvidence = Field(
+        description="Exact physical line span of CALL 'SYSTEM' USING buffer"
+    )
 
 
 class DataTransferRelation(BaseModel):
-    """Record-to-record or inter-variable data movement."""
+    """Record-to-record 01-level data movement between declared records."""
 
     model_config = ConfigDict(extra="forbid")
 
     program_id: str = Field(description="Program performing the transfer")
-    source_entity: str = Field(description="Source field or record identifier")
-    target_entity: str = Field(description="Destination field or record identifier")
+    source_entity: str = Field(description="Source 01-level record identifier")
+    target_entity: str = Field(description="Destination 01-level record identifier")
     transfer_verb: str = Field(description="COBOL data transfer verb: MOVE")
-    evidence: SourceEvidence
+    evidence: SourceEvidence = Field(
+        description="Exact physical line span occupied by the MOVE record statement only"
+    )
 
 
 class ResourceLifecycle(BaseModel):
-    """Aggregated lifecycle of a resource across operations within a program."""
+    """File or dataset access lifecycle within a procedural unit."""
 
     model_config = ConfigDict(extra="forbid")
 
-    program_id: str = Field(description="Program accessing the resource")
+    program_id: str = Field(description="Program accessing resource")
     resource_name: str = Field(description="Internal file or resource identifier")
     access_mode: str = Field(description="Access mode: INPUT or OUTPUT")
-    ordered_operations: list[str] = Field(description="Ordered sequence of operations performed")
-    evidence: SourceEvidence
+    ordered_operations: list[LifecycleOperationVerb] = Field(
+        description=(
+            "Ordered sequence of canonical lifecycle operation verbs (no descriptive modifiers)"
+        )
+    )
+    evidence: SourceEvidence = Field(
+        description="Exact physical line span enclosing the resource lifecycle routine"
+    )
+
+    @field_validator("ordered_operations")
+    @classmethod
+    def validate_ordered_operations(
+        cls, v: list[LifecycleOperationVerb]
+    ) -> list[LifecycleOperationVerb]:
+        for op in v:
+            if "(" in str(op) or ")" in str(op):
+                raise ValueError(
+                    f"ordered_operations must be canonical operation verbs "
+                    f"without descriptive modifiers, got '{op}'"
+                )
+        return v
 
 
 class OperationSequence(BaseModel):
@@ -280,7 +390,9 @@ class ComputationDataflow(BaseModel):
     source_field: str = Field(description="Input operand field")
     target_field: str = Field(description="Accumulating target field")
     operation_verb: str = Field(description="Arithmetic or movement verb: ADD, SUBTRACT, MOVE")
-    evidence: SourceEvidence
+    evidence: SourceEvidence = Field(
+        description="Exact physical line span occupied by the computation statement only"
+    )
 
 
 class PlatformDependency(BaseModel):
@@ -292,8 +404,25 @@ class PlatformDependency(BaseModel):
     platform_family: str = Field(
         description="Platform family identifier (e.g. WINDOWS, POSIX, MAINFRAME_OS)"
     )
-    command_literal: str = Field(description="Platform-specific command syntax invoked")
-    evidence: SourceEvidence
+    command_literal: str = Field(
+        description=(
+            "Exact concrete platform-specific command syntax literal invoked "
+            "(no templates or placeholders)"
+        )
+    )
+    evidence: SourceEvidence = Field(
+        description="Exact physical line span of the statement containing the command literal"
+    )
+
+    @field_validator("command_literal")
+    @classmethod
+    def validate_command_literal(cls, v: str) -> str:
+        if "<" in v or ">" in v or "..." in v or "*" in v:
+            raise ValueError(
+                f"command_literal must be an exact discrete command literal, "
+                f"not a regex or template: '{v}'"
+            )
+        return v
 
 
 class BehavioralRisk(BaseModel):
@@ -317,9 +446,11 @@ class BehavioralRisk(BaseModel):
             "or null if not resource-scoped)"
         ),
     )
-    operation_evidence: SourceEvidence = Field(description="Evidence for unhandled operation")
+    operation_evidence: SourceEvidence = Field(
+        description="Exact physical line span of the unhandled operation or mutation"
+    )
     affected_resource_evidence: SourceEvidence = Field(
-        description="Evidence for affected resource or file binding"
+        description="Exact physical line span of the affected resource declaration or file binding"
     )
 
 

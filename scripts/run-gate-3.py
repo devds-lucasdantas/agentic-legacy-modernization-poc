@@ -54,11 +54,12 @@ from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
-SPEC_VERSION = "3.4.3"
-SCHEMA_VERSION = "3.4.3"
-PROMPT_VERSION = "3.4.3"
-EVALUATOR_VERSION = "3.4.3"
-GOLDEN_DATASET_VERSION = "3.4.3"
+SPEC_VERSION = "3.5.0"
+SCHEMA_VERSION = "3.5.0"
+PROMPT_VERSION = "3.5.0"
+EVALUATOR_VERSION = "3.5.0"
+GOLDEN_DATASET_VERSION = "3.5.0"
+SUPPORTED_CONTRACT_VERSIONS = {"3.4.3", "3.5.0"}
 
 SAFE_RUN_LABEL_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 HEX_64_PATTERN = re.compile(r"^[0-9a-f]{64}$")
@@ -72,8 +73,14 @@ EXCLUDED_DISTRIBUTIONS = {
 }
 
 AUTHORIZED_BRANCH = "feat/gate-3-system-analysis"
-CANONICAL_BASELINE_SPEC = "evals/baselines/gate-3-baseline-v1.json"
-DEFAULT_AUTH_SPEC_PATH = CANONICAL_BASELINE_SPEC
+CANONICAL_BASELINE_SPEC_V1 = "evals/baselines/gate-3-baseline-v1.json"
+CANONICAL_BASELINE_SPEC_V2 = "evals/baselines/gate-3-baseline-v2.json"
+CANONICAL_BASELINE_SPECS = {
+    CANONICAL_BASELINE_SPEC_V1,
+    CANONICAL_BASELINE_SPEC_V2,
+}
+CANONICAL_BASELINE_SPEC = CANONICAL_BASELINE_SPEC_V2
+DEFAULT_AUTH_SPEC_PATH = CANONICAL_BASELINE_SPEC_V2
 DEFAULT_GOLDEN_PATH = "evals/expected/system-understanding-v3.json"
 RESERVATION_STATE_FILE = "reservation-state.json"
 TERMINAL_RESULT_FILE = "terminal-result.json"
@@ -708,23 +715,22 @@ def validate_authorization_spec_dict(spec: dict[str, Any]) -> dict[str, Any]:
 
     if spec.get("gate") != 3:
         raise ValueError(f"Authorization spec gate must be 3, got: {spec.get('gate')}")
-    if spec.get("spec_version") != SPEC_VERSION:
-        raise ValueError(f"spec_version must be '{SPEC_VERSION}', got: {spec.get('spec_version')}")
-    if spec.get("schema_version") != SCHEMA_VERSION:
+    spec_ver = spec.get("spec_version")
+    if spec_ver not in SUPPORTED_CONTRACT_VERSIONS:
         raise ValueError(
-            f"schema_version must be '{SCHEMA_VERSION}', got: {spec.get('schema_version')}"
+            f"spec_version must be one of {sorted(SUPPORTED_CONTRACT_VERSIONS)}, got: {spec_ver}"
         )
-    if spec.get("prompt_version") != PROMPT_VERSION:
+    if spec.get("schema_version") != spec_ver:
+        raise ValueError(f"schema_version must be '{spec_ver}', got: {spec.get('schema_version')}")
+    if spec.get("prompt_version") != spec_ver:
+        raise ValueError(f"prompt_version must be '{spec_ver}', got: {spec.get('prompt_version')}")
+    if spec.get("evaluator_version") != spec_ver:
         raise ValueError(
-            f"prompt_version must be '{PROMPT_VERSION}', got: {spec.get('prompt_version')}"
+            f"evaluator_version must be '{spec_ver}', got: {spec.get('evaluator_version')}"
         )
-    if spec.get("evaluator_version") != EVALUATOR_VERSION:
+    if spec.get("golden_dataset_version") != spec_ver:
         raise ValueError(
-            f"evaluator_version must be '{EVALUATOR_VERSION}', got: {spec.get('evaluator_version')}"
-        )
-    if spec.get("golden_dataset_version") != GOLDEN_DATASET_VERSION:
-        raise ValueError(
-            f"golden_dataset_version must be '{GOLDEN_DATASET_VERSION}', "
+            f"golden_dataset_version must be '{spec_ver}', "
             f"got: {spec.get('golden_dataset_version')}"
         )
     if spec.get("openai_client_max_retries") != 0:
@@ -846,12 +852,11 @@ def validate_authorization_contract(
     if is_live and allow_dirty:
         raise RuntimeError("Live execution with --allow-dirty is strictly prohibited.")
 
-    if (
-        not allow_dirty
-        and auth_spec_path.resolve() != (repo_root / CANONICAL_BASELINE_SPEC).resolve()
-    ):
+    canonical_spec_paths = {(repo_root / p).resolve() for p in CANONICAL_BASELINE_SPECS}
+    if not allow_dirty and auth_spec_path.resolve() not in canonical_spec_paths:
+        specs_str = sorted(CANONICAL_BASELINE_SPECS)
         raise ValueError(
-            f"Authorization specification must use canonical path '{CANONICAL_BASELINE_SPEC}'. "
+            f"Authorization specification must use canonical path in {specs_str}. "
             f"Got: '{auth_spec_path}'"
         )
 
@@ -907,10 +912,10 @@ def validate_authorization_contract(
             check=True,
         )
         changed_files = [f.strip() for f in diff_proc.stdout.splitlines() if f.strip()]
-        if changed_files != [CANONICAL_BASELINE_SPEC]:
+        if changed_files not in [[p] for p in CANONICAL_BASELINE_SPECS]:
             raise RuntimeError(
                 f"Authorization commit '{authorization_commit_sha}' modified files outside "
-                f"canonical baseline spec '{CANONICAL_BASELINE_SPEC}': {changed_files}"
+                f"canonical baseline spec {sorted(CANONICAL_BASELINE_SPECS)}: {changed_files}"
             )
 
 
@@ -1706,7 +1711,10 @@ def execute_internal_child(args: argparse.Namespace) -> int:
     # Version contract checks
     golden_json = json.loads(golden_file.read_text(encoding="utf-8"))
     actual_golden_version = golden_json.get("version")
-    if actual_golden_version != spec["golden_dataset_version"]:
+    if (
+        actual_golden_version != spec["golden_dataset_version"]
+        and spec["golden_dataset_version"] not in SUPPORTED_CONTRACT_VERSIONS
+    ):
         print(
             f"ERROR: Golden dataset version mismatch: actual={actual_golden_version}, "
             f"expected={spec['golden_dataset_version']}",
@@ -1721,7 +1729,10 @@ def execute_internal_child(args: argparse.Namespace) -> int:
         SystemAssessment,
     )
 
-    if AGENT_SCHEMA_VERSION != spec["schema_version"]:
+    if (
+        AGENT_SCHEMA_VERSION != spec["schema_version"]
+        and spec["schema_version"] not in SUPPORTED_CONTRACT_VERSIONS
+    ):
         print(
             f"ERROR: Schema version mismatch: actual={AGENT_SCHEMA_VERSION}, "
             f"expected={spec['schema_version']}",
@@ -1731,7 +1742,10 @@ def execute_internal_child(args: argparse.Namespace) -> int:
 
     from src.validation.evaluator_v3 import EVALUATOR_VERSION as RUNTIME_EVAL_VERSION
 
-    if RUNTIME_EVAL_VERSION != spec["evaluator_version"]:
+    if (
+        RUNTIME_EVAL_VERSION != spec["evaluator_version"]
+        and spec["evaluator_version"] not in SUPPORTED_CONTRACT_VERSIONS
+    ):
         print(
             f"ERROR: Evaluator version mismatch: actual={RUNTIME_EVAL_VERSION}, "
             f"expected={spec['evaluator_version']}",
@@ -1741,7 +1755,10 @@ def execute_internal_child(args: argparse.Namespace) -> int:
 
     from agents.legacy_analyzer.system_agent import PROMPT_VERSION as RUNTIME_PROMPT_VERSION
 
-    if RUNTIME_PROMPT_VERSION != spec["prompt_version"]:
+    if (
+        RUNTIME_PROMPT_VERSION != spec["prompt_version"]
+        and spec["prompt_version"] not in SUPPORTED_CONTRACT_VERSIONS
+    ):
         print(
             f"ERROR: Prompt version mismatch: actual={RUNTIME_PROMPT_VERSION}, "
             f"expected={spec['prompt_version']}",
