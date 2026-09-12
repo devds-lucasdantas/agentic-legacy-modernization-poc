@@ -50,9 +50,9 @@ def test_load_authorization_spec_valid():
     assert spec["gate"] == 3
     assert spec["run_label"] == "baseline-v1"
     assert spec["requested_model"] == "gpt-5-mini"
-    assert spec["schema_version"] == "3.4.1"
-    assert spec["evaluator_version"] == "3.4.1"
-    assert spec["golden_dataset_version"] == "3.4.1"
+    assert spec["schema_version"] == "3.4.2"
+    assert spec["evaluator_version"] == "3.4.2"
+    assert spec["golden_dataset_version"] == "3.4.2"
     assert len(spec["target_bundle"]) == 6
     assert len(sha256) == 64
 

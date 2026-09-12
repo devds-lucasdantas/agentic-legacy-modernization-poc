@@ -42,7 +42,7 @@ from src.cobol.system_atomic_facts import (
 )
 from src.cobol.system_support_index import SystemSupportIndex
 
-EVALUATOR_VERSION: str = "3.4.1"
+EVALUATOR_VERSION: str = "3.4.2"
 
 
 def _single_span(ev: Any) -> dict[str, EvidenceSpan]:
@@ -122,6 +122,13 @@ class SystemEvaluatorV3:
         self.golden_dataset_path = golden_dataset_path
         self._load_golden_dataset()
 
+    def _canonicalize_path(self, path: str) -> str:
+        """Resolve path to its canonical bundle path if possible, else normalized path."""
+        try:
+            return self.support_index.bundle.resolve_canonical_file_path(path)
+        except (KeyError, ValueError):
+            return path.replace("\\", "/").strip()
+
     def _load_golden_dataset(self) -> None:
         """Load golden dataset and dynamically derive total expected facts."""
         data = json.loads(self.golden_dataset_path.read_text(encoding="utf-8"))
@@ -141,7 +148,12 @@ class SystemEvaluatorV3:
         for p in self.golden_propositions:
             sig = tuple(
                 sorted(
-                    (r, sp["file_path"].replace("\\", "/"), sp["line_start"], sp["line_end"])
+                    (
+                        r,
+                        self._canonicalize_path(sp["file_path"]),
+                        sp["line_start"],
+                        sp["line_end"],
+                    )
                     for r, sp in p["evidence_spans"].items()
                 )
             )
@@ -437,19 +449,65 @@ class SystemEvaluatorV3:
 
         for fact, spans in candidate_items:
             key = fact.semantic_key()
+
+            # Attempt to resolve canonical paths for all role spans
+            canon_spans: dict[str, EvidenceSpan] = {}
+            path_error: str | None = None
+
+            for role_name, span in spans.items():
+                try:
+                    canon_file = self.support_index.bundle.resolve_canonical_file_path(
+                        span.file_path
+                    )
+                    canon_spans[role_name] = EvidenceSpan(
+                        canon_file, span.line_start, span.line_end
+                    )
+                except ValueError as ve:
+                    path_error = f"Ambiguous file alias in role '{role_name}': {ve}"
+                    canon_spans[role_name] = EvidenceSpan(
+                        span.file_path.replace("\\", "/"), span.line_start, span.line_end
+                    )
+                except KeyError as ke:
+                    path_error = f"Unknown file path in role '{role_name}': {ke}"
+                    canon_spans[role_name] = EvidenceSpan(
+                        span.file_path.replace("\\", "/"), span.line_start, span.line_end
+                    )
+
+            # Duplicate signature MUST be built from canonical span coordinates
             span_sig = f"{key}|" + "|".join(
-                f"{r}:{s.file_path}:{s.line_start}-{s.line_end}" for r, s in sorted(spans.items())
+                f"{r}:{s.file_path}:{s.line_start}-{s.line_end}"
+                for r, s in sorted(canon_spans.items())
             )
             is_dup = span_sig in seen_assertions
             if is_dup:
                 duplicate_count += 1
             seen_assertions.add(span_sig)
 
-            primary_span = next(iter(spans.values()))
+            primary_span = next(iter(canon_spans.values()))
+
+            # If alias was unknown or ambiguous, fail deterministically without crashing
+            if path_error is not None:
+                invalid_evidence_count += 1
+                unsupported_count += 1
+                evaluated_predictions.append(
+                    EvaluatedPrediction(
+                        fact_category=fact.fact_category,
+                        semantic_key=key,
+                        file_path=primary_span.file_path,
+                        line_start=primary_span.line_start,
+                        line_end=primary_span.line_end,
+                        is_supported=False,
+                        is_duplicate=is_dup,
+                        is_contradiction=False,
+                        rejection_reason=path_error,
+                        matched_proposition_id=None,
+                    )
+                )
+                continue
 
             # Verify coordinate bounds
             has_invalid_bounds = any(
-                s.line_start > s.line_end or s.line_start <= 0 for s in spans.values()
+                s.line_start > s.line_end or s.line_start <= 0 for s in canon_spans.values()
             )
             if has_invalid_bounds:
                 invalid_evidence_count += 1
@@ -470,9 +528,9 @@ class SystemEvaluatorV3:
                 )
                 continue
 
-            # Verify against support index
+            # Verify against support index using canonical spans
             is_supp, reason, matched_sf = self.support_index.verify_role_bound_assertion(
-                fact, spans
+                fact, canon_spans
             )
 
             if is_supp and matched_sf:
@@ -481,8 +539,7 @@ class SystemEvaluatorV3:
                 matched_id = matched_sf.proposition_id
                 cand_sig = tuple(
                     sorted(
-                        (r, s.file_path.replace("\\", "/"), s.line_start, s.line_end)
-                        for r, s in spans.items()
+                        (r, s.file_path, s.line_start, s.line_end) for r, s in canon_spans.items()
                     )
                 )
                 if (key, cand_sig) in self.golden_by_key_and_spans:

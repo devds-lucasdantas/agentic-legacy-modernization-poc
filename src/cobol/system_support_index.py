@@ -41,8 +41,11 @@ class SystemSupportIndex:
             self._facts_by_semantic_key.setdefault(key, []).append(sf)
 
             for span in sf.evidence_spans.values():
-                norm_path = span.file_path.replace("\\", "/")
-                self._facts_by_file.setdefault(norm_path, []).append(sf)
+                try:
+                    canon_path = self.bundle.resolve_canonical_file_path(span.file_path)
+                except (KeyError, ValueError):
+                    canon_path = span.file_path.replace("\\", "/")
+                self._facts_by_file.setdefault(canon_path, []).append(sf)
 
     @property
     def total_expected_facts(self) -> int:
@@ -59,16 +62,18 @@ class SystemSupportIndex:
 
     def get_facts_for_file(self, file_path: str) -> list[SupportedSystemFact]:
         """Return all supported facts grounded in the specified file."""
-        norm_path = file_path.replace("\\", "/")
-        return self._facts_by_file.get(norm_path, [])
+        try:
+            canon_path = self.bundle.resolve_canonical_file_path(file_path)
+        except (KeyError, ValueError):
+            return []
+        return self._facts_by_file.get(canon_path, [])
 
     def is_span_valid(self, file_path: str, line_start: int, line_end: int) -> bool:
         """Validate that physical line coordinates exist within the target file bounds."""
-        norm_path = file_path.replace("\\", "/")
         try:
-            target_file = self.bundle.get_file(norm_path)
+            target_file = self.bundle.get_file(file_path)
             return 1 <= line_start <= line_end <= target_file.line_count
-        except KeyError:
+        except (KeyError, ValueError):
             return False
 
     def verify_role_bound_assertion(
@@ -115,16 +120,16 @@ class SystemSupportIndex:
                     roles_match = False
                     break
 
-                # Normalize paths
-                expected_norm = expected_span.file_path.replace("\\", "/")
-                cand_norm = cand_span.file_path.replace("\\", "/")
+                try:
+                    expected_canon = self.bundle.resolve_canonical_file_path(
+                        expected_span.file_path
+                    )
+                    cand_canon = self.bundle.resolve_canonical_file_path(cand_span.file_path)
+                except (KeyError, ValueError):
+                    roles_match = False
+                    break
 
-                path_matches = (
-                    expected_norm == cand_norm
-                    or expected_norm.endswith("/" + cand_norm)
-                    or cand_norm.endswith("/" + expected_norm)
-                )
-                if not path_matches:
+                if expected_canon != cand_canon:
                     roles_match = False
                     break
 

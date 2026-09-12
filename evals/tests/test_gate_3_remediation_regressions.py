@@ -813,20 +813,20 @@ def test_child_spec_binding_regressions(tmp_path: Path, monkeypatch):
     # 1. Spec candidate C1 vs CLI candidate C2
     spec_with_c1 = {
         "gate": 3,
-        "spec_version": "3.4.1",
-        "schema_version": "3.4.1",
-        "prompt_version": "3.4.1",
-        "evaluator_version": "3.4.1",
-        "golden_dataset_version": "3.4.1",
+        "spec_version": "3.4.2",
+        "schema_version": "3.4.2",
+        "prompt_version": "3.4.2",
+        "evaluator_version": "3.4.2",
+        "golden_dataset_version": "3.4.2",
         "requested_model": "gpt-5-mini",
         "reasoning_effort": "high",
         "max_attempts": 1,
         "openai_client_max_retries": 0,
         "run_label": run_label,
         "candidate_git_sha": "sha_candidate_c1",
-        "prompt_sha256": "85b19f21c4de45f6fe1a6a219484f856b89bea21b595e04f19d8dc521f820483",
-        "wire_schema_sha256": "4129e91578e445a1fb8392728aef2406c73ec60dcdd60cf84dafb706917f6686",
-        "golden_dataset_sha256": "88592af941a35d73077f55d3e2a32dce6d4bd18364acd9d792dd9005c7f97149",
+        "prompt_sha256": "16bd9121c57d718e733bd230b45fc06f9b9068531af97e81ec31b015e2bec498",
+        "wire_schema_sha256": "5e8b024d1b28bc1c209b22517f62050d6caf5e7dc7aa21570e3a9bbc2a27b2d5",
+        "golden_dataset_sha256": "b226fd7b36f6be67355500587371252eacd31b4cdf88e378628e5b5d894946ac",
         "bundle_manifest_sha256": (
             "9bfa5f67aeb10e408ecbbcf8f0f0ff82894ae4a896d93f773489fe0d2c0b021d"
         ),
@@ -996,7 +996,7 @@ def test_terminal_failure_evidence_preservation(tmp_path: Path):
 
     spec = {
         "gate": 3,
-        "spec_version": "3.4.1",
+        "spec_version": "3.4.2",
         "run_label": "fail-test-run",
     }
     raw_content = {"id": "resp_test_123", "model": "gpt-5-mini", "output": []}
@@ -1170,7 +1170,8 @@ def test_risk_ontology_wire_schema_deterministic():
     wire_json = json.dumps(wire)
 
     # 1. Enum constraints are present in wire schema properties
-    defs = wire["json_schema"]["schema"].get("$defs", {})
+    schema = wire.get("schema") or wire["json_schema"]["schema"]
+    defs = schema.get("$defs", {})
     br = defs.get("BehavioralRisk", {})
     props = br.get("properties", {})
 
@@ -1293,11 +1294,11 @@ def _execute_child_failure_scenario(
 
     spec = {
         "gate": 3,
-        "spec_version": "3.4.1",
-        "schema_version": "3.4.1",
-        "prompt_version": "3.4.1",
-        "evaluator_version": "3.4.1",
-        "golden_dataset_version": "3.4.1",
+        "spec_version": "3.4.2",
+        "schema_version": "3.4.2",
+        "prompt_version": "3.4.2",
+        "evaluator_version": "3.4.2",
+        "golden_dataset_version": "3.4.2",
         "requested_model": "gpt-5-mini",
         "reasoning_effort": "low",
         "max_attempts": 1,
@@ -1305,8 +1306,8 @@ def _execute_child_failure_scenario(
         "openai_client_max_retries": 0,
         "run_label": run_label,
         "candidate_git_sha": "sha_cand_h4",
-        "prompt_sha256": "85b19f21c4de45f6fe1a6a219484f856b89bea21b595e04f19d8dc521f820483",
-        "wire_schema_sha256": "4129e91578e445a1fb8392728aef2406c73ec60dcdd60cf84dafb706917f6686",
+        "prompt_sha256": "16bd9121c57d718e733bd230b45fc06f9b9068531af97e81ec31b015e2bec498",
+        "wire_schema_sha256": "5e8b024d1b28bc1c209b22517f62050d6caf5e7dc7aa21570e3a9bbc2a27b2d5",
         "golden_dataset_sha256": golden_sha,
         "bundle_sha256": "fake_bundle_sha",
         "bundle_manifest_sha256": "fake_manifest_sha",

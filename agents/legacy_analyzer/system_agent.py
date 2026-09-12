@@ -31,7 +31,7 @@ from agents.legacy_analyzer.schemas.system_assessment import (
 from src.cobol.multi_source_reader import MultiSourceBundle, read_system_bundle
 from src.validation.evaluator_v3 import EVALUATOR_VERSION
 
-PROMPT_VERSION: str = "3.4.1"
+PROMPT_VERSION: str = "3.4.2"
 
 ReasoningEffort = Literal[
     "none",
@@ -153,7 +153,9 @@ class SystemAnalyzerAgent:
         """
         import json
 
-        from agents.legacy_analyzer.schemas.system_export import get_system_openai_wire_schema
+        from agents.legacy_analyzer.schemas.system_export import (
+            get_system_responses_text_format,
+        )
 
         repo_dir = repo_root or Path.cwd()
         effective_bundle = bundle or read_system_bundle(repo_dir)
@@ -171,7 +173,7 @@ class SystemAnalyzerAgent:
 
         user_input = self.format_bundle_prompt(effective_bundle)
         openai_client = self._get_openai_client()
-        wire_schema = get_system_openai_wire_schema()
+        responses_format = get_system_responses_text_format()
 
         start_time = time.time()
         reasoning: Reasoning = {"effort": self.reasoning_effort}
@@ -180,7 +182,7 @@ class SystemAnalyzerAgent:
             model=self.config.foundry_model,
             instructions=self.system_prompt,
             input=user_input,
-            text={"format": wire_schema},
+            text={"format": responses_format},
             reasoning=reasoning,
         )
 

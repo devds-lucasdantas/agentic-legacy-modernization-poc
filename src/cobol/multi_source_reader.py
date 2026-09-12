@@ -68,15 +68,37 @@ class MultiSourceBundle:
     bundle_sha256: str
     formatted_prompt_payload: str
 
+    def resolve_canonical_file_path(self, path: str) -> str:
+        """Resolve a caller-provided path or alias to a unique canonical bundle path.
+
+        Rules:
+        - normalize backslashes to "/";
+        - strip leading/trailing whitespace;
+        - exact repository-relative path -> itself (if present in self.files);
+        - an accepted basename alias -> resolve to its unique canonical bundle path;
+        - ambiguous basename -> reject with ValueError;
+        - unknown path -> reject with KeyError.
+        """
+        if not path or not isinstance(path, str):
+            raise KeyError(f"Invalid path argument: {path!r}")
+        norm_path = path.replace("\\", "/").strip()
+        if norm_path in self.files:
+            return norm_path
+
+        base = Path(norm_path).name
+        matches = [k for k in self.files if k.endswith("/" + base) or Path(k).name == base]
+        if len(matches) == 1:
+            return matches[0]
+        elif len(matches) > 1:
+            raise ValueError(
+                f"Ambiguous file alias '{path}' matches multiple bundle files: {sorted(matches)}"
+            )
+        raise KeyError(f"File path '{path}' not found in bundle: {sorted(self.files.keys())}")
+
     def get_file(self, relative_path: str) -> TargetFile:
         """Retrieve target file by exact relative path or basename."""
-        norm_path = relative_path.replace("\\", "/")
-        if norm_path in self.files:
-            return self.files[norm_path]
-        for path, target_file in self.files.items():
-            if path.endswith("/" + norm_path) or Path(path).name == norm_path:
-                return target_file
-        raise KeyError(f"File '{relative_path}' not found in bundle: {sorted(self.files.keys())}")
+        canon_path = self.resolve_canonical_file_path(relative_path)
+        return self.files[canon_path]
 
 
 def format_numbered_source(raw_content: str) -> str:

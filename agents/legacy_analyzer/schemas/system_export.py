@@ -14,11 +14,23 @@ def get_system_assessment_json_schema() -> dict[str, Any]:
     return SystemAssessment.model_json_schema()
 
 
-def get_system_openai_wire_schema() -> dict[str, Any]:
-    """Return the exact OpenAI 3.8.0 transformed wire schema for Structured Outputs."""
+def get_system_responses_text_format() -> dict[str, Any]:
+    """Return the exact OpenAI Responses API text.format configuration for SystemAssessment."""
     from openai.lib._parsing import type_to_response_format_param
 
-    return cast(dict[str, Any], type_to_response_format_param(SystemAssessment))
+    chat_format = cast(dict[str, Any], type_to_response_format_param(SystemAssessment))
+    js = chat_format["json_schema"]
+    return {
+        "type": "json_schema",
+        "name": js["name"],
+        "strict": js.get("strict", True),
+        "schema": js["schema"],
+    }
+
+
+def get_system_openai_wire_schema() -> dict[str, Any]:
+    """Return the exact OpenAI Responses API wire schema for Structured Outputs."""
+    return get_system_responses_text_format()
 
 
 def export_system_schema_to_file(destination_path: Path | str) -> Path:

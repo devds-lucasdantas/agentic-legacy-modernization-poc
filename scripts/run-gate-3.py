@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Gate 3 — Multi-File System Analysis Runner (Version 3.4.1)
+"""Gate 3 — Multi-File System Analysis Runner (Version 3.4.2)
 
 Executes multi-file system analysis across all six files of the core banking
 system bundle using structured schemas, Responses API Structured Outputs,
@@ -22,7 +22,7 @@ Enforces:
 11. Host-owned Python runtime provenance persistence in run-metadata.json.
 12. Exact single-attempt execution contract: openai_client_max_retries=0, max_attempts=1.
 13. Safe offline synthetic / dry-run mode guaranteeing zero model calls when requested.
-14. Deterministic evaluation using SystemEvaluatorV3 and Golden Dataset V3.4 (60 units).
+14. Deterministic evaluation using SystemEvaluatorV3 and Golden Dataset V3.4 (59 units).
 15. Two-layer state model: mutable reservation coordination file (reservation-state.json)
     separated from immutable terminal execution record (terminal-result.json).
 16. Raw provider boundary: raw response serialized and persisted before
@@ -37,6 +37,7 @@ Exit codes:
 from __future__ import annotations
 
 import argparse
+import errno
 import hashlib
 import importlib.metadata
 import json
@@ -53,11 +54,11 @@ from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
-SPEC_VERSION = "3.4.1"
-SCHEMA_VERSION = "3.4.1"
-PROMPT_VERSION = "3.4.1"
-EVALUATOR_VERSION = "3.4.1"
-GOLDEN_DATASET_VERSION = "3.4.1"
+SPEC_VERSION = "3.4.2"
+SCHEMA_VERSION = "3.4.2"
+PROMPT_VERSION = "3.4.2"
+EVALUATOR_VERSION = "3.4.2"
+GOLDEN_DATASET_VERSION = "3.4.2"
 
 SAFE_RUN_LABEL_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 HEX_64_PATTERN = re.compile(r"^[0-9a-f]{64}$")
@@ -76,6 +77,97 @@ DEFAULT_AUTH_SPEC_PATH = CANONICAL_BASELINE_SPEC
 DEFAULT_GOLDEN_PATH = "evals/expected/system-understanding-v3.json"
 RESERVATION_STATE_FILE = "reservation-state.json"
 TERMINAL_RESULT_FILE = "terminal-result.json"
+ATTEMPT_CLAIM_FILE = "attempt-claim.json"
+
+
+class AttemptClaimCollisionError(RuntimeError):
+    """Raised when an attempt claim file already exists, indicating attempt consumed."""
+
+
+def acquire_atomic_attempt_claim(
+    artifact_dir: Path,
+    gate: int,
+    run_label: str,
+    candidate_sha: str,
+    authorization_commit_sha: str,
+) -> None:
+    """Acquire the irrevocable, existence-based atomic attempt claim file.
+
+    Uses os.open with O_CREAT | O_EXCL to ensure exactly-once claim creation.
+    Once creation succeeds, the attempt is permanently consumed.
+    If acquisition fails with EEXIST, raises AttemptClaimCollisionError without
+    modifying shared state.
+    """
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    claim_path = artifact_dir / ATTEMPT_CLAIM_FILE
+
+    claim_payload = json.dumps(
+        {
+            "gate": gate,
+            "run_label": run_label,
+            "candidate_git_sha": candidate_sha,
+            "authorization_commit_sha": authorization_commit_sha,
+            "pid": os.getpid(),
+            "timestamp": datetime.now(UTC).isoformat(),
+        },
+        indent=2,
+        sort_keys=True,
+    ).encode("utf-8")
+
+    flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+
+    try:
+        fd = os.open(str(claim_path), flags, 0o600)
+    except FileExistsError:
+        raise AttemptClaimCollisionError(
+            f"Attempt claim file '{claim_path}' already exists. Attempt is permanently consumed."
+        )
+    except OSError as e:
+        if e.errno == errno.EEXIST:
+            raise AttemptClaimCollisionError(
+                f"Attempt claim file '{claim_path}' already exists. "
+                "Attempt is permanently consumed."
+            )
+        raise
+
+    # File descriptor is exclusively acquired; attempt is now consumed.
+    # Write payload, fsync, and close. If this fails, leave file in place.
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(claim_payload)
+            f.flush()
+            os.fsync(f.fileno())
+    except Exception as write_err:
+        # DO NOT unlink or retry. Attempt remains permanently consumed.
+        raise RuntimeError(
+            f"Failed to write attempt claim payload to '{claim_path}' "
+            f"after exclusive creation: {write_err}. "
+            "Claim remains permanently consumed; live model invocation is forbidden."
+        ) from write_err
+
+
+def safe_preserve_artifact(
+    artifact_path: Path,
+    data: Any,
+    is_json: bool = True,
+    failures: list[dict[str, str]] | None = None,
+) -> bool:
+    """Best-effort artifact write that records failures instead of crashing."""
+    try:
+        if is_json:
+            atomic_write_json(artifact_path, data)
+        else:
+            artifact_path.parent.mkdir(parents=True, exist_ok=True)
+            temp_file = artifact_path.with_suffix(f".tmp.{os.getpid()}")
+            temp_file.write_text(str(data), encoding="utf-8")
+            temp_file.replace(artifact_path)
+        return True
+    except Exception as e:
+        if failures is not None:
+            failures.append({"file": artifact_path.name, "error": str(e)})
+        return False
 
 
 def get_sanitized_git_env() -> dict[str, str]:
@@ -381,6 +473,9 @@ def verify_snapshot_against_git_objects(
         obj_id = obj_id_bytes.decode("ascii")
         rel_path = path_bytes.decode("utf-8", errors="replace")
 
+        if mode == "120000":
+            raise RuntimeError(f"Unauthorized symlink in Git tree: '{rel_path}'")
+
         if mode not in ("100644", "100755") or typ != "blob":
             continue
 
@@ -405,6 +500,50 @@ def verify_snapshot_against_git_objects(
             raise RuntimeError(
                 f"Snapshot file '{rel_path}' does not match committed Git object bytes!"
             )
+
+    # Recursively inspect snapshot_dir; walk must not follow symlinks
+    actual_files: set[str] = set()
+    for root, dirs, files in os.walk(str(snapshot_dir), followlinks=False):
+        root_path = Path(root)
+        for d in dirs:
+            dir_path = root_path / d
+            if dir_path.is_symlink():
+                rel_dir = dir_path.relative_to(snapshot_dir)
+                raise RuntimeError(f"Unauthorized symlink directory in snapshot: {rel_dir}")
+        for f in files:
+            file_path = root_path / f
+            rel = file_path.relative_to(snapshot_dir).as_posix()
+            if file_path.is_symlink():
+                raise RuntimeError(f"Unauthorized symlink in snapshot: {rel}")
+            if not file_path.is_file():
+                raise RuntimeError(f"Unauthorized special non-regular file in snapshot: {rel}")
+            actual_files.add(rel)
+
+    # For official execution: actual authorized regular files == committed regular files
+    extra_files = actual_files - expected_files
+    if extra_files:
+        sorted_extras = sorted(extra_files)
+        for extra in sorted_extras:
+            base = Path(extra).name
+            if base == "__init__.py":
+                raise RuntimeError(
+                    f"Unauthorized extra Python package initializer in snapshot: '{extra}'"
+                )
+            if base in ("sitecustomize.py", "usercustomize.py"):
+                raise RuntimeError(
+                    f"Unauthorized Python customization module in snapshot: '{extra}'"
+                )
+            if base.endswith(".pth"):
+                raise RuntimeError(f"Unauthorized Python .pth file in snapshot: '{extra}'")
+            if base.endswith((".py", ".pyc", ".pyo", ".pyd")):
+                raise RuntimeError(f"Unauthorized importable Python module in snapshot: '{extra}'")
+            if base.endswith((".sh", ".exe", ".bat", ".cmd", ".bin")):
+                raise RuntimeError(f"Unauthorized executable file in snapshot: '{extra}'")
+        raise RuntimeError(f"Unauthorized extra regular file(s) in snapshot: {sorted_extras}")
+
+    missing_files = expected_files - actual_files
+    if missing_files:
+        raise RuntimeError(f"Committed file(s) missing from snapshot: {sorted(missing_files)}")
 
     return expected_files
 
@@ -789,7 +928,15 @@ def atomic_write_json(destination: Path, data: Any) -> None:
 
 
 def check_existing_reservation(out_dir: Path, run_label: str) -> None:
-    """Check both reservation-state.json and run-state.json for irrevocable reservations."""
+    """Check attempt-claim.json, reservation-state.json, and run-state.json for reservations."""
+    claim_path = out_dir / ATTEMPT_CLAIM_FILE
+    if claim_path.exists():
+        raise RuntimeError(
+            f"Irrevocable reservation error: Attempt claim file '{claim_path}' already exists. "
+            f"Run label '{run_label}' in '{out_dir}' has consumed its attempt. "
+            "Re-entry is strictly refused."
+        )
+
     state_candidates = [
         out_dir / RESERVATION_STATE_FILE,
         out_dir / "run-state.json",
@@ -978,56 +1125,77 @@ def finalize_post_model_failure(
     Preserves all obtainable immutable evidence artifacts, writes terminal-result.json with
     status=FAILED, generates manifest.json over preserved immutable artifacts, and finally
     transitions reservation-state.json to FAILED.
+    Never propagates ordinary artifact-specific I/O failures.
     """
-    artifact_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        artifact_dir.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass
+
     error_type = type(error).__name__ if isinstance(error, Exception) else "Error"
     error_message = str(error)
     response_id = getattr(metadata, "response_id", None) if metadata else None
     response_model_id = getattr(metadata, "response_model_id", None) if metadata else None
 
+    failures: list[dict[str, str]] = []
+
     # 1. raw-response.json
     raw_resp_path = artifact_dir / "raw-response.json"
     if not raw_resp_path.exists() and raw_response_content is not None:
         if isinstance(raw_response_content, (dict, list)):
-            atomic_write_json(raw_resp_path, raw_response_content)
+            safe_preserve_artifact(
+                raw_resp_path, raw_response_content, is_json=True, failures=failures
+            )
         else:
             try:
                 parsed_raw = json.loads(raw_response_content)
-                atomic_write_json(raw_resp_path, parsed_raw)
+                safe_preserve_artifact(raw_resp_path, parsed_raw, is_json=True, failures=failures)
             except Exception:
-                raw_resp_path.write_text(str(raw_response_content), encoding="utf-8")
+                safe_preserve_artifact(
+                    raw_resp_path, str(raw_response_content), is_json=False, failures=failures
+                )
 
     # 2. run-metadata.json
     run_meta_path = artifact_dir / "run-metadata.json"
     if not run_meta_path.exists() and metadata is not None:
-        meta_dict = metadata.to_dict() if hasattr(metadata, "to_dict") else dict(metadata)
-        meta_dict["candidate_git_sha"] = candidate_sha
-        meta_dict["authorization_commit_sha"] = authorization_commit_sha
-        meta_dict["git_commit_sha"] = authorized_sha
-        atomic_write_json(run_meta_path, meta_dict)
+        try:
+            meta_dict = metadata.to_dict() if hasattr(metadata, "to_dict") else dict(metadata)
+            meta_dict["candidate_git_sha"] = candidate_sha
+            meta_dict["authorization_commit_sha"] = authorization_commit_sha
+            meta_dict["git_commit_sha"] = authorized_sha
+            safe_preserve_artifact(run_meta_path, meta_dict, is_json=True, failures=failures)
+        except Exception as e:
+            failures.append({"file": "run-metadata.json", "error": str(e)})
 
     # 3. model-assessment.json (if parsing succeeded)
     if assessment is not None and not (artifact_dir / "model-assessment.json").exists():
         try:
             dump = assessment.model_dump() if hasattr(assessment, "model_dump") else assessment
-            atomic_write_json(artifact_dir / "model-assessment.json", dump)
-        except Exception:
-            pass
+            safe_preserve_artifact(
+                artifact_dir / "model-assessment.json", dump, is_json=True, failures=failures
+            )
+        except Exception as e:
+            failures.append({"file": "model-assessment.json", "error": str(e)})
 
     # 4. authorization-spec.json
     if spec is not None and not (artifact_dir / "authorization-spec.json").exists():
-        atomic_write_json(artifact_dir / "authorization-spec.json", spec)
+        safe_preserve_artifact(
+            artifact_dir / "authorization-spec.json", spec, is_json=True, failures=failures
+        )
 
     # 5. production-prompt.md
     if not (artifact_dir / "production-prompt.md").exists():
         try:
             from agents.legacy_analyzer.system_agent import load_system_v3_prompt
 
-            (artifact_dir / "production-prompt.md").write_text(
-                load_system_v3_prompt(), encoding="utf-8"
+            safe_preserve_artifact(
+                artifact_dir / "production-prompt.md",
+                load_system_v3_prompt(),
+                is_json=False,
+                failures=failures,
             )
-        except Exception:
-            pass
+        except Exception as e:
+            failures.append({"file": "production-prompt.md", "error": str(e)})
 
     # 6. wire-schema.json
     if not (artifact_dir / "wire-schema.json").exists():
@@ -1036,43 +1204,70 @@ def finalize_post_model_failure(
                 get_system_openai_wire_schema,
             )
 
-            atomic_write_json(artifact_dir / "wire-schema.json", get_system_openai_wire_schema())
-        except Exception:
-            pass
+            safe_preserve_artifact(
+                artifact_dir / "wire-schema.json",
+                get_system_openai_wire_schema(),
+                is_json=True,
+                failures=failures,
+            )
+        except Exception as e:
+            failures.append({"file": "wire-schema.json", "error": str(e)})
 
     # 7. source-manifest.json & canonical-input-bundle.txt
     if bundle is not None:
         if not (artifact_dir / "source-manifest.json").exists():
-            source_manifest = {
-                rel_path: {
-                    "size": len(f.raw_content.encode("utf-8")),
-                    "lines": f.line_count,
-                    "sha256": f.sha256,
+            try:
+                source_manifest = {
+                    rel_path: {
+                        "size": len(f.raw_content.encode("utf-8")),
+                        "lines": f.line_count,
+                        "sha256": f.sha256,
+                    }
+                    for rel_path, f in bundle.files.items()
                 }
-                for rel_path, f in bundle.files.items()
-            }
-            atomic_write_json(artifact_dir / "source-manifest.json", source_manifest)
+                safe_preserve_artifact(
+                    artifact_dir / "source-manifest.json",
+                    source_manifest,
+                    is_json=True,
+                    failures=failures,
+                )
+            except Exception as e:
+                failures.append({"file": "source-manifest.json", "error": str(e)})
         if not (artifact_dir / "canonical-input-bundle.txt").exists():
-            (artifact_dir / "canonical-input-bundle.txt").write_text(
-                bundle.formatted_prompt_payload, encoding="utf-8"
-            )
+            try:
+                safe_preserve_artifact(
+                    artifact_dir / "canonical-input-bundle.txt",
+                    bundle.formatted_prompt_payload,
+                    is_json=False,
+                    failures=failures,
+                )
+            except Exception as e:
+                failures.append({"file": "canonical-input-bundle.txt", "error": str(e)})
 
     # 8. parser-coverage-certificate.json
     if parser is not None and not (artifact_dir / "parser-coverage-certificate.json").exists():
         try:
             coverage_cert = parser.get_parser_coverage_certificate()
-            atomic_write_json(
-                artifact_dir / "parser-coverage-certificate.json", coverage_cert.to_dict()
+            safe_preserve_artifact(
+                artifact_dir / "parser-coverage-certificate.json",
+                coverage_cert.to_dict(),
+                is_json=True,
+                failures=failures,
             )
-        except Exception:
-            pass
+        except Exception as e:
+            failures.append({"file": "parser-coverage-certificate.json", "error": str(e)})
 
     # 9. runtime-manifest.json
     if runtime_manifest is not None and not (artifact_dir / "runtime-manifest.json").exists():
-        atomic_write_json(artifact_dir / "runtime-manifest.json", runtime_manifest)
+        safe_preserve_artifact(
+            artifact_dir / "runtime-manifest.json",
+            runtime_manifest,
+            is_json=True,
+            failures=failures,
+        )
 
     # 10. terminal-result.json (immutable failure outcome, written before manifest)
-    terminal_result = {
+    terminal_result: dict[str, Any] = {
         "gate": 3,
         "run_label": run_label,
         "status": "FAILED",
@@ -1086,23 +1281,35 @@ def finalize_post_model_failure(
         "response_model_id": response_model_id,
         "timestamp": datetime.now(UTC).isoformat(),
     }
-    atomic_write_json(artifact_dir / TERMINAL_RESULT_FILE, terminal_result)
+    if failures:
+        terminal_result["artifact_write_failures"] = list(failures)
+    safe_preserve_artifact(
+        artifact_dir / TERMINAL_RESULT_FILE,
+        terminal_result,
+        is_json=True,
+        failures=failures,
+    )
 
     # 11. manifest.json (written LAST of immutable set)
     excluded_from_manifest = {
         "manifest.json",
         RESERVATION_STATE_FILE,
         "run-state.json",
+        ATTEMPT_CLAIM_FILE,
+        "coordination-failure.json",
     }
     manifest_shas: dict[str, str] = {}
-    for fname in sorted(os.listdir(artifact_dir)):
-        if fname in excluded_from_manifest or fname.endswith(".tmp") or ".tmp." in fname:
-            continue
-        fpath = artifact_dir / fname
-        if fpath.is_file():
-            manifest_shas[fname] = hashlib.sha256(fpath.read_bytes()).hexdigest()
+    try:
+        for fname in sorted(os.listdir(artifact_dir)):
+            if fname in excluded_from_manifest or fname.endswith(".tmp") or ".tmp." in fname:
+                continue
+            fpath = artifact_dir / fname
+            if fpath.is_file():
+                manifest_shas[fname] = hashlib.sha256(fpath.read_bytes()).hexdigest()
+    except Exception as e:
+        failures.append({"file": "manifest_scan", "error": str(e)})
 
-    manifest = {
+    manifest: dict[str, Any] = {
         "gate": 3,
         "run_label": run_label,
         "status": "FAILED",
@@ -1113,10 +1320,12 @@ def finalize_post_model_failure(
         "gate_3_pass": False,
         "artifacts": manifest_shas,
     }
-    atomic_write_json(artifact_dir / "manifest.json", manifest)
+    safe_preserve_artifact(
+        artifact_dir / "manifest.json", manifest, is_json=True, failures=failures
+    )
 
     # 12. Only AFTER the failure evidence set is finalized: reservation-state.json -> FAILED
-    atomic_write_json(
+    safe_preserve_artifact(
         reservation_file,
         {
             "status": "FAILED",
@@ -1132,6 +1341,8 @@ def finalize_post_model_failure(
             "response_id": response_id,
             "response_model_id": response_model_id,
         },
+        is_json=True,
+        failures=failures,
     )
 
 
@@ -1599,7 +1810,27 @@ def execute_internal_child(args: argparse.Namespace) -> int:
             )
             return 1
 
-        # Preflight passed: persist MODEL_INVOCATION state
+        # Attempt claim acquisition: existence-based and irrevocable
+        try:
+            acquire_atomic_attempt_claim(
+                artifact_dir=artifact_dir,
+                gate=3,
+                run_label=run_label,
+                candidate_sha=candidate_sha,
+                authorization_commit_sha=authorization_commit_sha,
+            )
+        except AttemptClaimCollisionError as collision_err:
+            print(f"ERROR: Irrevocable attempt claim collision: {collision_err}", file=sys.stderr)
+            # Losing child exits before provider access.
+            # Losing child MUST NOT transition the shared reservation to FAILED.
+            return 1
+        except Exception as claim_err:
+            print(f"ERROR: Attempt claim acquisition failed: {claim_err}", file=sys.stderr)
+            # If creation succeeded but writing failed, attempt claim file exists;
+            # attempt remains permanently consumed. Do NOT invoke provider.
+            return 1
+
+        # Preflight and claim passed: persist MODEL_INVOCATION state
         atomic_write_json(
             reservation_file,
             {
@@ -1641,41 +1872,40 @@ def execute_internal_child(args: argparse.Namespace) -> int:
             )
             return 1
 
-        # IMMEDIATELY serialize and durably persist raw provider response on disk
         raw_response_content = raw_response_text
         try:
-            raw_obj = json.loads(raw_response_text)
-            atomic_write_json(artifact_dir / "raw-response.json", raw_obj)
-        except Exception:
-            (artifact_dir / "raw-response.json").write_text(raw_response_text, encoding="utf-8")
+            # IMMEDIATELY serialize and durably persist raw provider response on disk
+            try:
+                raw_obj = json.loads(raw_response_text)
+                atomic_write_json(artifact_dir / "raw-response.json", raw_obj)
+            except Exception:
+                (artifact_dir / "raw-response.json").write_text(raw_response_text, encoding="utf-8")
 
-        metadata_dict = metadata.to_dict()
-        metadata_dict["auth_spec_sha256"] = spec_sha
-        metadata_dict["bundle_sha256"] = spec["bundle_sha256"]
-        metadata_dict["runtime_manifest_sha256"] = runtime_manifest_sha
-        metadata_dict["candidate_git_sha"] = candidate_sha
-        metadata_dict["authorization_commit_sha"] = authorization_commit_sha
-        atomic_write_json(artifact_dir / "run-metadata.json", metadata_dict)
+            metadata_dict = metadata.to_dict()
+            metadata_dict["auth_spec_sha256"] = spec_sha
+            metadata_dict["bundle_sha256"] = spec["bundle_sha256"]
+            metadata_dict["runtime_manifest_sha256"] = runtime_manifest_sha
+            metadata_dict["candidate_git_sha"] = candidate_sha
+            metadata_dict["authorization_commit_sha"] = authorization_commit_sha
+            atomic_write_json(artifact_dir / "run-metadata.json", metadata_dict)
 
-        # Transition to POST_MODEL_RESPONSE
-        atomic_write_json(
-            reservation_file,
-            {
-                "status": "POST_MODEL_RESPONSE",
-                "run_label": run_label,
-                "gate": 3,
-                "timestamp": datetime.now(UTC).isoformat(),
-                "candidate_git_sha": candidate_sha,
-                "authorization_commit_sha": authorization_commit_sha,
-                "git_commit_sha": authorized_sha,
-                "response_id": metadata.response_id,
-                "response_model_id": metadata.response_model_id,
-            },
-        )
+            # Transition to POST_MODEL_RESPONSE
+            atomic_write_json(
+                reservation_file,
+                {
+                    "status": "POST_MODEL_RESPONSE",
+                    "run_label": run_label,
+                    "gate": 3,
+                    "timestamp": datetime.now(UTC).isoformat(),
+                    "candidate_git_sha": candidate_sha,
+                    "authorization_commit_sha": authorization_commit_sha,
+                    "git_commit_sha": authorized_sha,
+                    "response_id": metadata.response_id,
+                    "response_model_id": metadata.response_model_id,
+                },
+            )
 
-        # Post-call validation: status, refusal, exact model equality, Pydantic parsing
-        assessment = None
-        try:
+            # Post-call validation: status, refusal, exact model equality, Pydantic parsing
             assessment = agent.validate_and_parse_response(
                 response=response,
                 metadata=metadata,
@@ -1688,9 +1918,9 @@ def execute_internal_child(args: argparse.Namespace) -> int:
             metadata_dict["candidate_git_sha"] = candidate_sha
             metadata_dict["authorization_commit_sha"] = authorization_commit_sha
         except Exception as e:
-            print(f"ERROR: Post-invocation response validation failed: {e}", file=sys.stderr)
+            print(f"ERROR: Post-invocation response processing failed: {e}", file=sys.stderr)
             err_str = str(e)
-            err_phase = "RESPONSE_VALIDATION"
+            err_phase = "RESPONSE_PROCESSING"
             if "status=" in err_str:
                 err_phase = "RESPONSE_STATUS"
             elif (
@@ -1728,6 +1958,7 @@ def execute_internal_child(args: argparse.Namespace) -> int:
 
     # Deterministic evaluation using SystemEvaluatorV3
     assert assessment is not None
+    eval_result = None
     try:
         parser = SystemCobolParser(bundle)
         facts = parser.get_supported_facts()
@@ -1736,28 +1967,7 @@ def execute_internal_child(args: argparse.Namespace) -> int:
         )
         evaluator = SystemEvaluatorV3(index, golden_dataset_path=golden_file)
         eval_result, predictions = evaluator.evaluate_assessment(assessment)
-    except Exception as e:
-        print(f"ERROR: Evaluator execution failed: {e}", file=sys.stderr)
-        finalize_post_model_failure(
-            artifact_dir=artifact_dir,
-            reservation_file=reservation_file,
-            error_phase="EVALUATOR",
-            error=e,
-            spec=spec,
-            candidate_sha=candidate_sha,
-            authorization_commit_sha=authorization_commit_sha,
-            authorized_sha=authorized_sha,
-            run_label=run_label,
-            bundle=bundle,
-            parser=parser,
-            runtime_manifest=runtime_manifest,
-            metadata=metadata if not args.synthetic else None,
-            assessment=assessment,
-            raw_response_content=raw_response_content,
-        )
-        return 1
 
-    try:
         # Transition to FINALIZING
         atomic_write_json(
             reservation_file,
@@ -1865,6 +2075,8 @@ def execute_internal_child(args: argparse.Namespace) -> int:
             "manifest.json",
             RESERVATION_STATE_FILE,
             "run-state.json",
+            ATTEMPT_CLAIM_FILE,
+            "coordination-failure.json",
         }
         manifest_shas: dict[str, str] = {}
         for fname in sorted(os.listdir(artifact_dir)):
@@ -1889,27 +2101,14 @@ def execute_internal_child(args: argparse.Namespace) -> int:
             "artifacts": manifest_shas,
         }
         atomic_write_json(artifact_dir / "manifest.json", manifest)
-
-        # Finally: transition mutable reservation file to COMPLETED
-        atomic_write_json(
-            reservation_file,
-            {
-                "status": "COMPLETED",
-                "gate_3_pass": eval_result.gate_3_pass,
-                "run_label": run_label,
-                "gate": 3,
-                "timestamp": datetime.now(UTC).isoformat(),
-                "candidate_git_sha": candidate_sha,
-                "authorization_commit_sha": authorization_commit_sha,
-                "git_commit_sha": authorized_sha,
-            },
-        )
+        sealed = True
     except Exception as e:
-        print(f"ERROR: Final artifact generation failed: {e}", file=sys.stderr)
+        err_phase = "EVALUATOR" if eval_result is None else "ARTIFACT_GENERATION"
+        print(f"ERROR: Pre-seal execution failed ({err_phase}): {e}", file=sys.stderr)
         finalize_post_model_failure(
             artifact_dir=artifact_dir,
             reservation_file=reservation_file,
-            error_phase="ARTIFACT_GENERATION",
+            error_phase=err_phase,
             error=e,
             spec=spec,
             candidate_sha=candidate_sha,
@@ -1923,6 +2122,41 @@ def execute_internal_child(args: argparse.Namespace) -> int:
             assessment=assessment,
             raw_response_content=raw_response_content,
         )
+        return 1
+
+    # Post-sealing mutable coordination transition
+    # sealed == True: Never call finalize_post_model_failure() after manifest is published.
+    assert sealed, "Manifest must be sealed before post-seal coordination."
+    try:
+        atomic_write_json(
+            reservation_file,
+            {
+                "status": "COMPLETED",
+                "gate_3_pass": eval_result.gate_3_pass,
+                "run_label": run_label,
+                "gate": 3,
+                "timestamp": datetime.now(UTC).isoformat(),
+                "candidate_git_sha": candidate_sha,
+                "authorization_commit_sha": authorization_commit_sha,
+                "git_commit_sha": authorized_sha,
+            },
+        )
+    except Exception as coord_err:
+        print(
+            f"ERROR: Post-seal coordination state update failed: {coord_err}",
+            file=sys.stderr,
+        )
+        try:
+            atomic_write_json(
+                artifact_dir / "coordination-failure.json",
+                {
+                    "error": str(coord_err),
+                    "timestamp": datetime.now(UTC).isoformat(),
+                    "status": "POST_SEAL_COORDINATION_FAILURE",
+                },
+            )
+        except Exception:
+            pass
         return 1
 
     print(
