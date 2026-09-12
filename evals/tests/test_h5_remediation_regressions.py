@@ -347,7 +347,7 @@ def test_h5_finalize_post_model_failure_never_crashes(
 
     spec = {
         "gate": 3,
-        "spec_version": "3.4.2",
+        "spec_version": "3.4.3",
         "run_label": "test-failure-absorption",
     }
 

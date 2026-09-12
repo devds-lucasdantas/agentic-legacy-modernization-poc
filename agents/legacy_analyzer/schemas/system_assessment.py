@@ -11,7 +11,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-SCHEMA_VERSION: str = "3.4.2"
+SCHEMA_VERSION: str = "3.4.3"
 
 RiskCategory = Literal[
     "IO_ERROR_HANDLING",

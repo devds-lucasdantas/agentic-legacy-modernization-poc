@@ -75,7 +75,8 @@ class MultiSourceBundle:
         - normalize backslashes to "/";
         - strip leading/trailing whitespace;
         - exact repository-relative path -> itself (if present in self.files);
-        - an accepted basename alias -> resolve to its unique canonical bundle path;
+        - if path contains "/" and is not an exact match -> reject with KeyError;
+        - pure basename (no directory separators) -> resolve to its unique canonical bundle path;
         - ambiguous basename -> reject with ValueError;
         - unknown path -> reject with KeyError.
         """
@@ -85,8 +86,15 @@ class MultiSourceBundle:
         if norm_path in self.files:
             return norm_path
 
-        base = Path(norm_path).name
-        matches = [k for k in self.files if k.endswith("/" + base) or Path(k).name == base]
+        # Frozen contract permits ONLY exact canonical path or pure basename
+        if "/" in norm_path:
+            raise KeyError(
+                f"Path '{path}' contains directory separators "
+                "but is not an exact canonical bundle path."
+            )
+
+        # Pure basename alias resolution
+        matches = [k for k in self.files if Path(k).name == norm_path]
         if len(matches) == 1:
             return matches[0]
         elif len(matches) > 1:

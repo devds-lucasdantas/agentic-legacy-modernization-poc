@@ -813,11 +813,11 @@ def test_child_spec_binding_regressions(tmp_path: Path, monkeypatch):
     # 1. Spec candidate C1 vs CLI candidate C2
     spec_with_c1 = {
         "gate": 3,
-        "spec_version": "3.4.2",
-        "schema_version": "3.4.2",
-        "prompt_version": "3.4.2",
-        "evaluator_version": "3.4.2",
-        "golden_dataset_version": "3.4.2",
+        "spec_version": "3.4.3",
+        "schema_version": "3.4.3",
+        "prompt_version": "3.4.3",
+        "evaluator_version": "3.4.3",
+        "golden_dataset_version": "3.4.3",
         "requested_model": "gpt-5-mini",
         "reasoning_effort": "high",
         "max_attempts": 1,
@@ -996,7 +996,7 @@ def test_terminal_failure_evidence_preservation(tmp_path: Path):
 
     spec = {
         "gate": 3,
-        "spec_version": "3.4.2",
+        "spec_version": "3.4.3",
         "run_label": "fail-test-run",
     }
     raw_content = {"id": "resp_test_123", "model": "gpt-5-mini", "output": []}
@@ -1294,11 +1294,11 @@ def _execute_child_failure_scenario(
 
     spec = {
         "gate": 3,
-        "spec_version": "3.4.2",
-        "schema_version": "3.4.2",
-        "prompt_version": "3.4.2",
-        "evaluator_version": "3.4.2",
-        "golden_dataset_version": "3.4.2",
+        "spec_version": "3.4.3",
+        "schema_version": "3.4.3",
+        "prompt_version": "3.4.3",
+        "evaluator_version": "3.4.3",
+        "golden_dataset_version": "3.4.3",
         "requested_model": "gpt-5-mini",
         "reasoning_effort": "low",
         "max_attempts": 1,

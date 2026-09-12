@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Gate 3 — Multi-File System Analysis Runner (Version 3.4.2)
+"""Gate 3 — Multi-File System Analysis Runner (Version 3.4.3)
 
 Executes multi-file system analysis across all six files of the core banking
 system bundle using structured schemas, Responses API Structured Outputs,
@@ -54,11 +54,11 @@ from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
-SPEC_VERSION = "3.4.2"
-SCHEMA_VERSION = "3.4.2"
-PROMPT_VERSION = "3.4.2"
-EVALUATOR_VERSION = "3.4.2"
-GOLDEN_DATASET_VERSION = "3.4.2"
+SPEC_VERSION = "3.4.3"
+SCHEMA_VERSION = "3.4.3"
+PROMPT_VERSION = "3.4.3"
+EVALUATOR_VERSION = "3.4.3"
+GOLDEN_DATASET_VERSION = "3.4.3"
 
 SAFE_RUN_LABEL_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 HEX_64_PATTERN = re.compile(r"^[0-9a-f]{64}$")
@@ -78,6 +78,55 @@ DEFAULT_GOLDEN_PATH = "evals/expected/system-understanding-v3.json"
 RESERVATION_STATE_FILE = "reservation-state.json"
 TERMINAL_RESULT_FILE = "terminal-result.json"
 ATTEMPT_CLAIM_FILE = "attempt-claim.json"
+
+
+class ReservationCollisionError(RuntimeError):
+    """Raised when an initial parent reservation file already exists, indicating run claimed."""
+
+
+def create_initial_reservation_exclusive(reservation_file: Path, data: dict[str, Any]) -> None:
+    """Exclusively create initial reservation file with O_CREAT | O_EXCL.
+
+    The exclusive creation is the parent ownership decision.
+    If creation fails with EEXIST / FileExistsError, raises ReservationCollisionError.
+    If creation succeeds, payload is written, flushed, and fsynced.
+    If writing payload fails, the file is NOT unlinked; it remains fail-closed.
+    """
+    reservation_file.parent.mkdir(parents=True, exist_ok=True)
+    payload_bytes = json.dumps(data, indent=2, sort_keys=True).encode("utf-8")
+    flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+
+    try:
+        fd = os.open(str(reservation_file), flags, 0o600)
+    except FileExistsError:
+        raise ReservationCollisionError(
+            f"Reservation file '{reservation_file}' already exists. "
+            "Another parent process owns this run."
+        )
+    except OSError as e:
+        if e.errno == errno.EEXIST:
+            raise ReservationCollisionError(
+                f"Reservation file '{reservation_file}' already exists. "
+                "Another parent process owns this run."
+            )
+        raise
+
+    # File descriptor is exclusively acquired; parent owns the run.
+    # Write payload, fsync, and close. If this fails, leave file in place.
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(payload_bytes)
+            f.flush()
+            os.fsync(f.fileno())
+    except Exception as write_err:
+        # DO NOT unlink or retry. File remains in place fail-closed.
+        raise RuntimeError(
+            f"Failed to write initial reservation payload to '{reservation_file}' "
+            f"after exclusive creation: {write_err}. "
+            "Reservation remains consumed/fail-closed; launch is aborted."
+        ) from write_err
 
 
 class AttemptClaimCollisionError(RuntimeError):
@@ -457,6 +506,7 @@ def verify_snapshot_against_git_objects(
         raise RuntimeError(f"git ls-tree failed for commit '{authorized_git_sha}'")
 
     expected_files: set[str] = set()
+    expected_dirs: set[str] = set()
     raw_entries = [e for e in ls_tree_res.stdout.split(b"\x00") if e]
 
     for entry in raw_entries:
@@ -480,6 +530,11 @@ def verify_snapshot_against_git_objects(
             continue
 
         expected_files.add(rel_path)
+        p = Path(rel_path).parent
+        while p != Path(".") and p.as_posix() != ".":
+            expected_dirs.add(p.as_posix())
+            p = p.parent
+
         file_path = snapshot_dir / rel_path
         if not file_path.is_file() or file_path.is_symlink():
             raise RuntimeError(f"Committed file missing or is symlink in snapshot: {rel_path}")
@@ -503,13 +558,15 @@ def verify_snapshot_against_git_objects(
 
     # Recursively inspect snapshot_dir; walk must not follow symlinks
     actual_files: set[str] = set()
+    actual_dirs: set[str] = set()
     for root, dirs, files in os.walk(str(snapshot_dir), followlinks=False):
         root_path = Path(root)
         for d in dirs:
             dir_path = root_path / d
+            rel_dir = dir_path.relative_to(snapshot_dir).as_posix()
             if dir_path.is_symlink():
-                rel_dir = dir_path.relative_to(snapshot_dir)
                 raise RuntimeError(f"Unauthorized symlink directory in snapshot: {rel_dir}")
+            actual_dirs.add(rel_dir)
         for f in files:
             file_path = root_path / f
             rel = file_path.relative_to(snapshot_dir).as_posix()
@@ -518,6 +575,15 @@ def verify_snapshot_against_git_objects(
             if not file_path.is_file():
                 raise RuntimeError(f"Unauthorized special non-regular file in snapshot: {rel}")
             actual_files.add(rel)
+
+    # For official execution: actual authorized directories == expected committed directories
+    extra_dirs = actual_dirs - expected_dirs
+    if extra_dirs:
+        raise RuntimeError(f"Unauthorized extra directory in snapshot: {sorted(extra_dirs)}")
+
+    missing_dirs = expected_dirs - actual_dirs
+    if missing_dirs:
+        raise RuntimeError(f"Committed directory missing from snapshot: {sorted(missing_dirs)}")
 
     # For official execution: actual authorized regular files == committed regular files
     extra_files = actual_files - expected_files
@@ -945,22 +1011,16 @@ def check_existing_reservation(out_dir: Path, run_label: str) -> None:
         if state_file.exists():
             try:
                 st_data = json.loads(state_file.read_text(encoding="utf-8"))
-                st = st_data.get("status", "UNKNOWN")
-            except Exception:
-                st = "UNKNOWN"
-            if st in (
-                "RESERVED",
-                "MODEL_INVOCATION",
-                "POST_MODEL_RESPONSE",
-                "FINALIZING",
-                "FAILED",
-                "COMPLETED",
-            ):
-                raise RuntimeError(
-                    f"Irrevocable reservation error: Run label '{run_label}' in '{out_dir}' "
-                    f"is already permanently reserved with status '{st}'. "
-                    f"Re-entry is strictly refused."
+                st = (
+                    st_data.get("status", "CORRUPTED") if isinstance(st_data, dict) else "CORRUPTED"
                 )
+            except Exception:
+                st = "CORRUPTED"
+            raise RuntimeError(
+                f"Irrevocable reservation error: State file '{state_file}' already exists "
+                f"with status '{st}'. Run label '{run_label}' in '{out_dir}' has consumed its "
+                "reservation. Re-entry is strictly refused."
+            )
 
 
 def execute_gate_3(
@@ -1032,23 +1092,27 @@ def execute_gate_3(
 
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # 5. Write RESERVED state to mutable reservation file
+    # 5. Exclusively create initial RESERVED state file
     reservation_file = out_dir / RESERVATION_STATE_FILE
-    atomic_write_json(
-        reservation_file,
-        {
-            "status": "RESERVED",
-            "run_label": run_label,
-            "gate": 3,
-            "timestamp": datetime.now(UTC).isoformat(),
-            "candidate_git_sha": candidate_sha,
-            "authorization_commit_sha": head_sha,
-            "git_commit_sha": candidate_sha or head_sha,
-            "bundle_sha256": spec["bundle_sha256"],
-            "requested_model": spec["requested_model"],
-            "foundry_project_fingerprint": spec["foundry_project_fingerprint"],
-        },
-    )
+    try:
+        create_initial_reservation_exclusive(
+            reservation_file,
+            {
+                "status": "RESERVED",
+                "run_label": run_label,
+                "gate": 3,
+                "timestamp": datetime.now(UTC).isoformat(),
+                "candidate_git_sha": candidate_sha,
+                "authorization_commit_sha": head_sha,
+                "git_commit_sha": candidate_sha or head_sha,
+                "bundle_sha256": spec["bundle_sha256"],
+                "requested_model": spec["requested_model"],
+                "foundry_project_fingerprint": spec["foundry_project_fingerprint"],
+            },
+        )
+    except ReservationCollisionError as col_err:
+        print(f"ERROR: Irrevocable parent reservation collision: {col_err}", file=sys.stderr)
+        return 1
 
     # 6. Execute child in isolated mode from candidate C snapshot
     snapshot_target_sha = candidate_sha if candidate_sha else head_sha
@@ -1119,6 +1183,8 @@ def finalize_post_model_failure(
     metadata: Any | None = None,
     assessment: Any | None = None,
     raw_response_content: Any | None = None,
+    evaluation_result: Any | None = None,
+    evaluated_predictions: Any | None = None,
 ) -> None:
     """Centralized post-invocation failure finalizer.
 
@@ -1176,6 +1242,37 @@ def finalize_post_model_failure(
             )
         except Exception as e:
             failures.append({"file": "model-assessment.json", "error": str(e)})
+
+    # 3b. enriched-assessment.json (if assessment is available)
+    if assessment is not None and not (artifact_dir / "enriched-assessment.json").exists():
+        try:
+            dump = assessment.model_dump() if hasattr(assessment, "model_dump") else assessment
+            safe_preserve_artifact(
+                artifact_dir / "enriched-assessment.json", dump, is_json=True, failures=failures
+            )
+        except Exception as e:
+            failures.append({"file": "enriched-assessment.json", "error": str(e)})
+
+    # 3c. evaluation.json (if already computed in memory)
+    if (
+        evaluation_result is not None
+        and evaluated_predictions is not None
+        and not (artifact_dir / "evaluation.json").exists()
+    ):
+        try:
+            eval_dict = {
+                "metric_summary": evaluation_result.to_dict()
+                if hasattr(evaluation_result, "to_dict")
+                else evaluation_result,
+                "predictions": [
+                    p.to_dict() if hasattr(p, "to_dict") else p for p in evaluated_predictions
+                ],
+            }
+            safe_preserve_artifact(
+                artifact_dir / "evaluation.json", eval_dict, is_json=True, failures=failures
+            )
+        except Exception as e:
+            failures.append({"file": "evaluation.json", "error": str(e)})
 
     # 4. authorization-spec.json
     if spec is not None and not (artifact_dir / "authorization-spec.json").exists():
@@ -1281,6 +1378,16 @@ def finalize_post_model_failure(
         "response_model_id": response_model_id,
         "timestamp": datetime.now(UTC).isoformat(),
     }
+    if evaluation_result is not None:
+        terminal_result["gate_3_pass"] = getattr(evaluation_result, "gate_3_pass", False)
+        terminal_result["precision"] = getattr(evaluation_result, "precision", 0.0)
+        terminal_result["recall"] = getattr(evaluation_result, "recall", 0.0)
+        terminal_result["matched_expected_count"] = getattr(
+            evaluation_result, "matched_expected_count", 0
+        )
+        terminal_result["expected_fact_count"] = getattr(
+            evaluation_result, "expected_fact_count", 0
+        )
     if failures:
         terminal_result["artifact_write_failures"] = list(failures)
     safe_preserve_artifact(
@@ -1733,6 +1840,8 @@ def execute_internal_child(args: argparse.Namespace) -> int:
         return 1
 
     assessment: SystemAssessment | None = None
+    metadata_dict: dict[str, Any] | None = None
+    metadata: Any = None
 
     if args.synthetic:
         if not golden_file.is_file():
@@ -1959,6 +2068,7 @@ def execute_internal_child(args: argparse.Namespace) -> int:
     # Deterministic evaluation using SystemEvaluatorV3
     assert assessment is not None
     eval_result = None
+    predictions = None
     try:
         parser = SystemCobolParser(bundle)
         facts = parser.get_supported_facts()
@@ -2118,9 +2228,11 @@ def execute_internal_child(args: argparse.Namespace) -> int:
             bundle=bundle,
             parser=parser,
             runtime_manifest=runtime_manifest,
-            metadata=metadata if not args.synthetic else None,
+            metadata=metadata_dict if metadata_dict is not None else metadata,
             assessment=assessment,
             raw_response_content=raw_response_content,
+            evaluation_result=eval_result,
+            evaluated_predictions=predictions,
         )
         return 1
 
