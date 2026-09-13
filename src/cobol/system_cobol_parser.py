@@ -2879,6 +2879,30 @@ class SystemCobolParser:
                                     },
                                 )
                             )
+                        elif dialect == CommandDialect.POSIX_SHELL:
+                            # POSIX is deterministically recognized, but PLATFORM_DEPENDENCY is
+                            # REQUIRED_EXHAUSTIVE and Contract 3.5.3 wire schema exposes ONLY
+                            # WINDOWS. Therefore, unrepresentable platform semantics must fail
+                            # closed with UNSUPPORTED_RELEVANT, emitting 0 PlatformDependencyFact.
+                            for idx_s, s in enumerate(self.statements):
+                                if s.file_path == unit.file_path and s.line_start in (
+                                    s1.line_start,
+                                    s2.line_start,
+                                ):
+                                    self.statements[idx_s] = ClassifiedStatement(
+                                        s.file_path,
+                                        s.line_start,
+                                        s.line_end,
+                                        s.verb,
+                                        s.raw_text,
+                                        StatementClassification.UNSUPPORTED_RELEVANT,
+                                        (
+                                            "POSIX shell command establishes an unrepresentable "
+                                            "platform dependency outside Contract 3.5.3 frozen "
+                                            "schema (PlatformFamily exposes ONLY WINDOWS)"
+                                        ),
+                                    )
+                            continue
 
                         mut_res = classify_mutation_command(cmd_clean)
                         if mut_res.status == "MUTATION_UNSUPPORTED":
