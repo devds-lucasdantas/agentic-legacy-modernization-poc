@@ -2,9 +2,9 @@
 
 **Date:** 2026-09-13  
 **Contract Version:** 3.5.3  
-**Functional Commit (H7.4-0):** `9def1a79cdf5fa45395b7922347ea408960e9cbf`  
-**Historical Functional Commit (H7.3.1-0):** `82829ec159fc3bf3428411351b1d1937db9482a1`  
-**Historical Report Commit (H7.3.1):** `a0f901c6a0ae5cf081a66d2fced41c69357ee329`  
+**Functional Commit (H7.4.2-0):** `0808eadb7e97b11f8ac980511efb3fab98041065`  
+**Prior Functional Commit (H7.4.1-0):** `548bb08817cd6faea731c85cdf2c884b9bfa029e`  
+**Prior Report Commit (H7.4.1):** `dca44ef1603652f41b4625fe8aea1c6be9a23ba1`  
 **Classification:** `STRUCTURAL_VERIFIER_AND_LOGICAL_PARSING_REMEDIATION`  
 **Mode:** STRICTLY OFFLINE  
 **Live Provider Calls:** 0  
@@ -369,7 +369,86 @@ The H7.4.1 test suite in `evals/tests/test_h7_contract_regressions.py` verifies 
 ## 11. Final Status (H7.4.1 Release)
 
 - **Functional Commit (H7.4.1-0):** `548bb08817cd6faea731c85cdf2c884b9bfa029e`
-- **Report Commit (H7.4.1):** Direct report-only child of `H7.4.1-0`
+- **Report Commit (H7.4.1):** `dca44ef1603652f41b4625fe8aea1c6be9a23ba1`
+- **Remote Branch:** `feat/gate-3-system-analysis`
+- **Baseline-v3 Spec:** `evals/baselines/gate-3-baseline-v3.json` (`candidate_git_sha = ""`)
+- **Execution Status:** Strictly offline. Zero provider calls, zero baseline runs, no baseline-v3 reservation, baseline-v2 reservation byte-for-byte preserved.
+
+---
+
+## 12. H7.4.2 Procedural Syntax & Coverage Hotfix Details
+
+H7.4.2 eliminates procedural syntax loopholes and decouples concrete external command fact support from sequence/risk pattern detection. It resolves findings B-01, B-02, H-01, and H-02:
+
+### 12.1 B-01: Strict CALL Target Syntax Before AST Emission
+1. **Target Syntax Parsed Before AST Creation:**
+   In `src/cobol/system_cobol_parser.py`, CALL target parsing strictly validates candidate targets before constructing `ASTCall`.
+2. **Simple Quoted Literal Grammar:**
+   - Requires exactly one matching outer quote pair (`'...'` or `"..."`).
+   - Literal content must be non-empty (`len(content) > 0`).
+   - Rejects doubled same-quote escapes (e.g. `'A''B'`, `"A""B"`).
+   - Rejects backslash escapes (`\`).
+   - Rejects unseparated trailing garbage after closing quote (e.g. `'TARGET'xyz`).
+   - Preserves exact source literal content without ad-hoc modification.
+3. **Dynamic Call Grammar:**
+   - Requires a canonical COBOL identifier matching `^[A-Za-z0-9_-]+$`.
+   - Quote characters are **never** silently reclassified as dynamic targets.
+4. **Fail-Closed Behavior:**
+   - Any malformed or unsupported target is classified `UNSUPPORTED_RELEVANT`.
+   - **Zero** `ASTCall`, `CallOccurrenceFact`, `CallEdgeFact`, or `InternalCallResolutionFact` are emitted.
+   - Coverage certificate blocks evaluation (`is_evaluation_blocked = True`).
+   - Probes verified: `CALL 'TARGET`, `CALL "TARGET`, `CALL 'A''B'`, `CALL "A""B"`, `CALL 'TARGET'xyz`, `CALL 'TARGET\X'`, malformed `CALL 'SYSTEM'`.
+
+### 12.2 B-02: Procedural Statement Grammar Detects Same-Line Barriers
+1. **Procedural Control-Flow Barrier Detection:**
+   - Defined `PROCEDURAL_CONTROL_FLOW_BARRIERS` encompassing `IF`, `ELSE`, `END-IF`, `EVALUATE`, `WHEN`, `END-EVALUATE`, `PERFORM`, `GO`, `GOTO`, `STOP`, `GOBACK`, `DISPLAY`, `ACCEPT`.
+   - Unquoted control-flow tokens on the same physical line outside supported single-statement grammar trigger `UNSUPPORTED_RELEVANT` classification.
+2. **`CALL ... USING` Operands Boundary:**
+   - Operands end before any control-flow delimiter, preventing absorption of keywords (such as `ELSE`) into argument lists.
+   - Inline compound statements fail closed immediately rather than silently continuing.
+3. **Endpoint & Intervening Line Barrier Verification:**
+   - `has_procedural_barrier_between()` verifies absence of procedural barriers across both intervening lines and the endpoint lines themselves (`line_start_excl` and `line_end_excl`).
+   - In the exact auditor scenario:
+     ```cobol
+     IF FLAG = 1
+         MOVE 'cmd /c del accounts.dat' TO BUFFER
+         CALL 'SYSTEM' USING BUFFER ELSE
+         MOVE 'cmd /c ren accounts.tmp accounts.dat' TO BUFFER
+         CALL 'SYSTEM' USING BUFFER
+     END-IF
+     ```
+     Same-line `ELSE` on the CALL line is detected as a procedural barrier. Line 3 is classified `UNSUPPORTED_RELEVANT`. No false `DELETE -> RENAME` sequence is formed, and no false `NON_ATOMIC_EXTERNAL_MUTATION` risk fact is emitted. Coverage fails closed cleanly.
+
+### 12.3 H-01: Literal MOVE Syntax Validation During MOVE Parsing
+1. **Immediate Syntax Validation:**
+   - `MOVE` statement parsing in `src/cobol/system_cobol_parser.py` validates source and target syntax before emitting `ASTMove`.
+   - Complete supported literal form requires: `MOVE <complete-supported-literal> TO <target-identifier>`.
+2. **Malformed Literal Detection:**
+   - Unclosed quotes (`MOVE 'TARGET TO BUFFER`, `MOVE "TARGET TO BUFFER`), doubled quotes (`MOVE 'A''B' TO BUFFER`), trailing garbage (`MOVE 'TARGET'xyz TO BUFFER`), missing `TO` (`MOVE 'TARGET'`), missing target (`MOVE 'TARGET' TO`), or same-line control-flow barriers fail closed immediately as `UNSUPPORTED_RELEVANT`.
+   - Zero `ASTMove` usable for downstream scored concepts is emitted. Coverage is blocked.
+   - Command-pairing logic never receives unvalidated or malformed move statements.
+
+### 12.4 H-02: Decoupling Command Fact Support from Mutation-Sequence Support
+1. **Explicit Separation of Three Independent Concepts:**
+   - **A. Syntax Support:** Can the parser losslessly understand the statement? (Fail closed as `UNSUPPORTED_RELEVANT` if unparseable or unmodeled).
+   - **B. Command Fact Support:** Can a concrete external command invocation and platform dependency be grounded? (Emit `CommandInvocationFact` and `PlatformDependencyFact` if recognized concrete command, with clean coverage).
+   - **C. Mutation-Sequence Support:** Does a proven direct linear pair match `DELETE -> RENAME`? (Emit `OperationSequenceFact` and `NON_ATOMIC_EXTERNAL_MUTATION` risk).
+2. **Concrete Commands No Longer Conflated with Sequence Shape:**
+   - Valid Windows commands like `cmd /c echo test`, `cmd /c dir`, `cmd /c del *.tmp`, or isolated single `DELETE` / `RENAME` commands emit supported facts with clean coverage (`unsupported_relevant_count == 0`), even when `classify_command_operation` returns `EXECUTE` or other operations.
+   - Non-matching command pairs (e.g. `RENAME -> DELETE`, `DELETE -> DELETE`, `RENAME -> RENAME`) are not marked unsupported simply because they do not form `DELETE -> RENAME`; they emit valid individual command facts without false sequence or risk facts.
+
+### 12.5 Test Results & Invariants
+- **Pytest Suite:** 317/317 passed across the entire repository.
+- **Contract Regressions:** 48/48 passed in `evals/tests/test_h7_contract_regressions.py` including dedicated B-01, B-02, H-01, and H-02 test sections.
+- **Static Analysis:** `ruff check .` passed; `ruff format --check .` 68 files formatted; `mypy src agents evals scripts` 0 issues across 51 source files; `pip check` 0 broken requirements.
+- **Immutability & Hashes:** All baseline-v3 expected hashes, legacy bundle, baseline-v2 reservation hash, and non-existence of baseline-v3 artifacts verified.
+
+---
+
+## 13. Final Status (H7.4.2 Release)
+
+- **Functional Commit (H7.4.2-0):** `0808eadb7e97b11f8ac980511efb3fab98041065`
+- **Report Commit (H7.4.2):** Direct report-only child of `H7.4.2-0`
 - **Remote Branch:** `feat/gate-3-system-analysis`
 - **Baseline-v3 Spec:** `evals/baselines/gate-3-baseline-v3.json` (`candidate_git_sha = ""`)
 - **Execution Status:** Strictly offline. Zero provider calls, zero baseline runs, no baseline-v3 reservation, baseline-v2 reservation byte-for-byte preserved.
