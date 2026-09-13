@@ -445,12 +445,121 @@ H7.4.2 eliminates procedural syntax loopholes and decouples concrete external co
 
 ---
 
-## 13. Final Status (H7.4.2 Release)
+## 13. Historical Status (H7.4.2 Release)
 
 - **Functional Commit (H7.4.2-0):** `0808eadb7e97b11f8ac980511efb3fab98041065`
-- **Report Commit (H7.4.2):** Direct report-only child of `H7.4.2-0`
+- **Report Commit (H7.4.2):** `855a2efd68786369d079662be7b0cfece2c0c350`
+- **Remote Branch:** `feat/gate-3-system-analysis`
+- **Baseline-v3 Spec:** `evals/baselines/gate-3-baseline-v3.json` (`candidate_git_sha = ""`)
+- **Review Verdict:** DO NOT PROCEED (findings F-01 through F-09 identified during H7.4.2 review; remediated in H7.4.3)
+
+---
+
+## 14. H7.4.3 / Contract 3.5.3 Exact Procedural Grammar & Static Resolution Remediation
+
+H7.4.3 eliminates procedural parsing loopholes, establishes a unified procedural starter architecture, implements three-outcome Windows mutation command classification, isolates dynamic CALL targets, enforces exact single-argument CALL/USING semantics, and verifies the end-to-end production path for spaced filename mutations. It resolves findings F-01 through F-09 and incorporates all five required clarifications:
+
+### 14.1 F-01 & Clarification 4: Strict CALL/USING Syntax & Command Binding
+1. **Grammar Restriction:**
+   Supported CALL syntax is strictly `CALL <target>` or `CALL <target> USING <exactly-one-identifier>`.
+   Any second or subsequent argument (e.g. `CALL TARGET USING ARG1 ARG2`, `CALL 'SYSTEM' USING OTHER BUFFER`) fails closed as `UNSUPPORTED_RELEVANT`. Zero `CallOccurrenceFact` is emitted.
+2. **Compound Trailing Starter Rejection:**
+   Trailing unquoted procedural starters after a USING argument (e.g. `CALL 'SYSTEM' USING BUFFER CALL OTHER`) fail closed as `UNSUPPORTED_RELEVANT` with zero partial fact extraction.
+3. **Exact Variable Binding for SYSTEM Dispatch:**
+   `CALL 'SYSTEM' USING <id>` dispatches command execution only when `<id>` strictly matches the assigned command variable (`s2.using_args == [s1.target_operand]`). When `<id>` refers to another identifier, the statement is valid COBOL (clean coverage), but produces zero `CommandInvocationFact` for that assignment pair.
+
+### 14.2 F-02 & Clarification 4: Dynamic CALL Target Static Resolution Isolation
+1. **Dynamic Target Identification:**
+   Dynamic CALL statements (e.g. `CALL SYSTEM USING BUFFER.` where `SYSTEM` is an identifier) are classified as `call_mechanism == "DYNAMIC_TARGET"`.
+2. **Strict Static Isolation:**
+   Dynamic CALL targets emit:
+   - Zero `InternalCallResolutionFact` (dynamic identifiers do not resolve to static internal programs).
+   - Zero `CallerContinuationConstraintFact` (caller continuation constraints are established only for static literal calls).
+   - Zero `CommandInvocationFact` (dynamic targets never dispatch SYSTEM commands).
+   - Zero `PlatformDependencyFact`, `OperationSequenceFact`, or `BehavioralRiskFact`.
+
+### 14.3 F-03: Variable Alignment Between Assignment and SYSTEM Call
+In `src/cobol/system_cobol_parser.py`, pairing requires `s2.is_literal and s2.target == "SYSTEM" and s2.using_args == [s1.target_operand]`. Substring matching or set membership is replaced with exact single-element equality.
+
+### 14.4 F-04 & Clarification 3: Three-Outcome Windows Mutation Command Classification & Spaced Filenames E2E
+1. **Three-Outcome Architecture:**
+   - **`NOT_MUTATION`:** Command does not enter the mutation family (e.g. `cmd /c echo test`, `cmd /c dir`). Yields exact `CommandInvocationFact`, `PlatformDependencyFact` where applicable, clean coverage (`unsupported_relevant_count == 0`), and is not eligible for sequence/risk derivation.
+   - **`MUTATION_PARSED`:** Command belongs to mutation family and operands are losslessly parsed into deterministic `operation`, `source_operand`, and `target_operand`. Eligible for sequence and risk analysis.
+   - **`MUTATION_UNSUPPORTED`:** Command enters mutation family (DEL, REN, COPY, etc.) but operand syntax cannot be interpreted losslessly (e.g. single quotes used for Windows grouping, unclosed quotes, missing operands). Opaque `CommandInvocationFact` is derived, but source statements fail closed as `UNSUPPORTED_RELEVANT` to block Gate 3 evaluation (`is_evaluation_blocked == True`). Zero `OperationSequenceFact` and zero `BehavioralRiskFact` are emitted.
+2. **Windows Double-Quote Grouping:**
+   `tokenize_windows_mutation_operands()` explicitly supports double-quote grouping (`"accounts old.dat"`) for Windows shell syntax. Single quotes are not shell grouping in Windows `cmd.exe` and trigger `MUTATION_UNSUPPORTED`.
+3. **End-to-End Production Path Traversal:**
+   The implementation traverses the real production path (source -> parser -> facts -> schema -> evaluator index):
+   - **Different Targets (`del "accounts old.dat"` then `ren temp.tmp "accounts new.dat"`):** Supported `OperationSequenceFact` (DELETE -> RENAME); **NO** `BehavioralRiskFact` emitted. A model assessment asserting matching risk fails evaluator support.
+   - **Same Target (`del "accounts old.dat"` then `ren temp.tmp "accounts old.dat"`):** Supported `OperationSequenceFact` (DELETE -> RENAME); supported `BehavioralRiskFact` with canonical uppercase `resource_name == "ACCOUNTS OLD.DAT"` (never raw quoted syntax like `'"ACCOUNTS'`). Evaluator verifies 100% precision/recall with zero unsupported predictions.
+
+### 14.5 F-05: Quoted CALL Target Admission Normalization Rejection
+CALL literal parsing validates candidate target content prior to admission:
+- Lowercase targets (e.g. `CALL 'subprog'`) fail closed as `UNSUPPORTED_RELEVANT` (zero `CallOccurrenceFact`).
+- Whitespace-padded targets (e.g. `CALL ' SUBPROG '`) fail closed as `UNSUPPORTED_RELEVANT` (zero `CallOccurrenceFact`).
+- Exact uppercase identifiers (e.g. `CALL 'SUBPROG'`) are admitted as valid literal call occurrences.
+
+### 14.6 F-06 & Clarification 1: Procedural Terminal Period Stripping & Legacy Host Facts Invariance
+1. **Procedural Period Invariant:**
+   The procedural parser sees all tokens on procedural lines. `consume_optional_terminal_period()` removes at most one terminal sentence-period token. Any interior unquoted period token (e.g. `CALL . TARGET`, `MOVE 'X' . TO BUFFER`, `MOVE . 'X' TO BUFFER`) fails closed as `UNSUPPORTED_RELEVANT`.
+2. **Preservation of Non-Procedural & Numeric/Literal Tokens:**
+   - Non-procedural token streams (DATA DIVISION, `PROGRAM-ID`, `SELECT`, `FD`, 01/05/88, `PIC`, declarative statements) are not altered.
+   - Numeric literals with decimal points (e.g. `100.50`) and quoted literals with periods (e.g. `'file.name'`) remain single semantic tokens.
+3. **Legacy Host Facts Invariance:**
+   Parsing `legacy/core-banking-system` produces `unsupported_relevant_count == 0` and preserves the exact frozen certificate SHA-256 `74148cdb6b5c28c576406db77a8c84ae171a7fd1eec568c4d5a15256ef08f177`.
+
+### 14.7 F-07 & Clarification 2: Unified Procedural Starter Architecture
+1. **Unified Authoritative Vocabulary:**
+   Established single authoritative `PROCEDURAL_KEYWORD_VOCABULARY` in `src/cobol/system_cobol_parser.py` and derived `PROCEDURAL_STATEMENT_STARTERS` directly from it, replacing multiple drifting local sets.
+2. **Complete Grammar Consumption:**
+   Every procedural branch in `_parse_file_unit()` proves complete consumption of its supported grammar:
+   - Branches audited: `CALL`, `MOVE`, `READ`, `WRITE`, `OPEN`, `CLOSE`, `ADD`, `SUBTRACT`, `COMPUTE`, `MULTIPLY`, `DIVIDE`, `STOP`, `GOBACK`, `EXIT`, `PERFORM`, `DISPLAY`, `ACCEPT`, `IF`, `ELSE`, `END-IF`, `EVALUATE`, `WHEN`, `END-EVALUATE`, `END-PERFORM`, `END-READ`, `GO`, `GOTO`, `AT`, `NOT`, `FROM`.
+   - Any trailing unquoted procedural starter causes the statement to fail closed as `UNSUPPORTED_RELEVANT`, emitting zero partial scored facts.
+   - Probes verified: `COMPUTE X = Y CALL OTHER`, `MULTIPLY A BY B CALL OTHER`, `DIVIDE A INTO B CALL OTHER`, `IF X = 1 CALL OTHER`, `ELSE CALL OTHER`, `WHEN 1 CALL OTHER`.
+   - Quoted content containing starter keywords (e.g. `MOVE 'CALL OTHER' TO WS-MSG`) remains valid and supported.
+
+### 14.8 Clarification 5: Independent Scientific Evidence Verification
+All immutable preconditions were independently verified without relying on scratch verification scripts:
+- **Baseline-v1 Spec SHA:** `b37e8815e2605f279ecc417b8e037f0b235f5e1dcfa64d79b10708e852509695` (verified via `sha256sum evals/baselines/gate-3-baseline-v1.json`).
+- **All 13 Baseline-v1 Manifest Artifacts:** Verified against `artifacts/gate-3/baseline-v1/manifest.json`:
+  - `authorization-spec.json`: `45aaa53c18dcdb1302df1fe6b737738f2726d4e87543f905482e581588282ffa`
+  - `canonical-input-bundle.txt`: `18aaf4dbf9cfa7c279b047ee26744d7b763d3c6f77770818b191e1756f20152d`
+  - `enriched-assessment.json`: `3dae1133961c0fd990db109ebc499682ef458ae48cd06e27d89b919619267e76`
+  - `evaluation.json`: `d4726ac356a83ad8c46de6f2367039cadc5be34ef71eb57a42679cacbdbe8fcd`
+  - `model-assessment.json`: `3dae1133961c0fd990db109ebc499682ef458ae48cd06e27d89b919619267e76`
+  - `parser-coverage-certificate.json`: `a33df30b73f79ac053afd5118fa3cb1ed97413a255b31b1f2ef169c1c4f948e3`
+  - `production-prompt.md`: `5561e3cb9a57f48f71eeb19b5a1801ecf96d4aefdbf81ded01e915524171c944`
+  - `raw-response.json`: `9afc19c399eef0ddbed56c8def4ab6cacc370ca4079f0df42619e840a1f43b2b`
+  - `run-metadata.json`: `1a260a9b718c6bfeee841c1f402e39f609f52f34ece9566d32cc0e5d00e93e61`
+  - `runtime-manifest.json`: `54cc4318fc3dde9f049f8ba0af14045473bcad33cad32c25e9ea1f42bff49d74`
+  - `source-manifest.json`: `1e66800ec41272af55dec2b9f78a3dc1d02979870c26c8327943a5276235b203`
+  - `terminal-result.json`: `125ab79d1d4268d49fecad9ca27f625e55cb0d70f09e537f8e84d68ca724cced`
+  - `wire-schema.json`: `45f32c9e0a65bc039b94f7270efff88f3d92cc86e09288a9c1033cf465c3529a`
+- **Baseline-v2 Reservation File SHA:** `artifacts/gate-3/baseline-v2/reservation-state.json` SHA is `108c51b222e476f32bd98c092c5dc814be9a25b4d1b93ae60f0f28ea2f5a631d` (verified via `sha256sum`).
+- **Baseline-v3 Artifact Non-Existence:** Verified `artifacts/gate-3/baseline-v3` does NOT exist.
+- **Baseline-v3 Spec Empty Candidate:** `evals/baselines/gate-3-baseline-v3.json` has `candidate_git_sha == ""`.
+- **A1 Golden Equality:** Independently recomputed and proven identical to A1 (excluding allowed version metadata 3.5.0 -> 3.5.3):
+  - Bundle payload SHA: `18aaf4dbf9cfa7c279b047ee26744d7b763d3c6f77770818b191e1756f20152d` (100% byte-identical to A1).
+  - Source manifest: All 6 files match A1 hashes byte-for-byte.
+  - Dependency lock SHA: `732cb9370e90af2d0972eeda7fc18fd5745f17cb301f359b268df228fe7f18be`.
+  - Golden dataset: `evals/expected/system-understanding-v3.json` SHA `da5bdee9286dd5fbc79cb8331b70aabf73fca029fe4a3d3c5ede5ed2c984b82b`.
+  - Wire schema: Root schema keys match A1 wire schema.
+  - Production prompt: Recomputed prompt identical to A1 prompt modulo contract version.
+
+### 14.9 Test Results & Invariants
+- **Pytest Suite:** 323/323 passed across the entire repository.
+- **Contract Regressions:** 54/54 passed in `evals/tests/test_h7_contract_regressions.py` including 6 new comprehensive tests in Section 17.
+- **Static Analysis:** `ruff check .` passed with 0 errors; `ruff format --check .` 68 files formatted; `mypy src agents evals scripts` 0 issues across 51 source files; `pip check` 0 broken requirements.
+
+---
+
+## 15. Final Status (H7.4.3 Release)
+
+- **Functional Commit (H7.4.3-0):** `7f00571cf16cc9fb93d542a8840595372a586de6`
+- **Report Commit (H7.4.3):** Direct report-only child of `H7.4.3-0`
 - **Remote Branch:** `feat/gate-3-system-analysis`
 - **Baseline-v3 Spec:** `evals/baselines/gate-3-baseline-v3.json` (`candidate_git_sha = ""`)
 - **Execution Status:** Strictly offline. Zero provider calls, zero baseline runs, no baseline-v3 reservation, baseline-v2 reservation byte-for-byte preserved.
+
 
 
