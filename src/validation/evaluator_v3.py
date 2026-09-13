@@ -42,7 +42,7 @@ from src.cobol.system_atomic_facts import (
 )
 from src.cobol.system_support_index import SystemSupportIndex
 
-EVALUATOR_VERSION: str = "3.5.0"
+EVALUATOR_VERSION: str = "3.5.1"
 
 
 def _single_span(ev: Any) -> dict[str, EvidenceSpan]:
@@ -171,9 +171,18 @@ class SystemEvaluatorV3:
 
         candidate_items: list[tuple[SystemAtomicFact, dict[str, EvidenceSpan]]] = []
 
+        def _assert_canonical(model_val: Any, fact_val: Any, field_name: str) -> None:
+            if model_val != fact_val:
+                raise ValueError(
+                    f"Model value for {field_name} '{model_val}' was non-canonical "
+                    f"and would be repaired to '{fact_val}'. "
+                    f"Strict anti-repair rejects non-canonical input."
+                )
+
         # 1. Program Declarations
         for d in assessment_obj.program_declarations:
             f = ProgramDeclarationFact(program_id=d.program_id)
+            _assert_canonical(d.program_id, f.program_id, "program_id")
             candidate_items.append((f, _single_span(d.evidence)))
 
         # 2. Call Occurrences
@@ -184,6 +193,13 @@ class SystemEvaluatorV3:
                 call_mechanism=c.call_mechanism,
                 argument_identifier=c.argument_identifier,
             )
+            _assert_canonical(c.caller_program, f_call.caller_program, "caller_program")
+            _assert_canonical(c.target_program, f_call.target_program, "target_program")
+            _assert_canonical(c.call_mechanism, f_call.call_mechanism, "call_mechanism")
+            if c.argument_identifier is not None:
+                _assert_canonical(
+                    c.argument_identifier, f_call.argument_identifier, "argument_identifier"
+                )
             candidate_items.append((f_call, _single_span(c.evidence)))
 
         # 3. Call Edges
@@ -193,6 +209,9 @@ class SystemEvaluatorV3:
                 target_program=e.target_program,
                 call_mechanism=e.call_mechanism,
             )
+            _assert_canonical(e.caller_program, f_edge.caller_program, "caller_program")
+            _assert_canonical(e.target_program, f_edge.target_program, "target_program")
+            _assert_canonical(e.call_mechanism, f_edge.call_mechanism, "call_mechanism")
             candidate_items.append((f_edge, _single_span(e.evidence)))
 
         # 4. Internal Call Resolutions
@@ -201,6 +220,8 @@ class SystemEvaluatorV3:
                 caller_program=r.caller_program,
                 callee_program=r.callee_program,
             )
+            _assert_canonical(r.caller_program, f_res.caller_program, "caller_program")
+            _assert_canonical(r.callee_program, f_res.callee_program, "callee_program")
             spans = {
                 "call_evidence": EvidenceSpan(
                     r.call_evidence.file_path, r.call_evidence.line_start, r.call_evidence.line_end
@@ -221,26 +242,35 @@ class SystemEvaluatorV3:
                 external_file_name=b.external_file_name,
                 organization=b.organization,
             )
+            _assert_canonical(b.program_id, f_bind.program_id, "program_id")
+            _assert_canonical(b.internal_file_name, f_bind.internal_file_name, "internal_file_name")
+            _assert_canonical(b.external_file_name, f_bind.external_file_name, "external_file_name")
+            _assert_canonical(b.organization, f_bind.organization, "organization")
             candidate_items.append((f_bind, _single_span(b.evidence)))
 
         # 6. Record Layouts
         for lay in assessment_obj.record_layouts:
-            fields = [
-                RecordFieldFact(
-                    field_kind=f.field_kind,
-                    level=f.level,
-                    name=f.name,
-                    picture=f.picture,
-                    usage=f.usage,
-                    condition_values=tuple(f.condition_values),
+            fields = []
+            for fld in lay.fields:
+                rf = RecordFieldFact(
+                    field_kind=fld.field_kind,
+                    level=fld.level,
+                    name=fld.name,
+                    picture=fld.picture,
+                    usage=fld.usage,
+                    condition_values=tuple(fld.condition_values),
                 )
-                for f in lay.fields
-            ]
+                _assert_canonical(fld.name, rf.name, "field.name")
+                if fld.usage is not None:
+                    _assert_canonical(fld.usage, rf.usage, "field.usage")
+                fields.append(rf)
             f_lay = RecordLayoutFact(
                 program_id=lay.program_id,
                 record_name=lay.record_name,
                 fields=tuple(fields),
             )
+            _assert_canonical(lay.program_id, f_lay.program_id, "program_id")
+            _assert_canonical(lay.record_name, f_lay.record_name, "record_name")
             candidate_items.append((f_lay, _single_span(lay.evidence)))
 
         # File Operations (OPTIONAL_SUPPLEMENTARY)
@@ -250,22 +280,42 @@ class SystemEvaluatorV3:
                 internal_file_name=fo.internal_file_name,
                 operation_verb=fo.operation_verb,
             )
+            _assert_canonical(fo.program_id, f_fo.program_id, "program_id")
+            _assert_canonical(fo.internal_file_name, f_fo.internal_file_name, "internal_file_name")
+            _assert_canonical(fo.operation_verb, f_fo.operation_verb, "operation_verb")
             candidate_items.append((f_fo, _single_span(fo.evidence)))
 
         # 7. Record Layout Relations
         for rel in assessment_obj.record_layout_relations:
+            name_a = rel.layout_a_name
+            name_b = rel.layout_b_name
+            span_a = EvidenceSpan(
+                rel.evidence_a.file_path, rel.evidence_a.line_start, rel.evidence_a.line_end
+            )
+            span_b = EvidenceSpan(
+                rel.evidence_b.file_path, rel.evidence_b.line_start, rel.evidence_b.line_end
+            )
+            # Canonicalize complete endpoints: (layout_name, evidence_span)
+            if (name_a, span_a.file_path, span_a.line_start, span_a.line_end) > (
+                name_b,
+                span_b.file_path,
+                span_b.line_start,
+                span_b.line_end,
+            ):
+                name_a, name_b = name_b, name_a
+                span_a, span_b = span_b, span_a
+
             f_rel = RecordLayoutRelationFact(
-                layout_a_name=rel.layout_a_name,
-                layout_b_name=rel.layout_b_name,
+                layout_a_name=name_a,
+                layout_b_name=name_b,
                 relation_type=rel.relation_type,
             )
+            _assert_canonical(name_a, f_rel.layout_a_name, "layout_a_name")
+            _assert_canonical(name_b, f_rel.layout_b_name, "layout_b_name")
+            _assert_canonical(rel.relation_type, f_rel.relation_type, "relation_type")
             spans = {
-                "evidence_a": EvidenceSpan(
-                    rel.evidence_a.file_path, rel.evidence_a.line_start, rel.evidence_a.line_end
-                ),
-                "evidence_b": EvidenceSpan(
-                    rel.evidence_b.file_path, rel.evidence_b.line_start, rel.evidence_b.line_end
-                ),
+                "evidence_a": span_a,
+                "evidence_b": span_b,
             }
             candidate_items.append((f_rel, spans))
 
@@ -275,6 +325,8 @@ class SystemEvaluatorV3:
                 program_id=t.program_id,
                 statement_type=t.statement_type,
             )
+            _assert_canonical(t.program_id, f_term.program_id, "program_id")
+            _assert_canonical(t.statement_type, f_term.statement_type, "statement_type")
             candidate_items.append((f_term, _single_span(t.evidence)))
 
         # 9. Caller Continuation Constraints
@@ -284,6 +336,9 @@ class SystemEvaluatorV3:
                 callee_program=c_con.callee_program,
                 constraint_type=c_con.constraint_type,
             )
+            _assert_canonical(c_con.caller_program, f_ccc.caller_program, "caller_program")
+            _assert_canonical(c_con.callee_program, f_ccc.callee_program, "callee_program")
+            _assert_canonical(c_con.constraint_type, f_ccc.constraint_type, "constraint_type")
             spans = {
                 "call_evidence": EvidenceSpan(
                     c_con.call_evidence.file_path,
@@ -305,6 +360,9 @@ class SystemEvaluatorV3:
                 command_template=cmd.command_template,
                 target_operand=cmd.target_operand,
             )
+            _assert_canonical(cmd.program_id, f_cmd.program_id, "program_id")
+            _assert_canonical(cmd.command_template, f_cmd.command_template, "command_template")
+            _assert_canonical(cmd.target_operand, f_cmd.target_operand, "target_operand")
             spans = {
                 "assignment_evidence": EvidenceSpan(
                     cmd.assignment_evidence.file_path,
@@ -327,6 +385,10 @@ class SystemEvaluatorV3:
                 target_entity=dt.target_entity,
                 transfer_verb=dt.transfer_verb,
             )
+            _assert_canonical(dt.program_id, f_dt.program_id, "program_id")
+            _assert_canonical(dt.source_entity, f_dt.source_entity, "source_entity")
+            _assert_canonical(dt.target_entity, f_dt.target_entity, "target_entity")
+            _assert_canonical(dt.transfer_verb, f_dt.transfer_verb, "transfer_verb")
             candidate_items.append((f_dt, _single_span(dt.evidence)))
 
         # 12. Resource Lifecycles
@@ -337,6 +399,12 @@ class SystemEvaluatorV3:
                 access_mode=rl.access_mode,
                 ordered_operations=tuple(rl.ordered_operations),
             )
+            _assert_canonical(rl.program_id, f_rl.program_id, "program_id")
+            _assert_canonical(rl.resource_name, f_rl.resource_name, "resource_name")
+            _assert_canonical(rl.access_mode, f_rl.access_mode, "access_mode")
+            _assert_canonical(
+                tuple(rl.ordered_operations), f_rl.ordered_operations, "ordered_operations"
+            )
             candidate_items.append((f_rl, _single_span(rl.evidence)))
 
         # 13. Operation Sequences
@@ -346,6 +414,9 @@ class SystemEvaluatorV3:
                 first_operation=op.first_operation,
                 second_operation=op.second_operation,
             )
+            _assert_canonical(op.program_id, f_op.program_id, "program_id")
+            _assert_canonical(op.first_operation, f_op.first_operation, "first_operation")
+            _assert_canonical(op.second_operation, f_op.second_operation, "second_operation")
             spans = {
                 "first_assignment_evidence": EvidenceSpan(
                     op.first_assignment_evidence.file_path,
@@ -378,6 +449,10 @@ class SystemEvaluatorV3:
                 target_field=cd.target_field,
                 operation_verb=cd.operation_verb,
             )
+            _assert_canonical(cd.program_id, f_cd.program_id, "program_id")
+            _assert_canonical(cd.source_field, f_cd.source_field, "source_field")
+            _assert_canonical(cd.target_field, f_cd.target_field, "target_field")
+            _assert_canonical(cd.operation_verb, f_cd.operation_verb, "operation_verb")
             candidate_items.append((f_cd, _single_span(cd.evidence)))
 
         # 15. Platform Dependencies
@@ -387,6 +462,9 @@ class SystemEvaluatorV3:
                 platform_family=pd.platform_family,
                 command_literal=pd.command_literal,
             )
+            _assert_canonical(pd.program_id, f_pd.program_id, "program_id")
+            _assert_canonical(pd.platform_family, f_pd.platform_family, "platform_family")
+            _assert_canonical(pd.command_literal, f_pd.command_literal, "command_literal")
             candidate_items.append((f_pd, _single_span(pd.evidence)))
 
         # 16. Behavioral Risks
@@ -398,6 +476,12 @@ class SystemEvaluatorV3:
                 impact_category=br.impact_category,
                 resource_name=br.resource_name,
             )
+            _assert_canonical(br.program_id, f_br.program_id, "program_id")
+            _assert_canonical(br.risk_category, f_br.risk_category, "risk_category")
+            _assert_canonical(br.risk_basis_kind, f_br.risk_basis_kind, "risk_basis_kind")
+            _assert_canonical(br.impact_category, f_br.impact_category, "impact_category")
+            if br.resource_name is not None:
+                _assert_canonical(br.resource_name, f_br.resource_name, "resource_name")
             spans = {
                 "operation_evidence": EvidenceSpan(
                     br.operation_evidence.file_path,
@@ -420,6 +504,12 @@ class SystemEvaluatorV3:
                 initializer_code_value=dsc.initializer_code_value,
                 causal_provenance=dsc.causal_provenance,
             )
+            _assert_canonical(dsc.entity_id, f_dsc.entity_id, "entity_id")
+            _assert_canonical(dsc.dat_record_value, f_dsc.dat_record_value, "dat_record_value")
+            _assert_canonical(
+                dsc.initializer_code_value, f_dsc.initializer_code_value, "initializer_code_value"
+            )
+            _assert_canonical(dsc.causal_provenance, f_dsc.causal_provenance, "causal_provenance")
             spans = {
                 "dat_evidence": EvidenceSpan(
                     dsc.dat_evidence.file_path,

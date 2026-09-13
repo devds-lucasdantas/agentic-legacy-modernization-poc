@@ -210,7 +210,8 @@ class RecordFieldFact:
         if self.picture is not None:
             object.__setattr__(self, "picture", canonicalize_token(self.picture))
         if self.usage is not None:
-            object.__setattr__(self, "usage", canonicalize_token(self.usage))
+            u = self.usage.strip().upper()
+            object.__setattr__(self, "usage", u)
         if self.condition_values:
             object.__setattr__(
                 self,
@@ -236,7 +237,8 @@ class RecordLayoutFact(SystemAtomicFact):
         field_strs: list[str] = []
         for f in self.fields:
             if f.field_kind == "DATA_FIELD":
-                field_strs.append(f"DATA({f.level}:{f.name}:{f.picture}:{f.usage})")
+                usage_key = "COMP_3" if f.usage in ("COMP-3", "COMP_3") else f.usage
+                field_strs.append(f"DATA({f.level}:{f.name}:{f.picture}:{usage_key})")
             else:
                 vals = ",".join(f.condition_values)
                 field_strs.append(f"COND({f.level}:{f.name}:[{vals}])")
@@ -442,11 +444,20 @@ class ResourceLifecycleFact(SystemAtomicFact):
     def __post_init__(self) -> None:
         object.__setattr__(self, "program_id", normalize_identifier(self.program_id))
         object.__setattr__(self, "resource_name", normalize_identifier(self.resource_name))
-        object.__setattr__(self, "access_mode", canonicalize_token(self.access_mode))
+        mode = canonicalize_token(self.access_mode)
+        if mode in ("I_O", "I-O"):
+            mode = "IO"
+        object.__setattr__(self, "access_mode", mode)
+        ops = []
+        for op in self.ordered_operations:
+            c_op = canonicalize_token(op)
+            if c_op in ("OPEN_I_O", "OPEN_I-O"):
+                c_op = "OPEN_IO"
+            ops.append(c_op)
         object.__setattr__(
             self,
             "ordered_operations",
-            tuple(canonicalize_token(op) for op in self.ordered_operations),
+            tuple(ops),
         )
 
     def get_semantic_key(self) -> str:

@@ -892,7 +892,8 @@ class SystemCobolParser:
                 mode = None
                 target_f = ""
                 if first == "OPEN":
-                    mode = tokens[1].upper() if len(tokens) > 1 else "I-O"
+                    mode_token = tokens[1].upper() if len(tokens) > 1 else "I-O"
+                    mode = "IO" if mode_token in ("I-O", "IO") else mode_token
                     target_f = tokens[2].rstrip(".") if len(tokens) > 2 else ""
                 elif first == "READ":
                     target_f = tokens[1].rstrip(".") if len(tokens) > 1 else ""
@@ -1316,51 +1317,7 @@ class SystemCobolParser:
                 )
 
         # Binary Record Layout Comparisons
-        seen_pairs: set[tuple[str, str]] = set()
-        for idx_a in range(len(all_records)):
-            for idx_b in range(idx_a + 1, len(all_records)):
-                unit_a, rec_a = all_records[idx_a]
-                unit_b, rec_b = all_records[idx_b]
-
-                if (
-                    rec_a.container_name == rec_b.container_name
-                    and unit_a.file_path == unit_b.file_path
-                ):
-                    continue
-
-                # Compare layout equivalence generically
-                rel = self._compare_records_generically(rec_a, rec_b)
-                if rel:
-                    name_a = (
-                        f"{unit_a.program_id or Path(unit_a.file_path).stem}:{rec_a.container_name}"
-                    )
-                    name_b = (
-                        f"{unit_b.program_id or Path(unit_b.file_path).stem}:{rec_b.container_name}"
-                    )
-                    pair_key = (name_a, name_b)
-                    if pair_key not in seen_pairs:
-                        seen_pairs.add(pair_key)
-                        tag_a = rec_a.container_name.lower().replace("-", "_")
-                        tag_b = rec_b.container_name.lower().replace("-", "_")
-                        prop_rel_id = f"prop.relation.{tag_a}_{tag_b}_{idx_a}_{idx_b}"
-                        self.supported_facts.append(
-                            SupportedSystemFact(
-                                fact=RecordLayoutRelationFact(
-                                    layout_a_name=name_a,
-                                    layout_b_name=name_b,
-                                    relation_type=rel,
-                                ),
-                                proposition_id=prop_rel_id,
-                                evidence_spans={
-                                    "evidence_a": EvidenceSpan(
-                                        unit_a.file_path, rec_a.line_start, rec_a.line_end
-                                    ),
-                                    "evidence_b": EvidenceSpan(
-                                        unit_b.file_path, rec_b.line_start, rec_b.line_end
-                                    ),
-                                },
-                            )
-                        )
+        self._build_record_layout_relations()
 
         # 6. Command Invocations, Platform Dependencies, and Operation Sequences
         for unit in self.compilation_units:
@@ -1602,10 +1559,11 @@ class SystemCobolParser:
                 if ops_in_file:
                     first_op = ops_in_file[0]
                     mode = first_op.access_mode or "INPUT"
+                    if mode in ("I-O", "IO"):
+                        mode = "IO"
+                    mode_verb = "OPEN_IO" if mode == "IO" else f"OPEN_{mode}"
                     verbs = tuple(
-                        f"OPEN_{first_op.access_mode}"
-                        if op.verb == "OPEN" and first_op.access_mode
-                        else op.verb
+                        mode_verb if op.verb == "OPEN" and first_op.access_mode else op.verb
                         for op in ops_in_file
                     )
                     span_start = ops_in_file[0].line_start
@@ -1686,25 +1644,91 @@ class SystemCobolParser:
     def _compare_records_generically(
         self, rec_a: ASTRecordDeclaration, rec_b: ASTRecordDeclaration
     ) -> str | None:
-        """Generic structural comparison between two record layouts."""
+        """Total structural comparison between two record layouts."""
         data_a = [f for f in rec_a.fields if f.field_kind == "DATA_FIELD"]
         data_b = [f for f in rec_b.fields if f.field_kind == "DATA_FIELD"]
-        if len(data_a) != len(data_b) or not data_a:
+        if not data_a or not data_b:
             return None
+
+        if len(data_a) != len(data_b):
+            return "REPRESENTATION_MISMATCH"
 
         pics_a = [f.picture for f in data_a]
         pics_b = [f.picture for f in data_b]
         if pics_a != pics_b:
-            return None
+            return "REPRESENTATION_MISMATCH"
 
         usages_a = [f.usage for f in data_a]
         usages_b = [f.usage for f in data_b]
-
         if usages_a != usages_b:
             return "REPRESENTATION_MISMATCH"
+
         if rec_a.container_name == rec_b.container_name:
             return "IDENTICAL"
         return "EQUIVALENT"
+
+    def _build_record_layout_relations(self) -> None:
+        """Total binary record layout comparisons and canonical endpoint construction."""
+        all_records: list[tuple[ASTCompilationUnit, ASTRecordDeclaration]] = []
+        for unit in self.compilation_units:
+            for rec in unit.record_declarations:
+                if rec.fields:
+                    all_records.append((unit, rec))
+
+        seen_pairs: set[tuple[str, str]] = set()
+        for idx_a in range(len(all_records)):
+            for idx_b in range(idx_a + 1, len(all_records)):
+                unit_a, rec_a = all_records[idx_a]
+                unit_b, rec_b = all_records[idx_b]
+
+                if (
+                    rec_a.container_name == rec_b.container_name
+                    and unit_a.file_path == unit_b.file_path
+                ):
+                    continue
+
+                # Compare layout equivalence generically
+                rel = self._compare_records_generically(rec_a, rec_b)
+                if rel:
+                    name_a = (
+                        f"{unit_a.program_id or Path(unit_a.file_path).stem}:{rec_a.container_name}"
+                    )
+                    name_b = (
+                        f"{unit_b.program_id or Path(unit_b.file_path).stem}:{rec_b.container_name}"
+                    )
+                    span_a = EvidenceSpan(unit_a.file_path, rec_a.line_start, rec_a.line_end)
+                    span_b = EvidenceSpan(unit_b.file_path, rec_b.line_start, rec_b.line_end)
+
+                    # Canonicalize complete endpoints: (layout_name, evidence_span)
+                    if (name_a, span_a.file_path, span_a.line_start, span_a.line_end) > (
+                        name_b,
+                        span_b.file_path,
+                        span_b.line_start,
+                        span_b.line_end,
+                    ):
+                        name_a, name_b = name_b, name_a
+                        span_a, span_b = span_b, span_a
+
+                    pair_key = (name_a, name_b)
+                    if pair_key not in seen_pairs:
+                        seen_pairs.add(pair_key)
+                        tag_a = rec_a.container_name.lower().replace("-", "_")
+                        tag_b = rec_b.container_name.lower().replace("-", "_")
+                        prop_rel_id = f"prop.relation.{tag_a}_{tag_b}_{idx_a}_{idx_b}"
+                        self.supported_facts.append(
+                            SupportedSystemFact(
+                                fact=RecordLayoutRelationFact(
+                                    layout_a_name=name_a,
+                                    layout_b_name=name_b,
+                                    relation_type=rel,
+                                ),
+                                proposition_id=prop_rel_id,
+                                evidence_spans={
+                                    "evidence_a": span_a,
+                                    "evidence_b": span_b,
+                                },
+                            )
+                        )
 
     def _extract_data_state_comparison(self, programs_by_id: dict[str, ASTCompilationUnit]) -> None:
         """Extract discrepancies between DAT files and initialization code generically."""

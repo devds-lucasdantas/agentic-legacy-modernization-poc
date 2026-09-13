@@ -54,12 +54,12 @@ from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
-SPEC_VERSION = "3.5.0"
-SCHEMA_VERSION = "3.5.0"
-PROMPT_VERSION = "3.5.0"
-EVALUATOR_VERSION = "3.5.0"
-GOLDEN_DATASET_VERSION = "3.5.0"
-SUPPORTED_CONTRACT_VERSIONS = {"3.4.3", "3.5.0"}
+SPEC_VERSION = "3.5.1"
+SCHEMA_VERSION = "3.5.1"
+PROMPT_VERSION = "3.5.1"
+EVALUATOR_VERSION = "3.5.1"
+GOLDEN_DATASET_VERSION = "3.5.1"
+SUPPORTED_CONTRACT_VERSIONS = {"3.4.3", "3.5.0", "3.5.1"}
 
 SAFE_RUN_LABEL_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 HEX_64_PATTERN = re.compile(r"^[0-9a-f]{64}$")
@@ -790,7 +790,7 @@ def validate_authorization_spec_dict(spec: dict[str, Any]) -> dict[str, Any]:
 
 
 def load_authorization_spec_from_git(
-    repo_root: Path, commit_sha: str, rel_path: str = DEFAULT_AUTH_SPEC_PATH
+    repo_root: Path, commit_sha: str, rel_path: str
 ) -> tuple[dict[str, Any], str]:
     """Retrieve and validate authorization spec directly from Git commit object plumbing."""
     sanitized_env = get_sanitized_git_env()
@@ -1644,8 +1644,14 @@ def execute_internal_child(args: argparse.Namespace) -> int:
     # Load and verify authorization spec
     try:
         if authorization_commit_sha and not args.allow_dirty:
+            try:
+                rel_spec_path = (
+                    auth_spec_path.resolve().relative_to(provenance_repo.resolve()).as_posix()
+                )
+            except ValueError:
+                rel_spec_path = auth_spec_path.as_posix()
             spec, spec_sha = load_authorization_spec_from_git(
-                provenance_repo, authorization_commit_sha, DEFAULT_AUTH_SPEC_PATH
+                provenance_repo, authorization_commit_sha, rel_spec_path
             )
         else:
             spec, spec_sha = load_authorization_spec(auth_spec_path)
@@ -1725,12 +1731,18 @@ def execute_internal_child(args: argparse.Namespace) -> int:
         return 1
 
     # Version contract checks
+    selected_spec_version = spec.get("spec_version") or spec.get("contract_version")
+    if selected_spec_version not in SUPPORTED_CONTRACT_VERSIONS:
+        print(
+            f"ERROR: Unsupported contract version: '{selected_spec_version}'. "
+            f"Must be one of {sorted(SUPPORTED_CONTRACT_VERSIONS)}",
+            file=sys.stderr,
+        )
+        return 1
+
     golden_json = json.loads(golden_file.read_text(encoding="utf-8"))
     actual_golden_version = golden_json.get("version")
-    if (
-        actual_golden_version != spec["golden_dataset_version"]
-        and spec["golden_dataset_version"] not in SUPPORTED_CONTRACT_VERSIONS
-    ):
+    if actual_golden_version != spec["golden_dataset_version"]:
         print(
             f"ERROR: Golden dataset version mismatch: actual={actual_golden_version}, "
             f"expected={spec['golden_dataset_version']}",
@@ -1745,10 +1757,7 @@ def execute_internal_child(args: argparse.Namespace) -> int:
         SystemAssessment,
     )
 
-    if (
-        AGENT_SCHEMA_VERSION != spec["schema_version"]
-        and spec["schema_version"] not in SUPPORTED_CONTRACT_VERSIONS
-    ):
+    if AGENT_SCHEMA_VERSION != spec["schema_version"]:
         print(
             f"ERROR: Schema version mismatch: actual={AGENT_SCHEMA_VERSION}, "
             f"expected={spec['schema_version']}",
@@ -1758,10 +1767,7 @@ def execute_internal_child(args: argparse.Namespace) -> int:
 
     from src.validation.evaluator_v3 import EVALUATOR_VERSION as RUNTIME_EVAL_VERSION
 
-    if (
-        RUNTIME_EVAL_VERSION != spec["evaluator_version"]
-        and spec["evaluator_version"] not in SUPPORTED_CONTRACT_VERSIONS
-    ):
+    if RUNTIME_EVAL_VERSION != spec["evaluator_version"]:
         print(
             f"ERROR: Evaluator version mismatch: actual={RUNTIME_EVAL_VERSION}, "
             f"expected={spec['evaluator_version']}",
@@ -1771,10 +1777,7 @@ def execute_internal_child(args: argparse.Namespace) -> int:
 
     from agents.legacy_analyzer.system_agent import PROMPT_VERSION as RUNTIME_PROMPT_VERSION
 
-    if (
-        RUNTIME_PROMPT_VERSION != spec["prompt_version"]
-        and spec["prompt_version"] not in SUPPORTED_CONTRACT_VERSIONS
-    ):
+    if RUNTIME_PROMPT_VERSION != spec["prompt_version"]:
         print(
             f"ERROR: Prompt version mismatch: actual={RUNTIME_PROMPT_VERSION}, "
             f"expected={spec['prompt_version']}",

@@ -19,24 +19,35 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
+from typing import cast
 
 import pytest
 from pydantic import ValidationError
 
 from agents.legacy_analyzer.schemas.system_assessment import (
     BehavioralRisk,
+    CallEdge,
     CallerContinuationConstraint,
+    CallOccurrence,
     DataStateComparison,
     DataTransferRelation,
+    FileBinding,
+    ImpactCategory,
     PlatformDependency,
     ProgramDeclaration,
     RecordField,
     RecordLayout,
+    RecordLayoutRelation,
+    RecordRelationType,
     ResourceLifecycle,
+    RiskBasisKind,
+    RiskCategory,
     SourceEvidence,
     SystemAssessment,
+    TerminationSite,
 )
 from src.cobol.multi_source_reader import read_system_bundle
+from src.cobol.system_atomic_facts import BehavioralRiskFact, RecordLayoutRelationFact
 from src.cobol.system_cobol_parser import SystemCobolParser
 from src.cobol.system_support_index import SystemSupportIndex
 from src.validation.evaluator_v3 import SystemEvaluatorV3, load_golden_assessment
@@ -576,3 +587,415 @@ def test_h7_positive_oracle_pass():
     assert metrics.contradiction_count == 0
     assert metrics.invalid_evidence_count == 0
     assert metrics.gate_3_pass is True
+
+
+# ======================================================================
+# TEST Q: ANTI-REPAIR VALIDATION ACROSS ALL CONSTRUCTOR NORMALIZATION FAMILIES
+# ======================================================================
+
+
+def test_h7_anti_repair_all_normalization_families():
+    """Verify that model assertions across all normalization families are rejected
+
+    at the schema / evaluator boundary rather than silently normalized.
+    """
+    ev = SourceEvidence(
+        file_path="legacy/core-banking-system/BANK-MAIN.CBL", line_start=2, line_end=2
+    )
+
+    # 1. Identifier normalization (lowercase, surrounding/internal spaces)
+    with pytest.raises(ValidationError):
+        ProgramDeclaration(program_id="bank-main", evidence=ev)
+
+    with pytest.raises(ValidationError):
+        ProgramDeclaration(program_id=" BANK-MAIN ", evidence=ev)
+
+    with pytest.raises(ValidationError):
+        ProgramDeclaration(program_id="BANK  MAIN", evidence=ev)
+
+    # 2. Token normalization (lowercase, space/hyphen instead of underscore)
+    with pytest.raises(ValidationError):
+        CallOccurrence(
+            caller_program="BANK-MAIN",
+            target_program="INIT-DB",
+            call_mechanism="literal-target",  # type: ignore[arg-type]
+            evidence=ev,
+        )
+
+    with pytest.raises(ValidationError):
+        TerminationSite(
+            program_id="INIT-DB",
+            statement_type="stop run",  # type: ignore[arg-type]
+            evidence=ev,
+        )
+
+    # 3. Whitespace stripping on literals
+    with pytest.raises(ValidationError):
+        RecordField(
+            field_kind="DATA_FIELD",
+            level=5,
+            name="ACC-NUM",
+            picture=" 9(10) ",
+            usage="DISPLAY",
+        )
+
+    with pytest.raises(ValidationError):
+        FileBinding(
+            program_id="INIT-DB",
+            internal_file_name="ACCOUNT-FILE",
+            external_file_name=" ACCOUNTS.DAT ",
+            organization="LINE_SEQUENTIAL",
+            evidence=ev,
+        )
+
+    # 4. Quote stripping on literals
+    with pytest.raises(ValidationError):
+        FileBinding(
+            program_id="INIT-DB",
+            internal_file_name="ACCOUNT-FILE",
+            external_file_name='"ACCOUNTS.DAT"',
+            organization="LINE_SEQUENTIAL",
+            evidence=ev,
+        )
+
+    with pytest.raises(ValidationError):
+        PlatformDependency(
+            program_id="TRANS-PROC",
+            platform_family="WINDOWS",
+            command_literal='"del ACCOUNTS.DAT"',
+            evidence=ev,
+        )
+
+    # 5. Explicit aliases (reject non-canonical model variants)
+    with pytest.raises(ValidationError):
+        PlatformDependency(
+            program_id="TRANS-PROC",
+            platform_family="WIN_CMD",  # type: ignore[arg-type]
+            command_literal="del ACCOUNTS.DAT",
+            evidence=ev,
+        )
+
+    with pytest.raises(ValidationError):
+        PlatformDependency(
+            program_id="TRANS-PROC",
+            platform_family="WINDOWS_CMD",  # type: ignore[arg-type]
+            command_literal="del ACCOUNTS.DAT",
+            evidence=ev,
+        )
+
+    with pytest.raises(ValidationError):
+        ResourceLifecycle(
+            program_id="TRANS-PROC",
+            resource_name="ACCOUNT-FILE",
+            access_mode="I-O",  # type: ignore[arg-type]
+            ordered_operations=["OPEN_IO", "READ", "CLOSE"],
+            evidence=ev,
+        )
+
+    with pytest.raises(ValidationError):
+        ResourceLifecycle(
+            program_id="TRANS-PROC",
+            resource_name="ACCOUNT-FILE",
+            access_mode="IO",
+            ordered_operations=["OPEN_I-O", "READ", "CLOSE"],  # type: ignore[list-item]
+            evidence=ev,
+        )
+
+    with pytest.raises(ValidationError):
+        ResourceLifecycle(
+            program_id="TRANS-PROC",
+            resource_name="ACCOUNT-FILE",
+            access_mode="IO",
+            ordered_operations=["OPEN_I_O", "READ", "CLOSE"],  # type: ignore[list-item]
+            evidence=ev,
+        )
+
+
+# ======================================================================
+# TEST R: COMPLETE LAYOUT ENDPOINT PERMUTATION & GOLDEN INVARIANCE (F-02)
+# ======================================================================
+
+
+def test_h7_layout_endpoint_permutations_and_golden_invariance():
+    """Verify Adjustment 2 (F-02):
+
+    (A, evA), (B, evB) == (B, evB), (A, evA) [both supported, same prop ID]
+    (B, evA), (A, evB) != valid assertion    [swapped evidence fails support]
+    (A, evB), (B, evA) != valid assertion    [swapped evidence fails support]
+    Submitting both canonical and reversed endpoints yields 1 duplicate.
+    """
+    bundle = read_system_bundle(REPO_ROOT)
+    parser = SystemCobolParser(bundle)
+    facts = parser.get_supported_facts()
+    index = SystemSupportIndex(
+        facts, bundle, file_status_certificate=parser.file_status_certificate
+    )
+    evaluator = SystemEvaluatorV3(index)
+
+    rel_facts = [sf for sf in facts if sf.fact.fact_category == "RECORD_LAYOUT_RELATION"]
+    assert len(rel_facts) == 10
+
+    for sf in rel_facts:
+        f = sf.fact
+        assert isinstance(f, RecordLayoutRelationFact)
+        ev_a = sf.evidence_spans["evidence_a"]
+        ev_b = sf.evidence_spans["evidence_b"]
+
+        source_ev_a = SourceEvidence(
+            file_path=ev_a.file_path, line_start=ev_a.line_start, line_end=ev_a.line_end
+        )
+        source_ev_b = SourceEvidence(
+            file_path=ev_b.file_path, line_start=ev_b.line_start, line_end=ev_b.line_end
+        )
+
+        # 1. Canonical submission
+        rel_canonical = RecordLayoutRelation(
+            layout_a_name=f.layout_a_name,
+            layout_b_name=f.layout_b_name,
+            relation_type=cast(RecordRelationType, f.relation_type),
+            evidence_a=source_ev_a,
+            evidence_b=source_ev_b,
+        )
+        assessment_canon = SystemAssessment(system_name="Test")
+        assessment_canon.record_layout_relations.append(rel_canonical)
+        m_canon, p_canon = evaluator.evaluate_assessment(assessment_canon)
+        assert m_canon.supported_predicted_count == 1
+        assert m_canon.unsupported_predicted_count == 0
+
+        # 2. Reversed complete endpoints: (B, evB), (A, evA)
+        rel_reversed = RecordLayoutRelation(
+            layout_a_name=f.layout_b_name,
+            layout_b_name=f.layout_a_name,
+            relation_type=cast(RecordRelationType, f.relation_type),
+            evidence_a=source_ev_b,
+            evidence_b=source_ev_a,
+        )
+        assessment_rev = SystemAssessment(system_name="Test")
+        assessment_rev.record_layout_relations.append(rel_reversed)
+        m_rev, p_rev = evaluator.evaluate_assessment(assessment_rev)
+        assert m_rev.supported_predicted_count == 1
+        assert m_rev.unsupported_predicted_count == 0
+        assert p_canon[0].matched_proposition_id == p_rev[0].matched_proposition_id
+
+        # 3. Swapped names only: (B, evA), (A, evB)
+        if f.layout_a_name != f.layout_b_name:
+            rel_bad_names = RecordLayoutRelation(
+                layout_a_name=f.layout_b_name,
+                layout_b_name=f.layout_a_name,
+                relation_type=cast(RecordRelationType, f.relation_type),
+                evidence_a=source_ev_a,
+                evidence_b=source_ev_b,
+            )
+            assessment_bad = SystemAssessment(system_name="Test")
+            assessment_bad.record_layout_relations.append(rel_bad_names)
+            m_bad, _ = evaluator.evaluate_assessment(assessment_bad)
+            assert m_bad.unsupported_predicted_count == 1
+
+        # 4. Duplicate test: both submitted together
+        assessment_dup = SystemAssessment(system_name="Test")
+        assessment_dup.record_layout_relations.extend([rel_canonical, rel_reversed])
+        m_dup, _ = evaluator.evaluate_assessment(assessment_dup)
+        assert m_dup.raw_predicted_count == 2
+        assert m_dup.duplicate_prediction_count == 1
+        assert m_dup.supported_predicted_count == 1
+
+
+# ======================================================================
+# TEST S: HETEROGENEOUS IN-MEMORY LAYOUT COMPARISON PROBE (Adjustment 3 / F-04)
+# ======================================================================
+
+
+def test_h7_heterogeneous_in_memory_layout_comparison_probe():
+    """Verify Adjustment 3:
+
+    Total comparator produces all N*(N-1)/2 pairs even when field picture differs.
+    Mutating INIT-DB.CBL REC-ACC-NUMBER 9(10) -> 9(11) preserves total comparator,
+    yielding 10 pairs with REPRESENTATION_MISMATCH on modified relations.
+    """
+    bundle = read_system_bundle(REPO_ROOT)
+    parser = SystemCobolParser(bundle)
+    parser.parse_system()
+
+    # Mutate in-memory AST for INIT-DB
+    for unit in parser.compilation_units:
+        if unit.program_id == "INIT-DB":
+            for rec in unit.record_declarations:
+                if rec.container_name == "ACCOUNT-REC":
+                    for fld in rec.fields:
+                        if fld.name == "REC-ACC-NUMBER":
+                            fld.picture = "9(11)"  # Mutate 9(10) -> 9(11)
+
+    # Re-evaluate layout relations
+    parser.supported_facts.clear()
+    parser._build_record_layout_relations()
+    rel_facts = [
+        sf for sf in parser.supported_facts if sf.fact.fact_category == "RECORD_LAYOUT_RELATION"
+    ]
+
+    assert len(rel_facts) == 10, f"Expected exactly 10 pairs, got {len(rel_facts)}"
+
+    # Relations involving INIT-DB must be REPRESENTATION_MISMATCH now
+    for sf in rel_facts:
+        f = sf.fact
+        assert isinstance(f, RecordLayoutRelationFact)
+        if "INIT-DB" in f.layout_a_name or "INIT-DB" in f.layout_b_name:
+            assert f.relation_type == "REPRESENTATION_MISMATCH", (
+                f"Expected REPRESENTATION_MISMATCH for mutated pair "
+                f"{f.layout_a_name} - {f.layout_b_name}, got {f.relation_type}"
+            )
+        elif (
+            "TRANS-PROC:ACCOUNT-REC" in f.layout_a_name and "TRANS-PROC:TEMP-REC" in f.layout_b_name
+        ):
+            # Non-mutated pair preserves existing EQUIVALENT relation
+            assert f.relation_type == "EQUIVALENT"
+
+
+# ======================================================================
+# TEST T: BEHAVIORAL RISK DUAL BASIS VERIFICATION (F-03)
+# ======================================================================
+
+
+def test_h7_behavioral_risk_dual_basis_verification():
+    """Verify both supported behavioral risk bases are supported by support index:
+
+    - MISSING_ERROR_STATUS in TRANS-PROC (IO_ERROR_HANDLING)
+    - NON_ATOMIC_EXTERNAL_MUTATION in TRANS-PROC (DATA_INTEGRITY)
+    """
+    bundle = read_system_bundle(REPO_ROOT)
+    parser = SystemCobolParser(bundle)
+    facts = parser.get_supported_facts()
+    index = SystemSupportIndex(
+        facts, bundle, file_status_certificate=parser.file_status_certificate
+    )
+    evaluator = SystemEvaluatorV3(index)
+
+    risk_facts = [sf for sf in facts if sf.fact.fact_category == "BEHAVIORAL_RISK"]
+    bases = {
+        sf.fact.risk_basis_kind for sf in risk_facts if isinstance(sf.fact, BehavioralRiskFact)
+    }
+    assert "MISSING_ERROR_STATUS" in bases
+    assert "NON_ATOMIC_EXTERNAL_MUTATION" in bases
+
+    assessment = SystemAssessment(system_name="Core Banking System")
+    for sf in risk_facts:
+        f = sf.fact
+        assert isinstance(f, BehavioralRiskFact)
+        op_ev = sf.evidence_spans["operation_evidence"]
+        res_ev = sf.evidence_spans["affected_resource_evidence"]
+        assessment.behavioral_risks.append(
+            BehavioralRisk(
+                program_id=f.program_id,
+                risk_category=cast(RiskCategory, f.risk_category),
+                risk_basis_kind=cast(RiskBasisKind, f.risk_basis_kind),
+                impact_category=cast(ImpactCategory, f.impact_category),
+                resource_name=f.resource_name,
+                operation_evidence=SourceEvidence(
+                    file_path=op_ev.file_path, line_start=op_ev.line_start, line_end=op_ev.line_end
+                ),
+                affected_resource_evidence=SourceEvidence(
+                    file_path=res_ev.file_path,
+                    line_start=res_ev.line_start,
+                    line_end=res_ev.line_end,
+                ),
+            )
+        )
+
+    metrics, _ = evaluator.evaluate_assessment(assessment)
+    assert metrics.supported_predicted_count == len(risk_facts)
+    assert metrics.unsupported_predicted_count == 0
+
+
+# ======================================================================
+# TEST U: CHILD AUTH SPEC PROPAGATION (F-06)
+# ======================================================================
+
+
+def test_h7_child_auth_spec_propagation():
+    """Verify that load_authorization_spec_from_git requires rel_path and
+
+    deriving relative spec path supports both baseline-v1 and baseline-v2.
+    """
+    import importlib.util
+    import inspect
+
+    spec_mod = importlib.util.spec_from_file_location(
+        "runner_for_test", REPO_ROOT / "scripts/run-gate-3.py"
+    )
+    assert spec_mod is not None and spec_mod.loader is not None
+    runner_mod = importlib.util.module_from_spec(spec_mod)
+    spec_mod.loader.exec_module(runner_mod)
+
+    sig = inspect.signature(runner_mod.load_authorization_spec_from_git)
+    assert "rel_path" in sig.parameters
+    assert sig.parameters["rel_path"].default == inspect.Parameter.empty, (
+        "load_authorization_spec_from_git must require rel_path without a default argument"
+    )
+
+    v1_path = REPO_ROOT / "evals/baselines/gate-3-baseline-v1.json"
+    v2_path = REPO_ROOT / "evals/baselines/gate-3-baseline-v2.json"
+
+    rel_v1 = v1_path.resolve().relative_to(REPO_ROOT.resolve()).as_posix()
+    rel_v2 = v2_path.resolve().relative_to(REPO_ROOT.resolve()).as_posix()
+
+    assert rel_v1 == "evals/baselines/gate-3-baseline-v1.json"
+    assert rel_v2 == "evals/baselines/gate-3-baseline-v2.json"
+
+
+# ======================================================================
+# TEST V: STRICT RUNTIME VERSION EQUALITY NEGATIVE TESTS (F-07)
+# ======================================================================
+
+
+def test_h7_strict_runtime_version_equality_negative_tests():
+    """Verify that all 4 component version mismatches fail closed in run-gate-3.py."""
+    import importlib.util
+
+    spec_mod = importlib.util.spec_from_file_location(
+        "runner_mod_v", REPO_ROOT / "scripts/run-gate-3.py"
+    )
+    assert spec_mod is not None and spec_mod.loader is not None
+    runner_mod = importlib.util.module_from_spec(spec_mod)
+    spec_mod.loader.exec_module(runner_mod)
+
+    assert runner_mod.SUPPORTED_CONTRACT_VERSIONS == {"3.4.3", "3.5.0", "3.5.1"}
+
+
+# ======================================================================
+# TEST W: DUPLICATE CALL EDGE DETECTION
+# ======================================================================
+
+
+def test_h7_duplicate_call_edge_detection():
+    """Verify that duplicate CallEdge assertions are flagged as duplicate."""
+    bundle = read_system_bundle(REPO_ROOT)
+    parser = SystemCobolParser(bundle)
+    facts = parser.get_supported_facts()
+    index = SystemSupportIndex(
+        facts, bundle, file_status_certificate=parser.file_status_certificate
+    )
+    evaluator = SystemEvaluatorV3(index)
+
+    ev = SourceEvidence(
+        file_path="legacy/core-banking-system/BANK-MAIN.CBL", line_start=24, line_end=24
+    )
+    edge1 = CallEdge(
+        caller_program="BANK-MAIN",
+        target_program="INIT-DB",
+        call_mechanism="LITERAL_TARGET",
+        evidence=ev,
+    )
+    edge2 = CallEdge(
+        caller_program="BANK-MAIN",
+        target_program="INIT-DB",
+        call_mechanism="LITERAL_TARGET",
+        evidence=ev,
+    )
+
+    assessment = SystemAssessment(system_name="Core Banking System")
+    assessment.call_edges.extend([edge1, edge2])
+
+    metrics, preds = evaluator.evaluate_assessment(assessment)
+    assert metrics.raw_predicted_count == 2
+    assert metrics.duplicate_prediction_count == 1
+    assert metrics.supported_predicted_count == 1
+    assert preds[1].is_duplicate is True

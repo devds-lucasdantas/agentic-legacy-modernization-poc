@@ -1280,11 +1280,11 @@ def _execute_child_failure_scenario(
 
     spec = {
         "gate": 3,
-        "spec_version": "3.4.3",
-        "schema_version": "3.4.3",
-        "prompt_version": "3.4.3",
-        "evaluator_version": "3.4.3",
-        "golden_dataset_version": "3.4.3",
+        "spec_version": mod.SPEC_VERSION,
+        "schema_version": mod.SCHEMA_VERSION,
+        "prompt_version": mod.PROMPT_VERSION,
+        "evaluator_version": mod.EVALUATOR_VERSION,
+        "golden_dataset_version": mod.GOLDEN_DATASET_VERSION,
         "requested_model": "gpt-5-mini",
         "reasoning_effort": "low",
         "max_attempts": 1,
