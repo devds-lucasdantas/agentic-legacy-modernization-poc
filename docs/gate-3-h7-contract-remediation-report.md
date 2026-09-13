@@ -561,5 +561,96 @@ All immutable preconditions were independently verified without relying on scrat
 - **Baseline-v3 Spec:** `evals/baselines/gate-3-baseline-v3.json` (`candidate_git_sha = ""`)
 - **Execution Status:** Strictly offline. Zero provider calls, zero baseline runs, no baseline-v3 reservation, baseline-v2 reservation byte-for-byte preserved.
 
+---
+
+## 16. H7.4.4 / Contract 3.5.3 Host-Oracle Soundness Hotfix Details
+
+H7.4.4 resolves all seven host-oracle BLOCKERs (B-01 through B-07) and two procedural HIGH issues identified during rigorous contract auditing under Contract 3.5.3 offline mode. It maintains byte-identical wire schema preservation (`wire_schema_sha256 = 07655be0...`), 100% frozen baseline-v2 reservation integrity, and strictly zero model provider calls.
+
+### 16.1 BLOCKER & HIGH Remediations
+
+1. **B-01: Identifier Domain Disambiguation (`src/cobol/identifier_domain.py` & Schemas)**
+   - Created neutral `src/cobol/identifier_domain.py` containing domain predicates: `is_canonical_cobol_identifier()`, `validate_canonical_cobol_identifier()`, `is_numeric_literal()`, `is_computation_operand()`, and `validate_computation_operand()`.
+   - Canonical COBOL identifiers must be uppercase alphanumeric with hyphens, matching `^(?=.*[A-Z])[A-Z0-9]+(?:-[A-Z0-9]+)*$`. Pure numeric tokens (e.g., `1000000003`) are explicitly rejected as COBOL identifiers.
+   - Migrated COBOL declaration schema fields (`ProgramDeclaration.program_id`, `RecordLayout.program_id`, `RecordLayout.record_name`, `RecordField.name`, `FileBinding.program_id`, `FileBinding.internal_file_name`, `FileOperation.program_id`, `FileOperation.internal_file_name`, etc.) to `validate_canonical_cobol_identifier`.
+   - Preserved `DataStateComparison.entity_id`, `FileBinding.external_file_name`, `FileOperation.resource_name`, `ResourceLifecycle.resource_name`, and `BehavioralRisk.resource_name` with `validate_canonical_identifier`, preserving numeric entity IDs (e.g. `1000000003`) and resource names with extensions/spaces (e.g. `ACCOUNTS OLD.DAT`).
+   - `ComputationDataflow.source_field` enforces `validate_computation_operand`, admitting both canonical COBOL identifiers and valid numeric literals (`100.50`), while rejecting invalid tokens.
+
+2. **B-02: Multiline Arithmetic Sentence-Boundary Isolation (`src/cobol/system_cobol_parser.py`)**
+   - In `_parse_file_unit()`, tracked `line_is_terminated` via `consume_optional_terminal_period()`.
+   - Multiline loops for `ADD` and `SUBTRACT` stop slurping immediately if `line_is_terminated` is `True`. An `ADD 1.` statement on a terminated line cannot absorb a subsequent sentence beginning with `TO WS-COUNT.`.
+   - Incomplete statements terminated by periods fail closed as `UNSUPPORTED_RELEVANT`, emitting zero cross-sentence arithmetic facts.
+
+3. **B-03: Shell Metacharacter & Wildcard Rejection in Mutation Operands**
+   - `tokenize_windows_mutation_operands()` inspects command tokens and immediately rejects shell metacharacters and wildcards: `><|&^%!*?()`.
+   - Metacharacter commands fail closed as `MUTATION_UNSUPPORTED`, preventing false `OperationSequenceFact` or `BehavioralRiskFact` derivation while preserving opaque `CommandInvocationFact` grounding.
+
+4. **B-04: POSIX -c & Bare Mutation Command Wrappers Fail-Closed**
+   - `classify_mutation_command()` un-wraps POSIX `-c` commands (e.g., `sh -c 'rm ...'`, `bash -c ...`, `/bin/sh -c ...`) and identifies mutation verbs (`rm`, `mv`, `cp`).
+   - Rejects POSIX shell wrappers as `MUTATION_UNSUPPORTED` with reason `"POSIX shell mutation wrappers are unsupported for deterministic resource mutation analysis"`.
+   - Rejects bare commands (e.g. `del accounts.dat` without `cmd /c`) as `MUTATION_UNSUPPORTED`.
+   - Both categories fail closed with `UNSUPPORTED_RELEVANT`, blocking evaluation coverage while preserving opaque command and platform dependency facts.
+
+5. **B-05: Lossless Mutation Tokenization**
+   - `tokenize_windows_mutation_operands()` rejects lossy whitespace: consecutive spaces (`\s{2,}`) or boundary whitespace inside operands.
+   - Double-quoted grouping (`"accounts old.dat"`) is tokenized losslessly without whitespace collapse.
+
+6. **B-06: Conflicting OPEN Modes Fail-Closed**
+   - In `ResourceLifecycleFact` emission, audited all `OPEN` access modes across operations for each file.
+   - If conflicting `OPEN` access modes exist (e.g., both `OPEN INPUT` and `OPEN OUTPUT` on the same resource in the same program), the parser marks the lifecycle as `UNSUPPORTED_RELEVANT`, emits **zero** `ResourceLifecycleFact`, and blocks evaluation coverage (`is_evaluation_blocked = True`). Individual truthful `FileOperationFact` entries remain grounded.
+
+7. **B-07: Strict Structural Proof for Callee Continuation Constraints**
+   - Implemented `_prove_callee_continuation(callee_unit)` requiring:
+     - Zero `UNSUPPORTED_RELEVANT` statements in the callee;
+     - Zero `GO` / `GOTO` statements;
+     - All `ASTTermination` nodes agree on termination verb (`STOP_RUN` vs `GOBACK`/`EXIT`);
+     - Control block depth is exactly 0 at termination;
+     - The proving termination statement occurs at top level and is the final executable statement.
+   - If continuation cannot be proven:
+     - Emits `InternalCallResolutionFact` (since callee program exists);
+     - Emits **zero** `CallerContinuationConstraintFact`;
+     - Marks caller's `CALL` statement as `UNSUPPORTED_RELEVANT`, blocking evaluation coverage.
+
+8. **HIGH Issues: Procedural Grammar Guards & Single-Token Periods**
+   - All procedural statement handlers (`DISPLAY`, `ACCEPT`, `IF`, `ELSE`, `END-IF`, `EVALUATE`, `WHEN`, `END-EVALUATE`, `END-PERFORM`, `END-READ`, `AT`, `NOT`, `GO`, `GOTO`) enforce complete token consumption; unconsumed trailing syntax fails closed as `UNSUPPORTED_RELEVANT`. Standalone `FROM` fails closed.
+   - `PARAGRAPH_HEADER` grammar excludes COBOL procedural reserved words and validates identifiers using `is_canonical_cobol_identifier`. Single-token lines ending in periods (`CALL.`, `MOVE.`, `END-IF.`, `END-PERFORM.`) are no longer misclassified as paragraph headers.
+
+### 16.2 Clarification 8: Domain-Symmetry Matrix
+
+| Domain / Value | `is_canonical_cobol_identifier` | `is_numeric_literal` | `is_computation_operand` | `validate_canonical_identifier` | `validate_canonical_cobol_identifier` |
+|---|---|---|---|---|---|
+| Pure Numeric (`1000000003`) | `False` | `True` | `True` | Valid (`1000000003`) | Rejection (`ValueError`) |
+| Canonical COBOL ID (`ACCOUNT-RECORD`) | `True` | `False` | `True` | Valid (`ACCOUNT-RECORD`) | Valid (`ACCOUNT-RECORD`) |
+| Lowercase ID (`account-record`) | `False` | `False` | `False` | Rejection (`ValueError`) | Rejection (`ValueError`) |
+| Resource Name (`ACCOUNTS.DAT`) | `False` | `False` | `False` | Valid (`ACCOUNTS.DAT`) | Rejection (`ValueError`) |
+| Resource Name with Spaces (`ACCOUNTS OLD.DAT`) | `False` | `False` | `False` | Valid (`ACCOUNTS OLD.DAT`) | Rejection (`ValueError`) |
+
+### 16.3 Verification Invariants (CLI-Grounded, Zero Scratch Scripts)
+
+- **Wire Schema SHA-256:** `07655be0a119440e1f693cbd3242842ed87e82c43518bce61f741bc7dc4423dc` (100% byte-identical).
+- **Golden Dataset SHA-256:** `da5bdee9286dd5fbc79cb8331b70aabf73fca029fe4a3d3c5ede5ed2c984b82b` (identical to A1 modulo contract version).
+- **Baseline-v2 Reservation SHA-256:** `108c51b222e476f32bd98c092c5dc814be9a25b4d1b93ae60f0f28ea2f5a631d` (intact and byte-for-byte preserved).
+- **Baseline-v3 Spec (`evals/baselines/gate-3-baseline-v3.json`):** `candidate_git_sha == ""` throughout.
+- **Baseline-v3 Run Directory:** `artifacts/gate-3/baseline-v3` does NOT exist.
+- **Canonical Legacy Certificate SHA-256:** `e5900cba53db046c80e0e5f64618b549e894631a0eebfe42f8c502fe0ae948be` (80 facts fully supported, 0 unsupported).
+- **Test Suite Pass Rates:**
+  - Full repo test suite: **331 / 331 passed** (`wsl .venv/bin/pytest -q`).
+  - H7 Contract regression suite: **62 / 62 passed** (`wsl .venv/bin/pytest -q evals/tests/test_h7_contract_regressions.py`).
+- **Static Quality & Formatting:**
+  - `ruff check .` -> All checks passed (0 errors).
+  - `ruff format --check .` -> 69 files already formatted (0 changes).
+  - `mypy src evals/tests` -> Success: no issues found in 35 source files.
+  - `pip check` -> No broken requirements found.
+
+---
+
+## 17. Final Status (H7.4.4 Release)
+
+- **Functional Commit (H7.4.4-0):** `6560586eefc1865959bd3bc937a09cb1527ecac4`
+- **Report Commit (H7.4.4):** Direct report-only child of `H7.4.4-0`
+- **Remote Branch:** `feat/gate-3-system-analysis`
+- **Baseline-v3 Spec:** `evals/baselines/gate-3-baseline-v3.json` (`candidate_git_sha = ""`)
+- **Execution Status:** Strictly offline. Zero provider calls, zero baseline runs, no baseline-v3 reservation, baseline-v2 reservation byte-for-byte preserved.
+
 
 
