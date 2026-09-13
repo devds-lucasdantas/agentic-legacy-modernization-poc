@@ -1,14 +1,16 @@
-# Gate 3 H7.3 / H7.3.1 Contract 3.5.2 Remediation Report
+# Gate 3 H7.4 Contract 3.5.3 Remediation Report
 
 **Date:** 2026-09-13  
-**Contract Version:** 3.5.2  
-**Functional Commit (H7.3.1-0):** `82829ec159fc3bf3428411351b1d1937db9482a1`  
-**Historical Functional Commit (H7.3-0):** `3dfe8ffd9cf7cc6d2f9d385e899f8df505869b3a`  
-**Historical Report Commit (H7.3):** `e03e05406f76663c2be8b9c038c481b3e0b162cf`  
-**Classification:** `FAIL_CLOSED_HOTFIX_AND_FINAL_DOMAIN_CLOSURE`  
-**Mode:** OFFLINE ONLY  
+**Contract Version:** 3.5.3  
+**Functional Commit (H7.4-0):** `9def1a79cdf5fa45395b7922347ea408960e9cbf`  
+**Historical Functional Commit (H7.3.1-0):** `82829ec159fc3bf3428411351b1d1937db9482a1`  
+**Historical Report Commit (H7.3.1):** `a0f901c6a0ae5cf081a66d2fced41c69357ee329`  
+**Classification:** `STRUCTURAL_VERIFIER_AND_LOGICAL_PARSING_REMEDIATION`  
+**Mode:** STRICTLY OFFLINE  
 **Live Provider Calls:** 0  
-**Baseline-v2 Executed:** NO (`candidate_git_sha = ""`)  
+**Baseline-v2 State:** Byte-for-byte preserved (`108c51b222e476f32bd98c092c5dc814be9a25b4d1b93ae60f0f28ea2f5a631d`)  
+**Baseline-v3 Spec:** Created (`evals/baselines/gate-3-baseline-v3.json`, `candidate_git_sha = ""`)  
+**Baseline-v3 Execution:** NO (`artifacts/gate-3/baseline-v3` does not exist)  
 
 ---
 
@@ -193,12 +195,117 @@ All cryptographic hashes match `evals/baselines/gate-3-baseline-v2.json` exactly
 
 ---
 
-## 8. Final Status
+## 8. Historical H7.3.1 Status
 
 - **Functional Commit (H7.3.1-0):** `82829ec159fc3bf3428411351b1d1937db9482a1`
-- **Report Commit (H7.3.1):** Direct report-only child of `H7.3.1-0`
+- **Report Commit (H7.3.1):** `a0f901c6a0ae5cf081a66d2fced41c69357ee329`
 - **Historical Functional Commit (H7.3-0):** `3dfe8ffd9cf7cc6d2f9d385e899f8df505869b3a`
 - **Historical Report Commit (H7.3):** `e03e05406f76663c2be8b9c038c481b3e0b162cf`
+
+---
+
+## 9. Gate 3 H7.4 / Contract 3.5.3 Structural Verifier & Logical Parsing Remediation
+
+**Date:** 2026-09-13  
+**Contract Version:** 3.5.3  
+**Functional Commit (H7.4-0):** `9def1a79cdf5fa45395b7922347ea408960e9cbf`  
+**Report Commit (H7.4):** Direct report-only child of `H7.4-0`  
+**Classification:** `STRUCTURAL_VERIFIER_AND_LOGICAL_PARSING_REMEDIATION`  
+**Mode:** STRICTLY OFFLINE  
+**Live Provider Calls:** 0  
+**Baseline-v2 State:** Byte-for-byte preserved (`108c51b222e476f32bd98c092c5dc814be9a25b4d1b93ae60f0f28ea2f5a631d`)  
+**Baseline-v3 Spec:** Created (`evals/baselines/gate-3-baseline-v3.json`, `candidate_git_sha = ""`)  
+**Baseline-v3 Execution:** NO (`artifacts/gate-3/baseline-v3` does not exist)  
+
+### 9.1 Summary of Remediated Findings
+
+H7.4 addresses the four independently reproduced blockers (B-01 through B-04) and three additional high findings identified during the post-H7.3.1 independent review, incorporating all five required plan review clarifications:
+
+1. **B-01: Structural Semantic-Key Collision / False 59/59 (Clarification 1):**
+   - **Root Cause:** SystemSupportIndex previously used string semantic keys as the sole support proof. For compound facts with structured child elements (such as `RecordLayoutFact` with condition values `("A", "B")` vs `("A,B",)`), different dataclass structures mapped to identical string keys, falsely certifying candidate assertions.
+   - **Remediation:** Exact canonical dataclass equality (`candidate_fact == supported_fact.fact`) is now the authoritative structural support proof. The support index enforces a strict 6-step verification sequence:
+     1. Semantic-key bucket lookup
+     2. Exact complete structured fact equality (`candidate_fact == supported_fact.fact`)
+     3. Exact evidence role-set equality
+     4. Exact canonical path equality
+     5. Exact line_start / line_end equality
+     6. Category-specific certificate checks
+   - **Deterministic Identity:** `get_canonical_structured_identity()` provides deterministic JSON-canonical identity for deduplication, diagnostics, and testing, but does not replace dataclass equality as the support proof.
+
+2. **B-02: Multiline Level-88 Partial-Fact Emission (Clarification 4):**
+   - **Root Cause:** Unbounded level-88 parsing swallowed subsequent data division entries or emitted partial condition facts when encountering malformed or multiline quote syntax.
+   - **Remediation:** The level-88 collector in `SystemCobolParser` is strictly bounded and stops at any structural boundary: paragraph headers, section headers, division headers, another level 88, or any new 01/05/77 data declaration.
+   - **Fail-Closed Behavior:** On unclosed quotes or syntax errors, the parser discards partial condition state, emits NO condition fact, registers `UNSUPPORTED_RELEVANT`, sets `is_evaluation_blocked = True`, and cleanly recovers to parse subsequent declarations independently.
+
+3. **B-03: False DELETE -> RENAME Certification Across Control Boundaries (Clarification 4):**
+   - **Root Cause:** Command pairing between `MOVE ... TO CMD` and `CALL "SYSTEM"` did not verify control-flow linearity, incorrectly pairing dispatches across branch and block boundaries.
+   - **Remediation:** `has_procedural_barrier_between()` checks raw source lines between command dispatches for branching/conditional constructs (`IF`, `ELSE`, `END-IF`, `EVALUATE`, `WHEN`, `END-EVALUATE`), loop structures (`PERFORM`, `END-PERFORM`), control transfers (`GO`, `GOTO`, `STOP`, `GOBACK`, `EXIT`), regional markers (`SECTION`, paragraphs), and I/O / side effects (`DISPLAY`, `ACCEPT`). Only strictly linear, adjacent dispatches without intervening barriers pair into `OperationSequence` and emit `NON_ATOMIC_EXTERNAL_MUTATION`.
+
+4. **B-04: Baseline-v2 Reservation Preservation & Baseline-v3 Creation:**
+   - **Root Cause:** A prior dry-run invocation consumed the baseline-v2 reservation slot, rendering baseline-v2 immutable and non-reusable.
+   - **Remediation:** `artifacts/gate-3/baseline-v2/reservation-state.json` is preserved byte-for-byte with its exact hash `108c51b222e476f32bd98c092c5dc814be9a25b4d1b93ae60f0f28ea2f5a631d`.
+   - Baseline-v3 is initialized via `evals/baselines/gate-3-baseline-v3.json` (`spec_version = "3.5.3"`, `candidate_git_sha = ""`).
+   - `artifacts/gate-3/baseline-v3` DOES NOT EXIST (0 dry-run or live executions were executed).
+
+5. **Additional High Findings:**
+   - **Incomplete Source-Literal Preservation (Clarification 3):** Replaced all `.strip("'\"")` in parsing with `exact_syntactic_unquote()`, which strictly removes exactly one matching pair of outer quotes (`'` or `"`) from raw tokens, preserving all interior content verbatim (boundary spaces, casing, hyphens). `validate_canonical_literal_text` and `validate_source_literal_content` reject leading/trailing whitespace without repairing, enforcing anti-repair.
+   - **Typed SystemAssessment Anti-Repair Bypass (Clarification 2):** In `evaluate_assessment()`, the assessment is serialized via `model_dump(mode="python", round_trip=True)` and revalidated via `SystemAssessment.model_validate(raw_payload)`. Any mutated post-instantiation objects fail revalidation with `ValidationError`.
+   - **FileBinding.organization Model/Verifier Domain Mismatch:** Harmonized schema definition to `Literal["LINE_SEQUENTIAL", "SEQUENTIAL"]`, aligning schema, parser, and verifier domain.
+
+### 9.2 Scientific Golden Dataset Verification (Clarification 5)
+
+The 59-fact golden dataset `evals/expected/system-understanding-v3.json` was directly compared against commit A1 (`9672708e6bcdc01f9d6377535afbb9e11258126e`):
+- **Propositions:** 59/59 propositions identical in IDs, categories, semantic keys, evidence spans, and auditor rationale.
+- **Scientific Fields:** `benchmark_design`, `golden_authoring_method`, `provenance_notes`, `total_expected_facts`, `category_policies`, `group_counts` are 100% identical.
+- **Metadata Difference:** Excludes ONLY `"version": "3.5.3"` (vs `"version": "3.4.3"` in A1).
+- **Golden Dataset SHA-256:** `da5bdee9286dd5fbc79cb8331b70aabf73fca029fe4a3d3c5ede5ed2c984b82b`.
+
+### 9.3 Cryptographic Artifact Hashes (Contract 3.5.3)
+
+| Component | File / Accessor | SHA-256 Hash |
+|---|---|---|
+| Production Prompt | `agents/legacy_analyzer/prompts/system_v3.md` | `4be25cfc25933d6f0e69cbeeae1efe12ccf2e1354857e04c90108d8534ea92e8` |
+| Wire Schema | `get_system_openai_wire_schema()` | `1cd36bf69496c063bc93a15c9334398e2256be527b4de3ff2e9b897a09c94c3c` |
+| Golden Dataset | `evals/expected/system-understanding-v3.json` | `da5bdee9286dd5fbc79cb8331b70aabf73fca029fe4a3d3c5ede5ed2c984b82b` |
+| Baseline-v3 Spec | `evals/baselines/gate-3-baseline-v3.json` | `5a03a737616de2213d3f0abf464648c91d398eee64dc63560d1d5806d11b1cd9` |
+| Baseline-v2 Reservation | `artifacts/gate-3/baseline-v2/reservation-state.json` | `108c51b222e476f32bd98c092c5dc814be9a25b4d1b93ae60f0f28ea2f5a631d` |
+| Canonical Bundle | `legacy/` (6 artifacts) | `95bb386b51d653c0a1834e1950634a9887b7cb6826b8c317a07c4b6a4167d060` |
+| Source Manifest | Source manifest | `daf28b3314199db8e31bfacdf2fb8441b54682caa7854ed288e1bc00866a1dd1` |
+| Dependency Lock | `requirements-lock.txt` | `732cb9370e90af2d0972eeda7fc18fd5745f17cb301f359b268df228fe7f18be` |
+| Baseline-v3 Candidate SHA | `candidate_git_sha` | `""` (unexecuted) |
+
+### 9.4 Test Suite & Quality Gates
+
+1. **H7 / H7.4 Contract Regression Suite (`evals/tests/test_h7_contract_regressions.py`):**  
+   39 passed (including full B-01 adversarial matrix with 7-field vs 6-field injected picture, condition values comma collisions, schema anti-repair validation, collision resilience, complete model tree revalidation, bounded level-88 unclosed quote handling, strict procedural barriers, generic structural equality, and direct comparison vs A1).
+2. **Adversarial Regression Suite (`evals/tests/test_adversarial_regressions_gate3.py`):**  
+   24 passed.
+3. **Runner Suite (`evals/tests/test_gate_3_runner.py`):**  
+   12 passed (including baseline-v3 CLI default and spec coherence).
+4. **Remediation Regression Suite (`evals/tests/test_gate_3_remediation_regressions.py`):**  
+   25 passed.
+5. **Round 3 Regressions Suite (`evals/tests/test_round3_regressions.py`):**  
+   15 passed.
+6. **H5 & H6 Regression Suites:**  
+   21 passed.
+7. **Full Repository Pytest Suite:**  
+   308 passed, 0 failures (1 pre-existing warning).
+8. **Linter & Formatter (`ruff check .`, `ruff format --check .`):**  
+   Passed (0 errors, all 68 source files formatted cleanly).
+9. **Static Type Checking (`mypy src agents evals scripts`):**  
+   Passed (Success: no issues found in 51 source files).
+10. **Baseline-v2 Reservation Invariant:**  
+    Byte-for-byte SHA matches `108c51b222e476f32bd98c092c5dc814be9a25b4d1b93ae60f0f28ea2f5a631d`.
+11. **Baseline-v3 Isolation Invariant:**  
+    `artifacts/gate-3/baseline-v3` does not exist.
+
+---
+
+## 10. Final Status (H7.4 Release)
+
+- **Functional Commit (H7.4-0):** `9def1a79cdf5fa45395b7922347ea408960e9cbf`
+- **Report Commit (H7.4):** Direct report-only child of `H7.4-0`
 - **Remote Branch:** `feat/gate-3-system-analysis`
-- **Baseline-v2 Spec:** `evals/baselines/gate-3-baseline-v2.json` with `candidate_git_sha = ""`
-- **Execution Status:** Offline hotfix implementation complete. No baseline-v2 execution or authorization was performed.
+- **Baseline-v3 Spec:** `evals/baselines/gate-3-baseline-v3.json` with `candidate_git_sha = ""`
+- **Execution Status:** Offline structural verifier and logical parsing remediation complete. Zero provider calls, zero baseline executions.
+
