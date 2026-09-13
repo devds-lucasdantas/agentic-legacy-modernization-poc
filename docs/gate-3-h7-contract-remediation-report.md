@@ -2,9 +2,9 @@
 
 **Date:** 2026-09-13  
 **Contract Version:** 3.5.3  
-**Functional Commit (H7.4.4.1-0):** `dd8563b10fa3fb5f7db2a3cb9d91f2bac6e87100`  
-**Prior Functional Commit (H7.4.4-0):** `6560586eefc1865959bd3bc937a09cb1527ecac4`  
-**Prior Report Commit (H7.4.4):** `a02a8b0a9fc50b75b9fe68f09b735b63c628b4cb`  
+**Functional Commit (H7.4.4.2-0):** `ad115a2b48ffcc7db998fa09a663ca680cf8a404`  
+**Prior Functional Commit (H7.4.4.1-0):** `dd8563b10fa3fb5f7db2a3cb9d91f2bac6e87100`  
+**Prior Report Commit (H7.4.4.1):** `750c9bca9da922f6493ba6f6a31cf30392f02051`  
 **Classification:** `STRUCTURAL_VERIFIER_AND_LOGICAL_PARSING_REMEDIATION`  
 **Mode:** STRICTLY OFFLINE  
 **Live Provider Calls:** 0  
@@ -719,10 +719,84 @@ An exact semantic diff between H7.4.3 and H7.4.4.1 classification lists (`per_st
 
 ---
 
-## 19. Final Status (H7.4.4.1 Release)
+## 19. Historical Status (H7.4.4.1 Release)
 
 - **Functional Commit (H7.4.4.1-0):** `dd8563b10fa3fb5f7db2a3cb9d91f2bac6e87100`
-- **Report Commit (H7.4.4.1):** Direct report-only child of `H7.4.4.1-0`
+- **Report Commit (H7.4.4.1):** `750c9bca9da922f6493ba6f6a31cf30392f02051`
+- **Remote Branch:** `feat/gate-3-system-analysis`
+- **Baseline-v3 Spec:** `evals/baselines/gate-3-baseline-v3.json` (`candidate_git_sha = ""`)
+- **Execution Status:** Strictly offline. Zero provider calls, zero baseline runs, no baseline-v3 reservation, baseline-v2 reservation byte-for-byte preserved.
+
+---
+
+## 20. H7.4.4.2 / Contract 3.5.3 Unrepresentable Platform Semantics Fail-Closed Hotfix Details
+
+### 20.1 Problem Analysis: Elimination of POSIX Fail-Open Anomaly
+Under Contract 3.5.3 wire schema:
+- `PlatformFamily = Literal["WINDOWS"]` (only `"WINDOWS"` is model-visible).
+- Category evaluation policy establishes `PLATFORM_DEPENDENCY = REQUIRED_EXHAUSTIVE`.
+
+In H7.4.4.1, non-mutation POSIX commands (`/bin/sh -c echo test`, `sh -c echo test`, `bash -c echo test`, `/usr/bin/bash -c echo test`) emitted exact `CommandInvocationFact`, zero `PlatformDependencyFact`, but retained clean coverage (`unsupported_relevant_count == 0`, `is_evaluation_blocked == False`). This was identified as an unsound fail-open condition: because `PLATFORM_DEPENDENCY` is `REQUIRED_EXHAUSTIVE`, encountering a deterministically established POSIX platform dependency that cannot be represented by the model-visible wire schema must block evaluation coverage rather than silently concealing the unrepresentable platform dependency.
+
+### 20.2 Required Semantics & Implementation
+For every deterministically recognized `CommandDialect.POSIX_SHELL` invocation dispatched via literal `CALL 'SYSTEM'`:
+1. **Retain Exact Command Invocation:** `CommandInvocationFact` remains fully grounded if the `MOVE -> CALL 'SYSTEM'` binding is otherwise valid.
+2. **Zero Platform Dependency:** Emits strictly zero `PlatformDependencyFact` (Contract 3.5.3 wire schema permits only `"WINDOWS"`).
+3. **Fail-Closed Coverage Block:** The command dispatch source statements are marked `StatementClassification.UNSUPPORTED_RELEVANT` with reason:
+   `"POSIX shell command establishes an unrepresentable platform dependency outside Contract 3.5.3 frozen schema (PlatformFamily exposes ONLY WINDOWS)"`.
+4. **Certificate Enforcement:** `ParserCoverageCertificate` evaluates to:
+   - `unsupported_relevant_count >= 1`
+   - `is_evaluation_blocked == True`
+5. **Universal Application:** Applies equally to POSIX mutation (`/bin/sh -c rm ...`, `bash -c mv ...`) and POSIX non-mutation (`/bin/sh -c echo test`, `sh -c echo test`, `bash -c echo test`).
+6. **Zero Fabricated Sequences/Risks:** Derived sequence (`OperationSequenceFact`) and risk (`BehavioralRiskFact`) remain zero.
+
+### 20.3 Windows Positive Controls & Scope Preservations
+- **Windows Commands (`cmd /c echo test`, `cmd.exe /c echo test`):**
+  - Emits `CommandInvocationFact(command_template=win_cmd)`
+  - Emits `PlatformDependencyFact(platform_family="WINDOWS", command_literal=win_cmd)`
+  - Coverage remains clean: `unsupported_relevant_count == 0`, `is_evaluation_blocked == False`
+  - Zero mutation sequence or risk derived.
+- **Bare/Other Commands:** Unchanged, preserving existing behavior.
+- **Frozen Legacy Fixture (`legacy/core-banking-system`):** Contains only Windows `cmd /c` dispatches (`del ACCOUNTS.DAT`, `ren ACCOUNTS.TMP ACCOUNTS.DAT`, `del ACCOUNTS.TMP`). Yields `unsupported_relevant_count == 0`, preserving the canonical certificate SHA-256 `e5900cba53db046c80e0e5f64618b549e894631a0eebfe42f8c502fe0ae948be` and 59/59 golden evaluation (precision=1.0, recall=1.0).
+
+### 20.4 Two-Part Host/Wire Closure Invariant
+The enforced closure invariant guarantees:
+- **Invariant A (Sound Token Emission):** Every emitted `PlatformDependencyFact` token is wire-representable (`platform_family in {"WINDOWS"}`). No unsupported token (such as `"POSIX"`) can ever be instantiated in host support facts.
+- **Invariant B (Completeness Fail-Closed):** If the parser deterministically observes an unrepresentable platform dependency outside the wire domain, coverage **MUST** fail closed (`unsupported_relevant_count >= 1`, `is_evaluation_blocked == True`) because `PLATFORM_DEPENDENCY` is `REQUIRED_EXHAUSTIVE`.
+
+### 20.5 Full Original Static Quality Gate (H7.4.4.2)
+- `mypy src agents evals scripts` -> Success: no issues found in 52 source files.
+- `pytest -q` -> 334 passed, 1 warning in 297.66s.
+- `pytest -q evals/tests/test_h7_contract_regressions.py` -> 65 passed in 12.89s.
+- `pytest -q evals/tests/test_adversarial_regressions_gate3.py` -> 24 passed in 2.98s.
+- `pytest -q evals/tests/test_round3_regressions.py` -> 15 passed in 11.20s.
+- `ruff check .` -> All checks passed (0 errors).
+- `ruff format --check .` -> 69 files already formatted.
+- `pip check` -> No broken requirements found.
+
+### 20.6 Complete Scientific Immutability Invariants (CLI-Grounded)
+| Asset | Target / File | Hash / Value | Verification Status |
+|---|---|---|---|
+| Baseline-v1 Spec | `evals/baselines/gate-3-baseline-v1.json` | `b37e8815e2605f279ecc417b8e037f0b235f5e1dcfa64d79b10708e852509695` | Byte-for-byte verified |
+| Baseline-v1 Artifacts | `artifacts/gate-3/baseline-v1/manifest.json` | 13 artifacts matching manifest SHAs | All 13 verified identical |
+| Baseline-v2 Reservation | `artifacts/gate-3/baseline-v2/reservation-state.json` | `108c51b222e476f32bd98c092c5dc814be9a25b4d1b93ae60f0f28ea2f5a631d` | Byte-for-byte verified |
+| Production Prompt | `agents/legacy_analyzer/prompts/system_v3.md` | `4be25cfc25933d6f0e69cbeeae1efe12ccf2e1354857e04c90108d8534ea92e8` | Byte-for-byte verified |
+| Generated Wire Schema | `get_system_openai_wire_schema()` | `07655be0a119440e1f693cbd3242842ed87e82c43518bce61f741bc7dc4423dc` | Byte-for-byte verified |
+| Golden Dataset | `evals/expected/system-understanding-v3.json` | `da5bdee9286dd5fbc79cb8331b70aabf73fca029fe4a3d3c5ede5ed2c984b82b` | Byte-for-byte verified |
+| Dependency Lock | `requirements-lock.txt` | `732cb9370e90af2d0972eeda7fc18fd5745f17cb301f359b268df228fe7f18be` | Byte-for-byte verified |
+| Source Manifest | `evals/baselines/gate-3-baseline-v3.json` (`target_bundle`) | `daf28b3314199db8e31bfacdf2fb8441b54682caa7854ed288e1bc00866a1dd1` | Byte-for-byte verified |
+| Canonical Bundle | `legacy/` (6 artifacts) | `95bb386b51d653c0a1834e1950634a9887b7cb6826b8c317a07c4b6a4167d060` | Byte-for-byte verified |
+| Baseline-v3 Spec | `evals/baselines/gate-3-baseline-v3.json` | `candidate_git_sha = ""` | Verified empty |
+| Baseline-v3 Artifacts | `artifacts/gate-3/baseline-v3` | Does NOT exist | Verified absent |
+| Legacy Certificate | `ParserCoverageCertificate` on `legacy/` | `e5900cba53db046c80e0e5f64618b549e894631a0eebfe42f8c502fe0ae948be` | Byte-for-byte verified |
+| Golden Evaluation | Evaluation of frozen golden | 59/59, Precision=1.0, Recall=1.0 | Full Pass |
+
+---
+
+## 21. Final Status (H7.4.4.2 Release)
+
+- **Functional Commit (H7.4.4.2-0):** `ad115a2b48ffcc7db998fa09a663ca680cf8a404`
+- **Report Commit (H7.4.4.2):** Direct report-only child of `H7.4.4.2-0`
 - **Remote Branch:** `feat/gate-3-system-analysis`
 - **Baseline-v3 Spec:** `evals/baselines/gate-3-baseline-v3.json` (`candidate_git_sha = ""`)
 - **Execution Status:** Strictly offline. Zero provider calls, zero baseline runs, no baseline-v3 reservation, baseline-v2 reservation byte-for-byte preserved.
