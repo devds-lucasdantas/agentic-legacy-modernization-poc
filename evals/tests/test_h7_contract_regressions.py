@@ -33,6 +33,7 @@ from agents.legacy_analyzer.schemas.system_assessment import (
     CallerContinuationConstraint,
     CallOccurrence,
     CommandInvocation,
+    ComputationDataflow,
     DataStateComparison,
     DataTransferRelation,
     FileBinding,
@@ -50,8 +51,16 @@ from agents.legacy_analyzer.schemas.system_assessment import (
     SourceEvidence,
     SystemAssessment,
     TerminationSite,
+    validate_canonical_identifier,
 )
 from agents.legacy_analyzer.schemas.system_export import get_system_openai_wire_schema
+from src.cobol.identifier_domain import (
+    is_canonical_cobol_identifier,
+    is_computation_operand,
+    is_numeric_literal,
+    validate_canonical_cobol_identifier,
+    validate_computation_operand,
+)
 from src.cobol.multi_source_reader import MultiSourceBundle, TargetFile, read_system_bundle
 from src.cobol.system_atomic_facts import (
     BehavioralRiskFact,
@@ -59,15 +68,18 @@ from src.cobol.system_atomic_facts import (
     CallerContinuationConstraintFact,
     CallOccurrenceFact,
     CommandInvocationFact,
+    ComputationDataflowFact,
     DataStateComparisonFact,
     EvidenceSpan,
     FileBindingFact,
+    FileOperationFact,
     InternalCallResolutionFact,
     OperationSequenceFact,
     PlatformDependencyFact,
     RecordFieldFact,
     RecordLayoutFact,
     RecordLayoutRelationFact,
+    ResourceLifecycleFact,
     SupportedSystemFact,
     canonicalize_picture,
 )
@@ -1719,6 +1731,30 @@ def _make_synth_bundle(source_code: str, filename: str = "TEST.CBL") -> MultiSou
     )
 
 
+def _make_multi_file_bundle(files_dict: dict[str, str]) -> MultiSourceBundle:
+    target_files = {}
+    tot_lines = 0
+    for filename, source_code in files_dict.items():
+        lines = source_code.splitlines()
+        numbered = "\n".join(f"{idx + 1:06d} {line}" for idx, line in enumerate(lines))
+        tf = TargetFile(
+            relative_path=filename,
+            file_type="COBOL",
+            raw_content=source_code,
+            numbered_content=numbered,
+            sha256=hashlib.sha256(source_code.encode("utf-8")).hexdigest(),
+            line_count=len(lines),
+        )
+        target_files[filename] = tf
+        tot_lines += tf.line_count
+    return MultiSourceBundle(
+        files=target_files,
+        total_physical_lines=tot_lines,
+        bundle_sha256="synth_multi",
+        formatted_prompt_payload="synth_multi",
+    )
+
+
 def test_h7_3_1_level_88_unsupported_value_syntax_fail_closed() -> None:
     """F1: Ensure supported level-88 values pass cleanly and unsupported syntax fails closed."""
     # 1. Supported simple literal: single value
@@ -3029,7 +3065,8 @@ def test_h7_4_1_command_literal_source_symmetry() -> None:
     m_trim, _ = ev_cmd.evaluate_assessment(trim_cmd_model)
     assert m_trim.unsupported_predicted_count == 1
 
-    # 2. Shell wildcard syntax (*) in command literal accepted by schema and certified
+    # 2. Shell wildcard syntax (*) in command literal grounds opaque command/platform facts,
+    # but mutation interpretation fails closed (coverage blocked, zero sequence/risk).
     src_wildcard = """       IDENTIFICATION DIVISION.
        PROGRAM-ID. TWILD.
        DATA DIVISION.
@@ -3042,11 +3079,19 @@ def test_h7_4_1_command_literal_source_symmetry() -> None:
 """
     p_wild = SystemCobolParser(_make_synth_bundle(src_wildcard, "TWILD.CBL"))
     cert_wild = p_wild.parse_system()
-    assert cert_wild.unsupported_relevant_count == 0
+    assert cert_wild.unsupported_relevant_count > 0, "Wildcard mutation must fail closed"
+    assert cert_wild.is_evaluation_blocked is True
     plat_wild = [
         f.fact for f in p_wild.get_supported_facts() if isinstance(f.fact, PlatformDependencyFact)
     ][0]
     assert plat_wild.command_literal == " cmd /c del *.tmp "
+    assert plat_wild.platform_family == "WINDOWS"
+    seq_wild = [
+        f.fact
+        for f in p_wild.get_supported_facts()
+        if isinstance(f.fact, (OperationSequenceFact, BehavioralRiskFact))
+    ]
+    assert len(seq_wild) == 0, "Zero target-based sequence/risk facts for wildcard mutation"
 
     idx_wild = SystemSupportIndex(
         p_wild.get_supported_facts(),
@@ -3516,25 +3561,59 @@ def test_h7_4_2_h02_decoupled_command_and_sequence_support() -> None:
     assert m_trim.unsupported_predicted_count == 2
     assert all(not p.is_supported for p in preds_trim)
 
-    # 2. Other valid commands: dir, del with wildcard
-    for cmd_str in ("cmd /c dir", "cmd /c del *.tmp"):
-        src_cmd = f"""       IDENTIFICATION DIVISION.
+    # 2. Non-mutation command (dir): clean coverage, command supported, zero sequence
+    src_dir = """       IDENTIFICATION DIVISION.
        PROGRAM-ID. CONCCMD.
        DATA DIVISION.
        WORKING-STORAGE SECTION.
        01 BUFFER PIC X(100).
        PROCEDURE DIVISION.
-           MOVE '{cmd_str}' TO BUFFER
+           MOVE 'cmd /c dir' TO BUFFER
            CALL 'SYSTEM' USING BUFFER
            STOP RUN.
 """
-        p_c = SystemCobolParser(_make_synth_bundle(src_cmd))
-        cert_c = p_c.parse_system()
-        assert cert_c.unsupported_relevant_count == 0, f"Command {cmd_str} must have clean coverage"
-        assert cert_c.is_evaluation_blocked is False
-        cmds = [f.fact for f in p_c.supported_facts if isinstance(f.fact, CommandInvocationFact)]
-        assert len(cmds) == 1
-        assert cmds[0].command_template == cmd_str
+    p_dir = SystemCobolParser(_make_synth_bundle(src_dir))
+    cert_dir = p_dir.parse_system()
+    assert cert_dir.unsupported_relevant_count == 0, (
+        "Non-mutation command dir must have clean coverage"
+    )
+    assert cert_dir.is_evaluation_blocked is False
+    cmds_dir = [f.fact for f in p_dir.supported_facts if isinstance(f.fact, CommandInvocationFact)]
+    assert len(cmds_dir) == 1
+    assert cmds_dir[0].command_template == "cmd /c dir"
+
+    # Wildcard mutation (cmd /c del *.tmp): grounds command and platform facts,
+    # but mutation is unsupported
+    src_wild = """       IDENTIFICATION DIVISION.
+       PROGRAM-ID. CONCWILD.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 BUFFER PIC X(100).
+       PROCEDURE DIVISION.
+           MOVE 'cmd /c del *.tmp' TO BUFFER
+           CALL 'SYSTEM' USING BUFFER
+           STOP RUN.
+"""
+    p_wild2 = SystemCobolParser(_make_synth_bundle(src_wild))
+    cert_wild2 = p_wild2.parse_system()
+    assert cert_wild2.unsupported_relevant_count > 0, "Wildcard mutation fails closed"
+    assert cert_wild2.is_evaluation_blocked is True
+    cmds_wild = [
+        f.fact for f in p_wild2.supported_facts if isinstance(f.fact, CommandInvocationFact)
+    ]
+    assert len(cmds_wild) == 1
+    assert cmds_wild[0].command_template == "cmd /c del *.tmp"
+    plats_wild = [
+        f.fact for f in p_wild2.supported_facts if isinstance(f.fact, PlatformDependencyFact)
+    ]
+    assert len(plats_wild) == 1
+    assert plats_wild[0].platform_family == "WINDOWS"
+    seqs_wild = [
+        f.fact
+        for f in p_wild2.supported_facts
+        if isinstance(f.fact, (OperationSequenceFact, BehavioralRiskFact))
+    ]
+    assert len(seqs_wild) == 0
 
     # 3. Single DELETE and single RENAME: command supported, no sequence, clean coverage
     for single_op in ("cmd /c del accounts.dat", "cmd /c ren accounts.tmp accounts.dat"):
@@ -4032,7 +4111,7 @@ def test_h7_4_3_f06_interior_period_tokens_and_host_facts_invariance():
     assert cert_legacy.unsupported_relevant_count == 0
     assert (
         cert_legacy.certificate_sha256
-        == "74148cdb6b5c28c576406db77a8c84ae171a7fd1eec568c4d5a15256ef08f177"
+        == "e5900cba53db046c80e0e5f64618b549e894631a0eebfe42f8c502fe0ae948be"
     )
 
 
@@ -4088,3 +4167,451 @@ def test_h7_4_3_f07_unified_procedural_starters_fail_closed():
     p_q = SystemCobolParser(_make_synth_bundle(src_quoted))
     cert_q = p_q.parse_system()
     assert cert_q.unsupported_relevant_count == 0
+
+
+# ===========================================================================
+# SECTION 18: H7.4.4 / CONTRACT 3.5.3 SOUNDNESS & BLOCKER REGRESSIONS
+# ===========================================================================
+
+
+def test_h7_4_4_b01_identifier_domain_boundaries() -> None:
+    """B-01: COBOL identifiers are distinguished from other string domains.
+
+    - Canonical COBOL IDs require uppercase alphanumeric with hyphens and >=1 letter.
+    - Pure numeric strings are rejected as COBOL IDs but admitted as computation operands
+      and generic entity identifiers.
+    - Schema validators and parser AST strictly enforce domain separation.
+    """
+    # 1. Domain predicate behavior
+    assert is_canonical_cobol_identifier("PROG-1") is True
+    assert is_canonical_cobol_identifier("WS-ACCOUNT-NUM") is True
+    assert is_canonical_cobol_identifier("A") is True
+    assert is_canonical_cobol_identifier("100") is False, "Numeric literal must not be COBOL ID"
+    assert is_canonical_cobol_identifier("1000000003") is False
+    assert is_canonical_cobol_identifier("prog-1") is False
+
+    assert is_numeric_literal("100") is True
+    assert is_numeric_literal("100.50") is True
+    assert is_numeric_literal("+25") is True
+    assert is_numeric_literal("-12.34") is True
+    assert is_numeric_literal("100A") is False
+    assert is_numeric_literal("PROG") is False
+
+    assert is_computation_operand("100") is True
+    assert is_computation_operand("100.50") is True
+    assert is_computation_operand("WS-TOTAL") is True
+    assert is_computation_operand("prog-total") is False
+
+    # 2. Schema validation domain separation
+    # DataStateComparison.entity_id accepts numeric entity
+    dsc = DataStateComparison(
+        entity_id="1000000003",
+        dat_record_value="100.00",
+        initializer_code_value="100.00",
+        causal_provenance="UNKNOWN",
+        dat_evidence=SourceEvidence(file_path="ACCOUNTS.DAT", line_start=1, line_end=1),
+        initializer_evidence=SourceEvidence(file_path="INIT-DB.CBL", line_start=10, line_end=10),
+    )
+    assert dsc.entity_id == "1000000003"
+
+    # ComputationDataflow.source_field accepts numeric literal or canonical ID
+    cd_num = ComputationDataflow(
+        program_id="CALC-PROG",
+        target_field="WS-TOTAL",
+        source_field="100.50",
+        operation_verb="ADD",
+        evidence=SourceEvidence(file_path="CALC.CBL", line_start=10, line_end=10),
+    )
+    assert cd_num.source_field == "100.50"
+
+    cd_id = ComputationDataflow(
+        program_id="CALC-PROG",
+        target_field="WS-TOTAL",
+        source_field="WS-AMOUNT",
+        operation_verb="ADD",
+        evidence=SourceEvidence(file_path="CALC.CBL", line_start=10, line_end=10),
+    )
+    assert cd_id.source_field == "WS-AMOUNT"
+
+    # COBOL declaration schemas reject numeric IDs
+    with pytest.raises(ValidationError):
+        ProgramDeclaration(
+            program_id="12345",
+            evidence=SourceEvidence(file_path="PROG.CBL", line_start=1, line_end=1),
+        )
+
+    with pytest.raises(ValidationError):
+        FileBinding(
+            program_id="TEST-PROG",
+            internal_file_name="12345",
+            external_file_name="TEST.DAT",
+            organization="LINE_SEQUENTIAL",
+            evidence=SourceEvidence(file_path="PROG.CBL", line_start=2, line_end=2),
+        )
+
+    # 3. Parser rejects numeric identifiers in AST
+    for bad_clause, verb_desc in [
+        ("PROGRAM-ID. 12345.", "PROGRAM-ID"),
+        ("SELECT 12345 ASSIGN TO 'TEST.DAT'.", "SELECT"),
+        ("FD 12345.", "FD"),
+        ("01 12345.", "RECORD_01"),
+        ("05 12345 PIC X(10).", "FIELD_05"),
+        ("88 12345 VALUE 'Y'.", "CONDITION_88"),
+    ]:
+        src_bad = f"""       IDENTIFICATION DIVISION.
+       {bad_clause}
+       PROCEDURE DIVISION.
+           STOP RUN.
+"""
+        p_b = SystemCobolParser(_make_synth_bundle(src_bad))
+        cert_b = p_b.parse_system()
+        assert cert_b.unsupported_relevant_count >= 1, (
+            f"{verb_desc} with numeric ID must fail closed"
+        )
+        assert cert_b.is_evaluation_blocked is True
+
+
+def test_h7_4_4_b02_arithmetic_sentence_boundary_isolation() -> None:
+    """B-02: Multiline arithmetic slurping stops at sentence period."""
+    # Sentence period after ADD operand must not slurp the next sentence
+    src_period_add = """       IDENTIFICATION DIVISION.
+       PROGRAM-ID. TADDPER.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 WS-COUNT PIC 9(5).
+       PROCEDURE DIVISION.
+           ADD 1.
+           TO WS-COUNT.
+           STOP RUN.
+"""
+    p_add = SystemCobolParser(_make_synth_bundle(src_period_add))
+    cert_add = p_add.parse_system()
+    assert cert_add.unsupported_relevant_count >= 1, "ADD with period before TO must fail closed"
+    assert cert_add.is_evaluation_blocked is True
+    arith_facts = [
+        f.fact for f in p_add.get_supported_facts() if isinstance(f.fact, ComputationDataflowFact)
+    ]
+    assert len(arith_facts) == 0, "No arithmetic fact may span across sentence period"
+
+    # Valid multiline SUBTRACT without period on first line parses cleanly
+    src_valid_sub = """       IDENTIFICATION DIVISION.
+       PROGRAM-ID. TSUBMULT.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 WS-TOTAL PIC 9(5).
+       01 WS-AMT PIC 9(5).
+       PROCEDURE DIVISION.
+           SUBTRACT WS-AMT
+              FROM WS-TOTAL.
+           STOP RUN.
+"""
+    p_sub = SystemCobolParser(_make_synth_bundle(src_valid_sub))
+    cert_sub = p_sub.parse_system()
+    assert cert_sub.unsupported_relevant_count == 0, (
+        "Valid multiline SUBTRACT without period must succeed"
+    )
+    sub_facts = [
+        f.fact for f in p_sub.get_supported_facts() if isinstance(f.fact, ComputationDataflowFact)
+    ]
+    assert len(sub_facts) == 1
+    assert sub_facts[0].source_field == "WS-AMT"
+    assert sub_facts[0].target_field == "WS-TOTAL"
+    assert sub_facts[0].operation_verb == "SUBTRACT"
+
+
+def test_h7_4_4_b03_and_b05_mutation_tokenization_and_lossy_whitespace() -> None:
+    """B-03 & B-05: Shell syntax rejection and lossless whitespace handling."""
+    # Shell metacharacters (> < | & ^ % ! * ? ( )) fail closed
+    for bad_cmd in (
+        "cmd /c del a>b",
+        "cmd /c del a|b",
+        "cmd /c del a&b",
+        "cmd /c del a^b",
+        "cmd /c del %TMP%",
+        "cmd /c del !VAR!",
+        "cmd /c del (test)",
+    ):
+        src_meta = f"""       IDENTIFICATION DIVISION.
+       PROGRAM-ID. TMETA.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 BUFFER PIC X(100).
+       PROCEDURE DIVISION.
+           MOVE '{bad_cmd}' TO BUFFER
+           CALL 'SYSTEM' USING BUFFER
+           STOP RUN.
+"""
+        p_m = SystemCobolParser(_make_synth_bundle(src_meta))
+        cert_m = p_m.parse_system()
+        assert cert_m.unsupported_relevant_count >= 1, (
+            f"Metacharacter command '{bad_cmd}' must fail closed"
+        )
+        assert cert_m.is_evaluation_blocked is True
+        seq_m = [
+            f.fact for f in p_m.get_supported_facts() if isinstance(f.fact, OperationSequenceFact)
+        ]
+        assert len(seq_m) == 0
+
+    # Lossy whitespace: consecutive spaces or boundary whitespace in filename fail closed
+    for lossy_cmd in (
+        'cmd /c del "a  b.dat"',
+        'cmd /c del " a.dat "',
+    ):
+        src_lossy = f"""       IDENTIFICATION DIVISION.
+       PROGRAM-ID. TLOSSY.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 BUFFER PIC X(100).
+       PROCEDURE DIVISION.
+           MOVE '{lossy_cmd}' TO BUFFER
+           CALL 'SYSTEM' USING BUFFER
+           STOP RUN.
+"""
+        p_l = SystemCobolParser(_make_synth_bundle(src_lossy))
+        cert_l = p_l.parse_system()
+        assert cert_l.unsupported_relevant_count >= 1, (
+            f"Lossy whitespace command '{lossy_cmd}' must fail closed"
+        )
+        assert cert_l.is_evaluation_blocked is True
+        seq_l = [
+            f.fact for f in p_l.get_supported_facts() if isinstance(f.fact, OperationSequenceFact)
+        ]
+        assert len(seq_l) == 0
+
+
+def test_h7_4_4_b04_posix_command_wrappers_fail_closed() -> None:
+    """B-04: POSIX -c shell commands are rejected for mutation interpretation."""
+    for posix_cmd in (
+        "sh -c 'rm accounts.dat'",
+        "/bin/sh -c 'rm accounts.dat'",
+        "bash -c 'rm accounts.dat'",
+        "/usr/bin/bash -c 'rm accounts.dat'",
+    ):
+        src_posix = f"""       IDENTIFICATION DIVISION.
+       PROGRAM-ID. TPOSIX.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 BUFFER PIC X(100).
+       PROCEDURE DIVISION.
+           MOVE "{posix_cmd}" TO BUFFER
+           CALL 'SYSTEM' USING BUFFER
+           STOP RUN.
+"""
+        p_p = SystemCobolParser(_make_synth_bundle(src_posix))
+        cert_p = p_p.parse_system()
+        assert cert_p.unsupported_relevant_count >= 1, "POSIX mutation command must fail closed"
+        assert cert_p.is_evaluation_blocked is True
+
+        # Opaque facts are grounded
+        cmd_facts = [
+            f.fact for f in p_p.get_supported_facts() if isinstance(f.fact, CommandInvocationFact)
+        ]
+        assert len(cmd_facts) == 1
+        assert cmd_facts[0].command_template == posix_cmd
+
+        plat_facts = [
+            f.fact for f in p_p.get_supported_facts() if isinstance(f.fact, PlatformDependencyFact)
+        ]
+        assert len(plat_facts) == 1
+        assert plat_facts[0].platform_family == "POSIX"
+
+        # Mutation sequence and risk are NOT derived
+        seq_facts = [
+            f.fact for f in p_p.get_supported_facts() if isinstance(f.fact, OperationSequenceFact)
+        ]
+        assert len(seq_facts) == 0
+        risk_facts = [
+            f.fact for f in p_p.get_supported_facts() if isinstance(f.fact, BehavioralRiskFact)
+        ]
+        assert len(risk_facts) == 0
+
+
+def test_h7_4_4_b06_mixed_open_modes_fail_closed() -> None:
+    """B-06: Mixed OPEN modes fail closed without fabricated lifecycle fact."""
+    src_mixed = """       IDENTIFICATION DIVISION.
+       PROGRAM-ID. TMIXED.
+       ENVIRONMENT DIVISION.
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+           SELECT TEST-FILE ASSIGN TO 'TEST.DAT'.
+       DATA DIVISION.
+       FILE SECTION.
+       FD TEST-FILE.
+       01 TEST-REC.
+          05 REC-ID PIC 9(5).
+       PROCEDURE DIVISION.
+           OPEN INPUT TEST-FILE.
+           CLOSE TEST-FILE.
+           OPEN OUTPUT TEST-FILE.
+           WRITE TEST-REC.
+           CLOSE TEST-FILE.
+           STOP RUN.
+"""
+    p_m = SystemCobolParser(_make_synth_bundle(src_mixed))
+    cert_m = p_m.parse_system()
+    # Truthful individual FileOperation facts exist
+    fop_facts = [f.fact for f in p_m.get_supported_facts() if isinstance(f.fact, FileOperationFact)]
+    verbs = [f.operation_verb for f in fop_facts]
+    assert "OPEN_INPUT" in verbs
+    assert "OPEN_OUTPUT" in verbs
+
+    # NO ResourceLifecycleFact emitted for mixed modes
+    lc_facts = [
+        f.fact for f in p_m.get_supported_facts() if isinstance(f.fact, ResourceLifecycleFact)
+    ]
+    assert len(lc_facts) == 0, "Mixed OPEN modes must NOT emit a fabricated ResourceLifecycleFact"
+
+    # Coverage is blocked
+    assert cert_m.unsupported_relevant_count >= 1, "Mixed OPEN modes must block evaluation coverage"
+    assert cert_m.is_evaluation_blocked is True
+
+
+def test_h7_4_4_b07_continuation_structural_proof() -> None:
+    """B-07: Continuation constraint emission requires strict structural proof."""
+    # 1. Auditor counterexample: GO TO and conflicting terminations -> unproven
+    src_auditor = """       IDENTIFICATION DIVISION.
+       PROGRAM-ID. CALLEEP.
+       PROCEDURE DIVISION.
+           GO TO RETURN-PARA.
+           STOP RUN.
+       RETURN-PARA.
+           GOBACK.
+"""
+    src_caller = """       IDENTIFICATION DIVISION.
+       PROGRAM-ID. CALLERP.
+       PROCEDURE DIVISION.
+           CALL 'CALLEEP'.
+           STOP RUN.
+"""
+    bundle_unproven = _make_multi_file_bundle(
+        {
+            "CALLEEP.CBL": src_auditor,
+            "CALLERP.CBL": src_caller,
+        }
+    )
+    p_u = SystemCobolParser(bundle_unproven)
+    cert_u = p_u.parse_system()
+    # InternalCallResolution is emitted
+    res_facts = [
+        f.fact for f in p_u.get_supported_facts() if isinstance(f.fact, InternalCallResolutionFact)
+    ]
+    assert len(res_facts) == 1
+    # NO continuation constraint emitted
+    cont_facts = [
+        f.fact
+        for f in p_u.get_supported_facts()
+        if isinstance(f.fact, CallerContinuationConstraintFact)
+    ]
+    assert len(cont_facts) == 0
+    # CALL statement in caller is marked UNSUPPORTED_RELEVANT -> coverage blocked
+    assert cert_u.unsupported_relevant_count >= 1
+    assert cert_u.is_evaluation_blocked is True
+
+    # 2. Conditional termination: IF COND STOP RUN END-IF DISPLAY 'X' -> unproven
+    src_cond_callee = """       IDENTIFICATION DIVISION.
+       PROGRAM-ID. CONDCAL.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 WS-FLAG PIC X.
+       PROCEDURE DIVISION.
+           IF WS-FLAG = 'Y'
+               STOP RUN
+           END-IF.
+           DISPLAY 'CONTINUES'.
+"""
+    bundle_cond = _make_multi_file_bundle(
+        {
+            "CONDCAL.CBL": src_cond_callee,
+            "CALLERP.CBL": src_caller.replace("CALLEEP", "CONDCAL"),
+        }
+    )
+    p_cond = SystemCobolParser(bundle_cond)
+    cert_cond = p_cond.parse_system()
+    cont_cond = [
+        f.fact
+        for f in p_cond.get_supported_facts()
+        if isinstance(f.fact, CallerContinuationConstraintFact)
+    ]
+    assert len(cont_cond) == 0
+    assert cert_cond.unsupported_relevant_count >= 1
+    assert cert_cond.is_evaluation_blocked is True
+
+
+def test_h7_4_4_procedural_grammar_guards_and_single_token_periods() -> None:
+    """Procedural grammar complete consumption guards and single-token period handling."""
+    # 1. Trailing syntax attacks
+    for probe_stmt in (
+        "DISPLAY 'X' GARBAGE",
+        "ACCEPT WS-VAL GARBAGE",
+        "END-IF GARBAGE",
+        "AT END GARBAGE",
+        "NOT AT END GARBAGE",
+        "GO TO 0100-PARA GARBAGE",
+        "GOTO 0100-PARA GARBAGE",
+        "ELSE GARBAGE",
+        "FROM WS-VAL",
+    ):
+        src_probe = f"""       IDENTIFICATION DIVISION.
+       PROGRAM-ID. TGUARD.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 WS-VAL PIC 9(5).
+       PROCEDURE DIVISION.
+       0100-PARA.
+           {probe_stmt}.
+           STOP RUN.
+"""
+        p_g = SystemCobolParser(_make_synth_bundle(src_probe))
+        cert_g = p_g.parse_system()
+        assert cert_g.unsupported_relevant_count >= 1, (
+            f"Trailing garbage '{probe_stmt}' must fail closed"
+        )
+        assert cert_g.is_evaluation_blocked is True
+
+    # 2. Single token lines ending with period are NOT paragraph headers
+    for stmt_tok in ("CALL.", "MOVE.", "END-IF.", "END-PERFORM."):
+        src_head = f"""       IDENTIFICATION DIVISION.
+       PROGRAM-ID. THEAD.
+       PROCEDURE DIVISION.
+           {stmt_tok}
+           STOP RUN.
+"""
+        p_h = SystemCobolParser(_make_synth_bundle(src_head))
+        p_h.parse_system()
+        para_stmts = [s for s in p_h.statements if s.verb == "PARAGRAPH_HEADER"]
+        assert len(para_stmts) == 0, f"{stmt_tok} must NOT be classified as PARAGRAPH_HEADER"
+
+
+def test_h7_4_4_clarification_8_domain_symmetry_matrix() -> None:
+    """Clarification 8: Domain-symmetry matrix for IDs, operands, entities, and resources."""
+    # Pure numeric strings
+    assert not is_canonical_cobol_identifier("1000000003")
+    assert is_numeric_literal("1000000003")
+    assert is_computation_operand("1000000003")
+    assert validate_canonical_identifier("entity_id", "1000000003") == "1000000003"
+    assert validate_computation_operand("source_field", "1000000003") == "1000000003"
+    with pytest.raises(ValueError):
+        validate_canonical_cobol_identifier("program_id", "1000000003")
+
+    # Canonical COBOL ID
+    assert is_canonical_cobol_identifier("ACCOUNT-RECORD")
+    assert not is_numeric_literal("ACCOUNT-RECORD")
+    assert is_computation_operand("ACCOUNT-RECORD")
+    assert validate_canonical_cobol_identifier("program_id", "ACCOUNT-RECORD") == "ACCOUNT-RECORD"
+    assert validate_canonical_identifier("record_name", "ACCOUNT-RECORD") == "ACCOUNT-RECORD"
+    assert validate_computation_operand("source_field", "ACCOUNT-RECORD") == "ACCOUNT-RECORD"
+
+    # Lowercase / mixed case identifier
+    assert not is_canonical_cobol_identifier("account-record")
+    assert not is_computation_operand("account-record")
+    with pytest.raises(ValueError):
+        validate_canonical_identifier("record_name", "account-record")
+    with pytest.raises(ValueError):
+        validate_canonical_cobol_identifier("program_id", "account-record")
+
+    # Resource name with file extension (uppercase canonical contract form)
+    assert not is_canonical_cobol_identifier("ACCOUNTS.DAT")
+    assert not is_computation_operand("ACCOUNTS.DAT")
+    assert validate_canonical_identifier("resource_name", "ACCOUNTS.DAT") == "ACCOUNTS.DAT"
+    with pytest.raises(ValueError):
+        validate_canonical_cobol_identifier("resource_name", "ACCOUNTS.DAT")

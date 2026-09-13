@@ -12,13 +12,20 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from src.cobol.identifier_domain import (
+    validate_canonical_cobol_identifier,
+    validate_computation_operand,
+)
+
 SCHEMA_VERSION: str = "3.5.3"
 
 
 def validate_canonical_identifier(name: str, value: str) -> str:
-    """Validate that a COBOL identifier is in canonical contract form.
+    """Validate that an identifier is in canonical contract form.
 
     Enforces: non-empty, uppercase, no leading/trailing whitespace, no multiple spaces.
+    Permits digits-only for entity IDs (e.g. 1000000003) and filenames with dots/spaces
+    for resource names (e.g. ACCOUNTS OLD.DAT).
     Reject, never silently repair.
     """
     if not value or value != value.strip():
@@ -128,7 +135,7 @@ class ProgramDeclaration(BaseModel):
     @field_validator("program_id")
     @classmethod
     def check_program_id(cls, v: str) -> str:
-        return validate_canonical_identifier("program_id", v)
+        return validate_canonical_cobol_identifier("program_id", v)
 
 
 class CallOccurrence(BaseModel):
@@ -151,18 +158,18 @@ class CallOccurrence(BaseModel):
     @field_validator("caller_program")
     @classmethod
     def check_caller_program(cls, v: str) -> str:
-        return validate_canonical_identifier("caller_program", v)
+        return validate_canonical_cobol_identifier("caller_program", v)
 
     @field_validator("target_program")
     @classmethod
     def check_target_program(cls, v: str) -> str:
-        return validate_canonical_identifier("target_program", v)
+        return validate_canonical_cobol_identifier("target_program", v)
 
     @field_validator("argument_identifier")
     @classmethod
     def check_argument_identifier(cls, v: str | None) -> str | None:
         if v is not None:
-            return validate_canonical_identifier("argument_identifier", v)
+            return validate_canonical_cobol_identifier("argument_identifier", v)
         return v
 
 
@@ -186,12 +193,12 @@ class CallEdge(BaseModel):
     @field_validator("caller_program")
     @classmethod
     def check_caller_program(cls, v: str) -> str:
-        return validate_canonical_identifier("caller_program", v)
+        return validate_canonical_cobol_identifier("caller_program", v)
 
     @field_validator("target_program")
     @classmethod
     def check_target_program(cls, v: str) -> str:
-        return validate_canonical_identifier("target_program", v)
+        return validate_canonical_cobol_identifier("target_program", v)
 
 
 class InternalCallResolution(BaseModel):
@@ -213,12 +220,12 @@ class InternalCallResolution(BaseModel):
     @field_validator("caller_program")
     @classmethod
     def check_caller_program(cls, v: str) -> str:
-        return validate_canonical_identifier("caller_program", v)
+        return validate_canonical_cobol_identifier("caller_program", v)
 
     @field_validator("callee_program")
     @classmethod
     def check_callee_program(cls, v: str) -> str:
-        return validate_canonical_identifier("callee_program", v)
+        return validate_canonical_cobol_identifier("callee_program", v)
 
 
 class RecordField(BaseModel):
@@ -259,7 +266,7 @@ class RecordField(BaseModel):
     @field_validator("name")
     @classmethod
     def check_name(cls, v: str) -> str:
-        return validate_canonical_identifier("name", v)
+        return validate_canonical_cobol_identifier("name", v)
 
     @field_validator("picture")
     @classmethod
@@ -351,12 +358,12 @@ class RecordLayout(BaseModel):
                 f"program_id must be canonical logical identifier without path or file extension, "
                 f"got '{v}'"
             )
-        return validate_canonical_identifier("program_id", v)
+        return validate_canonical_cobol_identifier("program_id", v)
 
     @field_validator("record_name")
     @classmethod
     def check_record_name(cls, v: str) -> str:
-        return validate_canonical_identifier("record_name", v)
+        return validate_canonical_cobol_identifier("record_name", v)
 
 
 class RecordLayoutRelation(BaseModel):
@@ -384,8 +391,8 @@ class RecordLayoutRelation(BaseModel):
         parts = v.split(":")
         if len(parts) != 2:
             raise ValueError(f"layout_a_name must have single colon, got '{v}'")
-        validate_canonical_identifier("layout_a container", parts[0])
-        validate_canonical_identifier("layout_a record", parts[1])
+        validate_canonical_cobol_identifier("layout_a container", parts[0])
+        validate_canonical_cobol_identifier("layout_a record", parts[1])
         return v
 
     @field_validator("layout_b_name")
@@ -396,8 +403,8 @@ class RecordLayoutRelation(BaseModel):
         parts = v.split(":")
         if len(parts) != 2:
             raise ValueError(f"layout_b_name must have single colon, got '{v}'")
-        validate_canonical_identifier("layout_b container", parts[0])
-        validate_canonical_identifier("layout_b record", parts[1])
+        validate_canonical_cobol_identifier("layout_b container", parts[0])
+        validate_canonical_cobol_identifier("layout_b record", parts[1])
         return v
 
 
@@ -426,12 +433,12 @@ class FileBinding(BaseModel):
     @field_validator("program_id")
     @classmethod
     def check_program_id(cls, v: str) -> str:
-        return validate_canonical_identifier("program_id", v)
+        return validate_canonical_cobol_identifier("program_id", v)
 
     @field_validator("internal_file_name")
     @classmethod
     def check_internal_file_name(cls, v: str) -> str:
-        return validate_canonical_identifier("internal_file_name", v)
+        return validate_canonical_cobol_identifier("internal_file_name", v)
 
     @field_validator("external_file_name")
     @classmethod
@@ -461,12 +468,12 @@ class FileOperation(BaseModel):
     @field_validator("program_id")
     @classmethod
     def check_program_id(cls, v: str) -> str:
-        return validate_canonical_identifier("program_id", v)
+        return validate_canonical_cobol_identifier("program_id", v)
 
     @field_validator("internal_file_name")
     @classmethod
     def check_internal_file_name(cls, v: str) -> str:
-        return validate_canonical_identifier("internal_file_name", v)
+        return validate_canonical_cobol_identifier("internal_file_name", v)
 
 
 class TerminationSite(BaseModel):
@@ -485,7 +492,7 @@ class TerminationSite(BaseModel):
     @field_validator("program_id")
     @classmethod
     def check_program_id(cls, v: str) -> str:
-        return validate_canonical_identifier("program_id", v)
+        return validate_canonical_cobol_identifier("program_id", v)
 
 
 class CallerContinuationConstraint(BaseModel):
@@ -508,12 +515,12 @@ class CallerContinuationConstraint(BaseModel):
     @field_validator("caller_program")
     @classmethod
     def check_caller_program(cls, v: str) -> str:
-        return validate_canonical_identifier("caller_program", v)
+        return validate_canonical_cobol_identifier("caller_program", v)
 
     @field_validator("callee_program")
     @classmethod
     def check_callee_program(cls, v: str) -> str:
-        return validate_canonical_identifier("callee_program", v)
+        return validate_canonical_cobol_identifier("callee_program", v)
 
 
 class CommandInvocation(BaseModel):
@@ -541,12 +548,12 @@ class CommandInvocation(BaseModel):
     @field_validator("program_id")
     @classmethod
     def check_program_id(cls, v: str) -> str:
-        return validate_canonical_identifier("program_id", v)
+        return validate_canonical_cobol_identifier("program_id", v)
 
     @field_validator("target_operand")
     @classmethod
     def check_target_operand(cls, v: str) -> str:
-        return validate_canonical_identifier("target_operand", v)
+        return validate_canonical_cobol_identifier("target_operand", v)
 
     @field_validator("command_template")
     @classmethod
@@ -573,17 +580,17 @@ class DataTransferRelation(BaseModel):
     @field_validator("program_id")
     @classmethod
     def check_program_id(cls, v: str) -> str:
-        return validate_canonical_identifier("program_id", v)
+        return validate_canonical_cobol_identifier("program_id", v)
 
     @field_validator("source_entity")
     @classmethod
     def check_source_entity(cls, v: str) -> str:
-        return validate_canonical_identifier("source_entity", v)
+        return validate_canonical_cobol_identifier("source_entity", v)
 
     @field_validator("target_entity")
     @classmethod
     def check_target_entity(cls, v: str) -> str:
-        return validate_canonical_identifier("target_entity", v)
+        return validate_canonical_cobol_identifier("target_entity", v)
 
 
 class ResourceLifecycle(BaseModel):
@@ -611,7 +618,7 @@ class ResourceLifecycle(BaseModel):
     @field_validator("program_id")
     @classmethod
     def check_program_id(cls, v: str) -> str:
-        return validate_canonical_identifier("program_id", v)
+        return validate_canonical_cobol_identifier("program_id", v)
 
     @field_validator("resource_name")
     @classmethod
@@ -656,7 +663,7 @@ class OperationSequence(BaseModel):
     @field_validator("program_id")
     @classmethod
     def check_program_id(cls, v: str) -> str:
-        return validate_canonical_identifier("program_id", v)
+        return validate_canonical_cobol_identifier("program_id", v)
 
 
 class ComputationDataflow(BaseModel):
@@ -677,17 +684,17 @@ class ComputationDataflow(BaseModel):
     @field_validator("program_id")
     @classmethod
     def check_program_id(cls, v: str) -> str:
-        return validate_canonical_identifier("program_id", v)
+        return validate_canonical_cobol_identifier("program_id", v)
 
     @field_validator("source_field")
     @classmethod
     def check_source_field(cls, v: str) -> str:
-        return validate_canonical_identifier("source_field", v)
+        return validate_computation_operand("source_field", v)
 
     @field_validator("target_field")
     @classmethod
     def check_target_field(cls, v: str) -> str:
-        return validate_canonical_identifier("target_field", v)
+        return validate_canonical_cobol_identifier("target_field", v)
 
 
 class PlatformDependency(BaseModel):
@@ -712,7 +719,7 @@ class PlatformDependency(BaseModel):
     @field_validator("program_id")
     @classmethod
     def check_program_id(cls, v: str) -> str:
-        return validate_canonical_identifier("program_id", v)
+        return validate_canonical_cobol_identifier("program_id", v)
 
     @field_validator("command_literal")
     @classmethod
@@ -765,7 +772,7 @@ class BehavioralRisk(BaseModel):
     @field_validator("program_id")
     @classmethod
     def check_program_id(cls, v: str) -> str:
-        return validate_canonical_identifier("program_id", v)
+        return validate_canonical_cobol_identifier("program_id", v)
 
     @field_validator("resource_name")
     @classmethod

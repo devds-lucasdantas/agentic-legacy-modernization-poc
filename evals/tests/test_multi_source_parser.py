@@ -58,7 +58,7 @@ def test_parser_coverage_certificate_zero_unsupported():
     assert len(cert.certificate_sha256) == 64
     assert (
         cert.certificate_sha256
-        == "74148cdb6b5c28c576406db77a8c84ae171a7fd1eec568c4d5a15256ef08f177"
+        == "e5900cba53db046c80e0e5f64618b549e894631a0eebfe42f8c502fe0ae948be"
     )
 
 

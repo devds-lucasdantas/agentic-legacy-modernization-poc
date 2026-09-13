@@ -483,7 +483,8 @@ def test_parser_fail_closed_on_unsupported_statement(tmp_path: Path):
         if s["classification"] == "UNSUPPORTED_RELEVANT"
     ]
     assert len(unsupported_items) > 0
-    assert unsupported_items[0]["verb"] == "INSPECT"
+    unsupported_verbs = [item["verb"] for item in unsupported_items]
+    assert "INSPECT" in unsupported_verbs
 
 
 # ===========================================================================

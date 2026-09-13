@@ -17,6 +17,11 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
+from src.cobol.identifier_domain import (
+    is_canonical_cobol_identifier,
+    is_computation_operand,
+    is_numeric_literal,
+)
 from src.cobol.multi_source_reader import MultiSourceBundle, TargetFile
 from src.cobol.system_atomic_facts import (
     BehavioralRiskFact,
@@ -350,22 +355,24 @@ def is_unquoted_barrier(tok: str) -> bool:
     return tok.upper().rstrip(".") in PROCEDURAL_CONTROL_FLOW_BARRIERS
 
 
-def consume_optional_terminal_period(tokens: list[str]) -> tuple[bool, list[str]]:
+def consume_optional_terminal_period(tokens: list[str]) -> tuple[bool, list[str], bool]:
     """Consume single terminal period token from procedural tokens.
 
-    Returns (True, clean_tokens) if valid: exactly 0 or 1 terminal period, and zero
+    Returns (True, clean_tokens, terminated) if valid: exactly 0 or 1 terminal period, and zero
     interior period tokens.
-    Returns (False, tokens) if period occurs at an interior position (e.g. CALL . TARGET)
+    Returns (False, tokens, False) if period occurs at an interior position (e.g. CALL . TARGET)
     or if multiple periods occur.
     Numeric literals (e.g. 100.50) and quoted literals (e.g. 'file.name') are preserved.
     """
     if not tokens:
-        return True, []
+        return True, [], False
 
     clean = list(tokens)
+    terminated = False
     # 1. Pop standalone terminal period token if present
     if clean and clean[-1] == ".":
         clean.pop()
+        terminated = True
     elif (
         clean
         and clean[-1].endswith(".")
@@ -377,16 +384,17 @@ def consume_optional_terminal_period(tokens: list[str]) -> tuple[bool, list[str]
         val = clean[-1]
         if not re.match(r"^[+-]?[0-9]+\.[0-9]+$", val):
             clean[-1] = val[:-1]
+            terminated = True
 
     # 2. Verify no unquoted interior period exists in clean tokens
     for t in clean:
         if t == ".":
-            return False, tokens
+            return False, tokens, False
         if not ((t.startswith("'") and t.endswith("'")) or (t.startswith('"') and t.endswith('"'))):
             if "." in t and not re.match(r"^[+-]?[0-9]+\.[0-9]+$", t):
-                return False, tokens
+                return False, tokens, False
 
-    return True, clean
+    return True, clean, terminated
 
 
 def has_procedural_barrier_between(
@@ -486,14 +494,49 @@ class MutationCommandResult:
     reason: str | None = None
 
 
-def tokenize_windows_mutation_operands(text: str) -> tuple[bool, list[str]]:
+class CommandDialect(StrEnum):
+    WINDOWS_CMD = "WINDOWS_CMD"
+    POSIX_SHELL = "POSIX_SHELL"
+    BARE_OR_OTHER = "BARE_OR_OTHER"
+
+
+def classify_command_dialect(cmd_text: str) -> tuple[CommandDialect, str]:
+    """Classify the command dialect and return (dialect, unwrapped_command)."""
+    clean = cmd_text.strip()
+    m_win = re.match(r"^cmd(?:\.exe)?\s+/c\s+", clean, flags=re.IGNORECASE)
+    if m_win:
+        return CommandDialect.WINDOWS_CMD, clean[m_win.end() :].strip()
+
+    m_posix = re.match(
+        r"^(?:/(?:usr/)?bin/(?:ba)?sh|(?:ba)?sh)\s+-c\s+",
+        clean,
+        flags=re.IGNORECASE,
+    )
+    if m_posix:
+        return CommandDialect.POSIX_SHELL, clean[m_posix.end() :].strip()
+
+    return CommandDialect.BARE_OR_OTHER, clean
+
+
+SHELL_METACHARACTERS: frozenset[str] = frozenset(
+    {">", "<", "|", "&", "^", "%", "!", "*", "?", "(", ")"}
+)
+
+
+def tokenize_windows_mutation_operands(text: str) -> tuple[bool, list[str], str | None]:
     """Tokenize Windows mutation command operands.
 
     Supports unquoted operands and double-quote grouped operands ("...").
     Does NOT treat single quotes as Windows grouping quotes.
-    Returns (True, operands) on success.
-    Returns (False, []) on malformed quoting or invalid syntax.
+    Rejects shell metacharacters and wildcards (><|&^%!*?()).
+    Rejects lossy whitespace (consecutive spaces, boundary spaces).
+    Returns (True, operands, None) on success.
+    Returns (False, [], reason) on malformed quoting, invalid syntax, or metacharacters.
     """
+    for c in text:
+        if c in SHELL_METACHARACTERS:
+            return False, [], f"Shell metacharacter or wildcard '{c}' in mutation command text"
+
     operands: list[str] = []
     i = 0
     n = len(text)
@@ -511,34 +554,42 @@ def tokenize_windows_mutation_operands(text: str) -> tuple[bool, list[str]]:
                 i += 1
             if i >= n:
                 # Unclosed double quote
-                return False, []
+                return False, [], "Unclosed double quote in mutation operand"
             # Closing double quote at i
             i += 1
             # Check trailing character after closing quote
             if i < n and not text[i].isspace():
                 # Attached unseparated characters, e.g. "file"xyz
-                return False, []
+                return False, [], "Attached character after closing quote in mutation operand"
             raw = text[start:i]
             semantic = raw[1:-1]
             if not semantic:
                 # Empty filename operand
-                return False, []
+                return False, [], "Empty filename operand in mutation command"
+            if re.search(r"\s{2,}", semantic):
+                return False, [], "Lossy whitespace in mutation operand: consecutive whitespace"
+            if semantic != semantic.strip():
+                return False, [], "Lossy whitespace in mutation operand: boundary whitespace"
             operands.append(semantic)
         elif char == "'":
             # Single quote in Windows cmd is not grouping syntax;
             # Reject as unsupported mutation operand syntax
-            return False, []
+            return (
+                False,
+                [],
+                "Single quote unsupported as grouping syntax in Windows mutation operand",
+            )
         else:
             # Unquoted operand
             start = i
             while i < n and not text[i].isspace():
                 if text[i] in ('"', "'"):
                     # Stray quote inside word
-                    return False, []
+                    return False, [], "Stray quote inside unquoted mutation operand"
                 i += 1
             raw = text[start:i]
             operands.append(raw)
-    return True, operands
+    return True, operands, None
 
 
 def classify_mutation_command(cmd_text: str) -> MutationCommandResult:
@@ -549,18 +600,16 @@ def classify_mutation_command(cmd_text: str) -> MutationCommandResult:
     - MUTATION_PARSED: command successfully tokenized into deterministic operation and operands.
     - MUTATION_UNSUPPORTED: command belongs to mutation family but has malformed/unsupported syntax.
     """
-    clean = cmd_text.strip()
-    m_wrap = re.match(
-        r"^(?:cmd(?:\.exe)?\s+/c|/(?:usr/)?bin/(?:ba)?sh\s+-c|(?:ba)?sh\s+-c)\s+",
-        clean,
-        flags=re.IGNORECASE,
-    )
-    if m_wrap:
-        unwrapped = clean[m_wrap.end() :].strip()
+    dialect, unwrapped = classify_command_dialect(cmd_text)
+    if dialect == CommandDialect.POSIX_SHELL:
+        inner = unwrapped
+        if (inner.startswith("'") and inner.endswith("'")) or (
+            inner.startswith('"') and inner.endswith('"')
+        ):
+            inner = inner[1:-1].strip()
+        words = inner.split()
     else:
-        unwrapped = clean
-
-    words = unwrapped.split()
+        words = unwrapped.split()
     if not words:
         return MutationCommandResult(status="NOT_MUTATION")
 
@@ -581,14 +630,37 @@ def classify_mutation_command(cmd_text: str) -> MutationCommandResult:
         return MutationCommandResult(status="NOT_MUTATION")
 
     op_type = mutation_verbs[verb]
+
+    # B-04: POSIX -c shell wrappers are outside Contract 3.5.3 mutation interpretation
+    if dialect == CommandDialect.POSIX_SHELL:
+        return MutationCommandResult(
+            status="MUTATION_UNSUPPORTED",
+            operation=op_type,
+            reason=(
+                "POSIX shell mutation wrappers are unsupported for deterministic "
+                "resource mutation analysis"
+            ),
+        )
+
+    # B-04 / B-03: Bare mutation commands without supported shell wrapper
+    if dialect == CommandDialect.BARE_OR_OTHER:
+        return MutationCommandResult(
+            status="MUTATION_UNSUPPORTED",
+            operation=op_type,
+            reason=(
+                "Bare mutation commands without explicit supported Windows shell "
+                "wrapper are unsupported"
+            ),
+        )
+
     rem_text = unwrapped[len(words[0]) :].strip()
 
-    valid, operands = tokenize_windows_mutation_operands(rem_text)
+    valid, operands, err_reason = tokenize_windows_mutation_operands(rem_text)
     if not valid:
         return MutationCommandResult(
             status="MUTATION_UNSUPPORTED",
             operation=op_type,
-            reason=f"Malformed or unsupported operand syntax for {op_type}",
+            reason=err_reason or f"Malformed or unsupported operand syntax for {op_type}",
         )
 
     if op_type == "DELETE":
@@ -822,9 +894,12 @@ class SystemCobolParser:
                     i += 1
                     continue
                 first = tokens[0].upper()
+                line_is_terminated = False
             else:
                 raw_tokens = tokenize_cobol_line(raw_line)
-                valid_period, procedural_tokens = consume_optional_terminal_period(raw_tokens)
+                valid_period, procedural_tokens, line_is_terminated = (
+                    consume_optional_terminal_period(raw_tokens)
+                )
                 if not valid_period:
                     self.statements.append(
                         ClassifiedStatement(
@@ -867,7 +942,21 @@ class SystemCobolParser:
 
             # PROGRAM-ID
             if first.startswith("PROGRAM-ID"):
-                prog_name = tokens[1].rstrip(".") if len(tokens) > 1 else "UNKNOWN"
+                prog_name = tokens[1].rstrip(".") if len(tokens) > 1 else ""
+                if not is_canonical_cobol_identifier(prog_name):
+                    self.statements.append(
+                        ClassifiedStatement(
+                            target_file.relative_path,
+                            line_num,
+                            line_num,
+                            "PROGRAM-ID",
+                            raw_line,
+                            StatementClassification.UNSUPPORTED_RELEVANT,
+                            f"Invalid PROGRAM-ID identifier: {prog_name}",
+                        )
+                    )
+                    i += 1
+                    continue
                 unit.program_id = prog_name
                 self.statements.append(
                     ClassifiedStatement(
@@ -915,6 +1004,21 @@ class SystemCobolParser:
                     clause_text += " " + lines[i].strip()
 
                 end_l = i + 1
+
+                if not is_canonical_cobol_identifier(internal_name):
+                    self.statements.append(
+                        ClassifiedStatement(
+                            target_file.relative_path,
+                            start_l,
+                            end_l,
+                            "SELECT",
+                            clause_text,
+                            StatementClassification.UNSUPPORTED_RELEVANT,
+                            f"Invalid internal file identifier in SELECT: {internal_name}",
+                        )
+                    )
+                    i += 1
+                    continue
 
                 # Check for unsupported file organizations: INDEXED, RELATIVE
                 if re.search(
@@ -1069,7 +1173,22 @@ class SystemCobolParser:
                 continue
 
             if first == "FD":
-                current_fd = tokens[1].rstrip(".") if len(tokens) > 1 else None
+                fd_name = tokens[1].rstrip(".") if len(tokens) > 1 else ""
+                if not is_canonical_cobol_identifier(fd_name):
+                    self.statements.append(
+                        ClassifiedStatement(
+                            target_file.relative_path,
+                            line_num,
+                            line_num,
+                            "FD",
+                            raw_line,
+                            StatementClassification.UNSUPPORTED_RELEVANT,
+                            f"Invalid FD identifier: {fd_name}",
+                        )
+                    )
+                    i += 1
+                    continue
+                current_fd = fd_name
                 self.statements.append(
                     ClassifiedStatement(
                         target_file.relative_path,
@@ -1087,6 +1206,20 @@ class SystemCobolParser:
             # Record and Field Declarations (01, 05, 88)
             if first == "01":
                 rec_name = tokens[1].rstrip(".") if len(tokens) > 1 else ""
+                if not is_canonical_cobol_identifier(rec_name):
+                    self.statements.append(
+                        ClassifiedStatement(
+                            target_file.relative_path,
+                            line_num,
+                            line_num,
+                            "RECORD_01",
+                            raw_line,
+                            StatementClassification.UNSUPPORTED_RELEVANT,
+                            f"Invalid 01 record identifier: {rec_name}",
+                        )
+                    )
+                    i += 1
+                    continue
                 current_record = ASTRecordDeclaration(
                     container_name=rec_name,
                     line_start=line_num,
@@ -1110,6 +1243,20 @@ class SystemCobolParser:
 
             if first == "05":
                 f_name = tokens[1].rstrip(".") if len(tokens) > 1 else ""
+                if not is_canonical_cobol_identifier(f_name):
+                    self.statements.append(
+                        ClassifiedStatement(
+                            target_file.relative_path,
+                            line_num,
+                            line_num,
+                            "FIELD_05",
+                            raw_line,
+                            StatementClassification.UNSUPPORTED_RELEVANT,
+                            f"Invalid 05 field identifier: {f_name}",
+                        )
+                    )
+                    i += 1
+                    continue
                 pic_val = None
                 usage_val = "DISPLAY"
                 for pic_kw in ("PIC", "PICTURE"):
@@ -1189,6 +1336,8 @@ class SystemCobolParser:
                     no_dot_tokens = [t for t in c_tokens if t != "."]
                     if len(no_dot_tokens) > 1 and no_dot_tokens[0] == "88":
                         cond_name = no_dot_tokens[1]
+                        if not is_canonical_cobol_identifier(cond_name):
+                            is_supported = False
                     else:
                         is_supported = False
 
@@ -1324,25 +1473,39 @@ class SystemCobolParser:
                 i += 1
                 continue
 
-            if (
-                stripped.endswith(".")
-                and len(tokens) == 1
-                and not first.startswith("STOP")
-                and first not in ("GOBACK", "EXIT")
-            ):
-                self.statements.append(
-                    ClassifiedStatement(
-                        target_file.relative_path,
-                        line_num,
-                        line_num,
-                        "PARAGRAPH_HEADER",
-                        raw_line,
-                        StatementClassification.RECOGNIZED_BUT_UNSCORED,
-                        "Paragraph header",
-                    )
-                )
-                i += 1
-                continue
+            if stripped.endswith(".") and len(tokens) == 1:
+                if (
+                    first not in PROCEDURAL_KEYWORD_VOCABULARY
+                    and first not in PROCEDURAL_STATEMENT_STARTERS
+                ):
+                    if is_canonical_cobol_identifier(first):
+                        self.statements.append(
+                            ClassifiedStatement(
+                                target_file.relative_path,
+                                line_num,
+                                line_num,
+                                "PARAGRAPH_HEADER",
+                                raw_line,
+                                StatementClassification.RECOGNIZED_BUT_UNSCORED,
+                                "Paragraph header",
+                            )
+                        )
+                        i += 1
+                        continue
+                    else:
+                        self.statements.append(
+                            ClassifiedStatement(
+                                target_file.relative_path,
+                                line_num,
+                                line_num,
+                                "PARAGRAPH_HEADER",
+                                raw_line,
+                                StatementClassification.UNSUPPORTED_RELEVANT,
+                                f"Invalid paragraph header identifier: {first}",
+                            )
+                        )
+                        i += 1
+                        continue
 
             # PROCEDURAL VERBS
             if first == "CALL":
@@ -1372,13 +1535,7 @@ class SystemCobolParser:
                             and "\\" not in raw_target
                         ):
                             content = raw_target[1:-1]
-                            if (
-                                quote_char not in content
-                                and content
-                                and content == content.upper()
-                                and content == content.strip()
-                                and re.match(r"^[A-Z0-9]+(-[A-Z0-9]+)*$", content)
-                            ):
+                            if quote_char not in content and is_canonical_cobol_identifier(content):
                                 target_str = content
                                 is_lit = True
                             else:
@@ -1387,11 +1544,9 @@ class SystemCobolParser:
                             call_valid = False
                     else:
                         # Dynamic target
-                        if (
-                            raw_target == raw_target.upper()
-                            and re.match(r"^[A-Z0-9]+(-[A-Z0-9]+)*$", raw_target)
-                            and not is_unquoted_procedural_starter(raw_target)
-                        ):
+                        if is_canonical_cobol_identifier(
+                            raw_target
+                        ) and not is_unquoted_procedural_starter(raw_target):
                             target_str = raw_target
                             is_lit = False
                         else:
@@ -1399,11 +1554,9 @@ class SystemCobolParser:
 
                     if call_valid and len(tokens) == 4:
                         arg = tokens[3]
-                        if (
-                            arg == arg.upper()
-                            and re.match(r"^[A-Z0-9]+(-[A-Z0-9]+)*$", arg)
-                            and not is_unquoted_procedural_starter(arg)
-                        ):
+                        if is_canonical_cobol_identifier(
+                            arg
+                        ) and not is_unquoted_procedural_starter(arg):
                             using_list = [arg]
                         else:
                             call_valid = False
@@ -1458,11 +1611,9 @@ class SystemCobolParser:
                     src_raw = tokens[1]
                     dest_raw = tokens[3]
 
-                    if (
-                        dest_raw == dest_raw.upper()
-                        and re.match(r"^[A-Z0-9]+(-[A-Z0-9]+)*$", dest_raw)
-                        and not is_unquoted_procedural_starter(dest_raw)
-                    ):
+                    if is_canonical_cobol_identifier(
+                        dest_raw
+                    ) and not is_unquoted_procedural_starter(dest_raw):
                         dest_val = dest_raw
                     else:
                         move_valid = False
@@ -1507,9 +1658,9 @@ class SystemCobolParser:
                         }
                         if (
                             src_raw.upper() in figurative
-                            or re.match(r"^[+-]?[0-9]+(\.[0-9]+)?$", src_raw)
+                            or is_numeric_literal(src_raw)
                             or (
-                                re.match(r"^[A-Z0-9]+(-[A-Z0-9]+)*$", src_raw.upper())
+                                is_canonical_cobol_identifier(src_raw)
                                 and not is_unquoted_procedural_starter(src_raw)
                             )
                         ):
@@ -1569,8 +1720,8 @@ class SystemCobolParser:
                     else:
                         open_valid = False
                     target_f = tokens[2]
-                    if not re.match(
-                        r"^[A-Z0-9]+(-[A-Z0-9]+)*$", target_f.upper()
+                    if not is_canonical_cobol_identifier(
+                        target_f
                     ) or is_unquoted_procedural_starter(target_f):
                         open_valid = False
 
@@ -1618,8 +1769,8 @@ class SystemCobolParser:
                     fop_valid = False
                 else:
                     target_f = tokens[1]
-                    if not re.match(
-                        r"^[A-Z0-9]+(-[A-Z0-9]+)*$", target_f.upper()
+                    if not is_canonical_cobol_identifier(
+                        target_f
                     ) or is_unquoted_procedural_starter(target_f):
                         fop_valid = False
 
@@ -1664,6 +1815,7 @@ class SystemCobolParser:
                 start_l = line_num
                 full_text = raw_line
                 cur_toks = list(tokens)
+                has_sentence_ended = line_is_terminated
                 while (
                     not (
                         "TO" in [t.upper() for t in cur_toks]
@@ -1671,15 +1823,18 @@ class SystemCobolParser:
                     )
                     and (i + 1) < n
                 ):
+                    if has_sentence_ended:
+                        break
                     i += 1
                     full_text += " " + lines[i].strip()
-                    next_valid, next_toks = consume_optional_terminal_period(
+                    next_valid, next_toks, next_term = consume_optional_terminal_period(
                         tokenize_cobol_line(lines[i])
                     )
                     if not next_valid:
                         cur_toks = ["INVALID_PERIOD"]
                         break
                     cur_toks.extend(next_toks)
+                    has_sentence_ended = next_term
                 end_l = i + 1
 
                 arith_valid = True
@@ -1696,7 +1851,9 @@ class SystemCobolParser:
                     tgt = cur_toks[3]
                     if is_unquoted_procedural_starter(op) or is_unquoted_procedural_starter(tgt):
                         arith_valid = False
-                    elif not re.match(r"^[A-Z0-9]+(-[A-Z0-9]+)*$", tgt.upper()):
+                    elif not is_computation_operand(op):
+                        arith_valid = False
+                    elif not is_canonical_cobol_identifier(tgt):
                         arith_valid = False
 
                 if not arith_valid:
@@ -1743,10 +1900,10 @@ class SystemCobolParser:
                 if any(is_unquoted_procedural_starter(t) for t in tokens[1:]):
                     arith_valid = False
                 elif first == "COMPUTE":
-                    if len(tokens) >= 4 and tokens[2] == "=":
+                    if len(tokens) == 4 and tokens[2] == "=":
                         tgt = tokens[1]
-                        op = " ".join(tokens[3:])
-                        if not re.match(r"^[A-Z0-9]+(-[A-Z0-9]+)*$", tgt.upper()):
+                        op = tokens[3]
+                        if not is_canonical_cobol_identifier(tgt) or not is_computation_operand(op):
                             arith_valid = False
                     else:
                         arith_valid = False
@@ -1754,7 +1911,7 @@ class SystemCobolParser:
                     if len(tokens) == 4 and tokens[2].upper() == "BY":
                         op = tokens[1]
                         tgt = tokens[3]
-                        if not re.match(r"^[A-Z0-9]+(-[A-Z0-9]+)*$", tgt.upper()):
+                        if not is_canonical_cobol_identifier(tgt) or not is_computation_operand(op):
                             arith_valid = False
                     else:
                         arith_valid = False
@@ -1762,7 +1919,7 @@ class SystemCobolParser:
                     if len(tokens) == 4 and tokens[2].upper() == "INTO":
                         op = tokens[1]
                         tgt = tokens[3]
-                        if not re.match(r"^[A-Z0-9]+(-[A-Z0-9]+)*$", tgt.upper()):
+                        if not is_canonical_cobol_identifier(tgt) or not is_computation_operand(op):
                             arith_valid = False
                     else:
                         arith_valid = False
@@ -1901,7 +2058,31 @@ class SystemCobolParser:
                 continue
 
             if first == "PERFORM":
-                if any(is_unquoted_procedural_starter(t) for t in tokens[1:]):
+                perf_valid = False
+                if (
+                    len(tokens) == 2
+                    and is_canonical_cobol_identifier(tokens[1])
+                    and not is_unquoted_procedural_starter(tokens[1])
+                ):
+                    perf_valid = True
+                elif (
+                    len(tokens) == 5
+                    and tokens[1].upper() == "UNTIL"
+                    and tokens[3] in ("=", "!=", "<>", "<", ">", "<=", ">=")
+                ):
+                    left_op = tokens[2]
+                    right_op = tokens[4]
+                    left_ok = is_canonical_cobol_identifier(left_op) or is_numeric_literal(left_op)
+                    right_ok = (
+                        is_canonical_cobol_identifier(right_op)
+                        or is_numeric_literal(right_op)
+                        or (right_op.startswith("'") and right_op.endswith("'"))
+                        or (right_op.startswith('"') and right_op.endswith('"'))
+                    )
+                    if left_ok and right_ok:
+                        perf_valid = True
+
+                if not perf_valid:
                     self.statements.append(
                         ClassifiedStatement(
                             target_file.relative_path,
@@ -1910,7 +2091,7 @@ class SystemCobolParser:
                             "PERFORM",
                             raw_line,
                             StatementClassification.UNSUPPORTED_RELEVANT,
-                            "Compound PERFORM statement with inline procedural starter",
+                            "Unsupported PERFORM syntax or unconsumed tokens",
                         )
                     )
                 else:
@@ -1929,7 +2110,60 @@ class SystemCobolParser:
                 continue
 
             if first in ("IF", "EVALUATE", "WHEN"):
-                if any(is_unquoted_procedural_starter(t) for t in tokens[1:]):
+                branch_valid = False
+                if first == "IF":
+                    rel_ops = ("=", "!=", "<>", "<", ">", "<=", ">=")
+                    if len(tokens) == 4 and tokens[2] in rel_ops:
+                        left_op, right_op = tokens[1], tokens[3]
+                        left_ok = is_canonical_cobol_identifier(left_op) or is_numeric_literal(
+                            left_op
+                        )
+                        right_ok = (
+                            is_canonical_cobol_identifier(right_op)
+                            or is_numeric_literal(right_op)
+                            or (right_op.startswith("'") and right_op.endswith("'"))
+                            or (right_op.startswith('"') and right_op.endswith('"'))
+                        )
+                        if left_ok and right_ok:
+                            branch_valid = True
+                    elif len(tokens) == 6 and tokens[2] in rel_ops and tokens[4].upper() == "OR":
+                        left_op, right_op1, right_op2 = tokens[1], tokens[3], tokens[5]
+                        left_ok = is_canonical_cobol_identifier(left_op) or is_numeric_literal(
+                            left_op
+                        )
+                        r1_ok = (
+                            is_canonical_cobol_identifier(right_op1)
+                            or is_numeric_literal(right_op1)
+                            or (right_op1.startswith("'") and right_op1.endswith("'"))
+                            or (right_op1.startswith('"') and right_op1.endswith('"'))
+                        )
+                        r2_ok = (
+                            is_canonical_cobol_identifier(right_op2)
+                            or is_numeric_literal(right_op2)
+                            or (right_op2.startswith("'") and right_op2.endswith("'"))
+                            or (right_op2.startswith('"') and right_op2.endswith('"'))
+                        )
+                        if left_ok and r1_ok and r2_ok:
+                            branch_valid = True
+                elif first == "EVALUATE":
+                    if len(tokens) == 2 and (
+                        is_canonical_cobol_identifier(tokens[1])
+                        or tokens[1].upper() in ("TRUE", "FALSE")
+                    ):
+                        branch_valid = True
+                elif first == "WHEN":
+                    if len(tokens) == 2:
+                        w_op = tokens[1]
+                        if (
+                            w_op.upper() == "OTHER"
+                            or is_canonical_cobol_identifier(w_op)
+                            or is_numeric_literal(w_op)
+                            or (w_op.startswith("'") and w_op.endswith("'"))
+                            or (w_op.startswith('"') and w_op.endswith('"'))
+                        ):
+                            branch_valid = True
+
+                if not branch_valid:
                     self.statements.append(
                         ClassifiedStatement(
                             target_file.relative_path,
@@ -1938,7 +2172,7 @@ class SystemCobolParser:
                             first,
                             raw_line,
                             StatementClassification.UNSUPPORTED_RELEVANT,
-                            f"Compound {first} statement with inline procedural starter",
+                            f"Unsupported {first} syntax or unconsumed tokens",
                         )
                     )
                 else:
@@ -1957,19 +2191,7 @@ class SystemCobolParser:
                 continue
 
             if first in ("ELSE", "END-IF", "END-EVALUATE", "END-PERFORM", "END-READ"):
-                if any(is_unquoted_procedural_starter(t) for t in tokens[1:]):
-                    self.statements.append(
-                        ClassifiedStatement(
-                            target_file.relative_path,
-                            line_num,
-                            line_num,
-                            first,
-                            raw_line,
-                            StatementClassification.UNSUPPORTED_RELEVANT,
-                            f"Compound {first} statement with inline procedural starter",
-                        )
-                    )
-                else:
+                if len(tokens) == 1:
                     self.statements.append(
                         ClassifiedStatement(
                             target_file.relative_path,
@@ -1981,11 +2203,7 @@ class SystemCobolParser:
                             f"Procedural delimiter {first}",
                         )
                     )
-                i += 1
-                continue
-
-            if first in ("DISPLAY", "ACCEPT"):
-                if any(is_unquoted_procedural_starter(t) for t in tokens[1:]):
+                else:
                     self.statements.append(
                         ClassifiedStatement(
                             target_file.relative_path,
@@ -1994,7 +2212,27 @@ class SystemCobolParser:
                             first,
                             raw_line,
                             StatementClassification.UNSUPPORTED_RELEVANT,
-                            f"Compound {first} statement with inline procedural starter",
+                            f"Unsupported {first} delimiter syntax or unconsumed tokens",
+                        )
+                    )
+                i += 1
+                continue
+
+            if first == "ACCEPT":
+                if (
+                    len(tokens) == 2
+                    and is_canonical_cobol_identifier(tokens[1])
+                    and not is_unquoted_procedural_starter(tokens[1])
+                ):
+                    self.statements.append(
+                        ClassifiedStatement(
+                            target_file.relative_path,
+                            line_num,
+                            line_num,
+                            first,
+                            raw_line,
+                            StatementClassification.RECOGNIZED_BUT_UNSCORED,
+                            "Procedural console I/O ACCEPT",
                         )
                     )
                 else:
@@ -2005,15 +2243,56 @@ class SystemCobolParser:
                             line_num,
                             first,
                             raw_line,
-                            StatementClassification.RECOGNIZED_BUT_UNSCORED,
-                            f"Procedural console I/O {first}",
+                            StatementClassification.UNSUPPORTED_RELEVANT,
+                            "Unsupported ACCEPT syntax or unconsumed tokens",
                         )
                     )
                 i += 1
                 continue
 
-            if first in ("AT", "NOT", "FROM"):
-                if any(is_unquoted_procedural_starter(t) for t in tokens[1:]):
+            if first == "DISPLAY":
+                declared_ids = (
+                    {f.name.upper() for rec in unit.record_declarations for f in rec.fields}
+                    | {rec.container_name.upper() for rec in unit.record_declarations}
+                    | {fb.internal_file_name.upper() for fb in unit.file_bindings}
+                )
+                disp_valid = False
+                if len(tokens) >= 5 and [t.upper() for t in tokens[-3:]] == [
+                    "WITH",
+                    "NO",
+                    "ADVANCING",
+                ]:
+                    items = tokens[1:-3]
+                    if len(items) == 1:
+                        item = items[0]
+                        if (item.startswith("'") and item.endswith("'")) or (
+                            item.startswith('"') and item.endswith('"')
+                        ):
+                            disp_valid = True
+                        elif is_canonical_cobol_identifier(item) and item.upper() in declared_ids:
+                            disp_valid = True
+                elif len(tokens) == 2:
+                    item = tokens[1]
+                    if (item.startswith("'") and item.endswith("'")) or (
+                        item.startswith('"') and item.endswith('"')
+                    ):
+                        disp_valid = True
+                    elif is_canonical_cobol_identifier(item) and item.upper() in declared_ids:
+                        disp_valid = True
+                elif len(tokens) == 3:
+                    item1 = tokens[1]
+                    item2 = tokens[2]
+                    is_lit1 = (item1.startswith("'") and item1.endswith("'")) or (
+                        item1.startswith('"') and item1.endswith('"')
+                    )
+                    if (
+                        is_lit1
+                        and is_canonical_cobol_identifier(item2)
+                        and item2.upper() in declared_ids
+                    ):
+                        disp_valid = True
+
+                if disp_valid:
                     self.statements.append(
                         ClassifiedStatement(
                             target_file.relative_path,
@@ -2021,8 +2300,8 @@ class SystemCobolParser:
                             line_num,
                             first,
                             raw_line,
-                            StatementClassification.UNSUPPORTED_RELEVANT,
-                            f"Compound {first} clause with inline procedural starter",
+                            StatementClassification.RECOGNIZED_BUT_UNSCORED,
+                            "Procedural console I/O DISPLAY",
                         )
                     )
                 else:
@@ -2033,15 +2312,15 @@ class SystemCobolParser:
                             line_num,
                             first,
                             raw_line,
-                            StatementClassification.RECOGNIZED_BUT_UNSCORED,
-                            f"Procedural clause helper {first}",
+                            StatementClassification.UNSUPPORTED_RELEVANT,
+                            "Unsupported DISPLAY syntax or unconsumed tokens",
                         )
                     )
                 i += 1
                 continue
 
-            if first in ("GO", "GOTO"):
-                if any(is_unquoted_procedural_starter(t) for t in tokens[1:]):
+            if first == "AT":
+                if len(tokens) == 2 and tokens[1].upper() == "END":
                     self.statements.append(
                         ClassifiedStatement(
                             target_file.relative_path,
@@ -2049,8 +2328,8 @@ class SystemCobolParser:
                             line_num,
                             first,
                             raw_line,
-                            StatementClassification.UNSUPPORTED_RELEVANT,
-                            f"Compound {first} statement with inline procedural starter",
+                            StatementClassification.RECOGNIZED_BUT_UNSCORED,
+                            "Procedural clause helper AT END",
                         )
                     )
                 else:
@@ -2061,8 +2340,101 @@ class SystemCobolParser:
                             line_num,
                             first,
                             raw_line,
+                            StatementClassification.UNSUPPORTED_RELEVANT,
+                            "Unsupported AT clause syntax or unconsumed tokens",
+                        )
+                    )
+                i += 1
+                continue
+
+            if first == "NOT":
+                if len(tokens) == 3 and tokens[1].upper() == "AT" and tokens[2].upper() == "END":
+                    self.statements.append(
+                        ClassifiedStatement(
+                            target_file.relative_path,
+                            line_num,
+                            line_num,
+                            first,
+                            raw_line,
                             StatementClassification.RECOGNIZED_BUT_UNSCORED,
-                            f"Procedural control-flow barrier {first}",
+                            "Procedural clause helper NOT AT END",
+                        )
+                    )
+                else:
+                    self.statements.append(
+                        ClassifiedStatement(
+                            target_file.relative_path,
+                            line_num,
+                            line_num,
+                            first,
+                            raw_line,
+                            StatementClassification.UNSUPPORTED_RELEVANT,
+                            "Unsupported NOT clause syntax or unconsumed tokens",
+                        )
+                    )
+                i += 1
+                continue
+
+            if first == "GO":
+                if (
+                    len(tokens) == 3
+                    and tokens[1].upper() == "TO"
+                    and is_canonical_cobol_identifier(tokens[2])
+                    and not is_unquoted_procedural_starter(tokens[2])
+                ):
+                    self.statements.append(
+                        ClassifiedStatement(
+                            target_file.relative_path,
+                            line_num,
+                            line_num,
+                            first,
+                            raw_line,
+                            StatementClassification.RECOGNIZED_BUT_UNSCORED,
+                            "Procedural control-flow barrier GO TO",
+                        )
+                    )
+                else:
+                    self.statements.append(
+                        ClassifiedStatement(
+                            target_file.relative_path,
+                            line_num,
+                            line_num,
+                            first,
+                            raw_line,
+                            StatementClassification.UNSUPPORTED_RELEVANT,
+                            "Unsupported GO TO syntax or unconsumed tokens",
+                        )
+                    )
+                i += 1
+                continue
+
+            if first == "GOTO":
+                if (
+                    len(tokens) == 2
+                    and is_canonical_cobol_identifier(tokens[1])
+                    and not is_unquoted_procedural_starter(tokens[1])
+                ):
+                    self.statements.append(
+                        ClassifiedStatement(
+                            target_file.relative_path,
+                            line_num,
+                            line_num,
+                            first,
+                            raw_line,
+                            StatementClassification.RECOGNIZED_BUT_UNSCORED,
+                            "Procedural control-flow barrier GOTO",
+                        )
+                    )
+                else:
+                    self.statements.append(
+                        ClassifiedStatement(
+                            target_file.relative_path,
+                            line_num,
+                            line_num,
+                            first,
+                            raw_line,
+                            StatementClassification.UNSUPPORTED_RELEVANT,
+                            "Unsupported GOTO syntax or unconsumed tokens",
                         )
                     )
                 i += 1
@@ -2083,6 +2455,99 @@ class SystemCobolParser:
             i += 1
 
         return unit
+
+    def _prove_callee_continuation(self, callee_unit: ASTCompilationUnit) -> ASTTermination | None:
+        """Structural proof of unavoidable callee continuation outcome.
+
+        Establishes that:
+        - no UNSUPPORTED_RELEVANT statements exist in the callee;
+        - no GO/GOTO statements exist;
+        - all ASTTermination nodes agree on their termination verb;
+        - control block nesting is balanced and depth is 0 at termination;
+        - the proving termination occurs at top-level and is the final
+          reachable executable procedural outcome.
+        """
+        callee_stmts = [s for s in self.statements if s.file_path == callee_unit.file_path]
+        if any(
+            s.classification == StatementClassification.UNSUPPORTED_RELEVANT for s in callee_stmts
+        ):
+            return None
+
+        if any(s.verb in ("GO", "GOTO") for s in callee_stmts):
+            return None
+
+        term_stmts = [s for s in callee_unit.statements if isinstance(s, ASTTermination)]
+        if not term_stmts:
+            return None
+
+        first_verb = term_stmts[0].verb
+        if any(t.verb != first_verb for t in term_stmts):
+            return None
+
+        # Track structural control depth
+        depth = 0
+        proving_term: ASTTermination | None = None
+        for s in callee_stmts:
+            if s.verb in ("IF", "EVALUATE"):
+                depth += 1
+            elif s.verb == "PERFORM" and "UNTIL" in s.raw_text.upper():
+                depth += 1
+            elif s.verb in ("END-IF", "END-EVALUATE", "END-PERFORM"):
+                depth -= 1
+                if depth < 0:
+                    return None
+            elif s.verb in ("STOP_RUN", "GOBACK", "EXIT_PROGRAM"):
+                if depth == 0:
+                    ast_t = next(
+                        (t for t in term_stmts if t.line_start == s.line_start),
+                        None,
+                    )
+                    if ast_t:
+                        proving_term = ast_t
+
+        if depth != 0 or proving_term is None:
+            return None
+
+        # Must be the final reachable executable outcome
+        exec_classes = (ASTCall, ASTMove, ASTFileOp, ASTArithmetic)
+        try:
+            proving_idx = callee_unit.statements.index(proving_term)
+            remaining_stmts = callee_unit.statements[proving_idx + 1 :]
+            if any(isinstance(r, exec_classes) for r in remaining_stmts):
+                return None
+        except ValueError:
+            return None
+
+        procedural_verbs = {
+            "DISPLAY",
+            "ACCEPT",
+            "PERFORM",
+            "IF",
+            "EVALUATE",
+            "WHEN",
+            "MOVE",
+            "CALL",
+            "OPEN",
+            "READ",
+            "WRITE",
+            "CLOSE",
+            "ADD",
+            "SUBTRACT",
+            "COMPUTE",
+            "MULTIPLY",
+            "DIVIDE",
+            "GO",
+            "GOTO",
+        }
+        after_stmts = [
+            s
+            for s in callee_stmts
+            if s.line_start > proving_term.line_end and s.verb in procedural_verbs
+        ]
+        if after_stmts:
+            return None
+
+        return proving_term
 
     # -----------------------------------------------------------------------
     # Generic Deterministic Fact Extraction (Zero Fixture Identifiers)
@@ -2200,10 +2665,7 @@ class SystemCobolParser:
                         )
 
                         # Caller continuation constraint
-                        callee_term = next(
-                            (s for s in callee_unit.statements if isinstance(s, ASTTermination)),
-                            None,
-                        )
+                        callee_term = self._prove_callee_continuation(callee_unit)
                         if callee_term:
                             constraint_effect = (
                                 "PROCESS_TERMINATION_ON_CALL"
@@ -2230,6 +2692,21 @@ class SystemCobolParser:
                                     },
                                 )
                             )
+                        else:
+                            for idx_s, s in enumerate(self.statements):
+                                if (
+                                    s.file_path == unit.file_path
+                                    and s.line_start == stmt.line_start
+                                ):
+                                    self.statements[idx_s] = ClassifiedStatement(
+                                        s.file_path,
+                                        s.line_start,
+                                        s.line_end,
+                                        s.verb,
+                                        s.raw_text,
+                                        StatementClassification.UNSUPPORTED_RELEVANT,
+                                        "Unproven callee continuation outcome",
+                                    )
 
         # 3. File Bindings
         for unit in self.compilation_units:
@@ -2385,12 +2862,29 @@ class SystemCobolParser:
                         )
 
                         # Platform dependency
-                        if cmd_clean.strip().lower().startswith("cmd /c"):
+                        dialect, _ = classify_command_dialect(cmd_clean)
+                        if dialect == CommandDialect.WINDOWS_CMD:
                             self.supported_facts.append(
                                 SupportedSystemFact(
                                     fact=PlatformDependencyFact(
                                         program_id=caller,
                                         platform_family="WINDOWS",
+                                        command_literal=cmd_clean,
+                                    ),
+                                    proposition_id=f"prop.platform.{caller.lower()}_{cmd_idx}",
+                                    evidence_spans={
+                                        "evidence": EvidenceSpan(
+                                            unit.file_path, s1.line_start, s1.line_end
+                                        )
+                                    },
+                                )
+                            )
+                        elif dialect == CommandDialect.POSIX_SHELL:
+                            self.supported_facts.append(
+                                SupportedSystemFact(
+                                    fact=PlatformDependencyFact(
+                                        program_id=caller,
+                                        platform_family="POSIX",
                                         command_literal=cmd_clean,
                                     ),
                                     proposition_id=f"prop.platform.{caller.lower()}_{cmd_idx}",
@@ -2619,34 +3113,68 @@ class SystemCobolParser:
                     )
                 ]
                 if ops_in_file:
-                    first_op = ops_in_file[0]
-                    mode = first_op.access_mode or "INPUT"
-                    if mode in ("I-O", "IO"):
-                        mode = "IO"
-                    mode_verb = "OPEN_IO" if mode == "IO" else f"OPEN_{mode}"
-                    verbs = tuple(
-                        mode_verb if op.verb == "OPEN" and first_op.access_mode else op.verb
-                        for op in ops_in_file
-                    )
                     span_start = ops_in_file[0].line_start
                     span_end = ops_in_file[-1].line_end
+                    open_modes = set()
+                    for op in ops_in_file:
+                        if op.verb == "OPEN":
+                            m = op.access_mode or "INPUT"
+                            if m in ("I-O", "IO"):
+                                m = "IO"
+                            open_modes.add(m)
 
-                    f_tag = f_name.lower().replace("-", "_")
-                    prop_lc_id = f"prop.lifecycle.{caller.lower()}_{f_tag}"
-                    self.supported_facts.append(
-                        SupportedSystemFact(
-                            fact=ResourceLifecycleFact(
-                                program_id=caller,
-                                resource_name=f_name,
-                                access_mode=mode,
-                                ordered_operations=verbs,
-                            ),
-                            proposition_id=prop_lc_id,
-                            evidence_spans={
-                                "evidence": EvidenceSpan(unit.file_path, span_start, span_end)
-                            },
+                    if len(open_modes) > 1:
+                        # More than one distinct OPEN access mode in lifecycle:
+                        # Under Contract 3.5.3:
+                        # - preserve truthful individual FileOperation facts
+                        # - DO NOT emit a fabricated ResourceLifecycleFact
+                        # - mark lifecycle semantic interpretation UNSUPPORTED_RELEVANT
+                        # - final coverage blocks evaluation
+                        self.statements.append(
+                            ClassifiedStatement(
+                                unit.file_path,
+                                ops_in_file[0].line_start,
+                                ops_in_file[-1].line_end,
+                                "FILE_LIFECYCLE",
+                                f"Mixed OPEN access modes for {f_name}: {sorted(open_modes)}",
+                                StatementClassification.UNSUPPORTED_RELEVANT,
+                                (
+                                    "Resource lifecycle contains mixed OPEN access modes "
+                                    "unsupported by Contract 3.5.3"
+                                ),
+                            )
                         )
-                    )
+                    else:
+                        mode = list(open_modes)[0] if open_modes else "INPUT"
+                        verbs_list = []
+                        for op in ops_in_file:
+                            if op.verb == "OPEN":
+                                op_m = op.access_mode or "INPUT"
+                                if op_m in ("I-O", "IO"):
+                                    op_m = "IO"
+                                verbs_list.append("OPEN_IO" if op_m == "IO" else f"OPEN_{op_m}")
+                            else:
+                                verbs_list.append(op.verb)
+                        verbs = tuple(verbs_list)
+                        span_start = ops_in_file[0].line_start
+                        span_end = ops_in_file[-1].line_end
+
+                        f_tag = f_name.lower().replace("-", "_")
+                        prop_lc_id = f"prop.lifecycle.{caller.lower()}_{f_tag}"
+                        self.supported_facts.append(
+                            SupportedSystemFact(
+                                fact=ResourceLifecycleFact(
+                                    program_id=caller,
+                                    resource_name=f_name,
+                                    access_mode=mode,
+                                    ordered_operations=verbs,
+                                ),
+                                proposition_id=prop_lc_id,
+                                evidence_spans={
+                                    "evidence": EvidenceSpan(unit.file_path, span_start, span_end)
+                                },
+                            )
+                        )
 
                     # Missing File Status Risk
                     if not fb.has_file_status:
