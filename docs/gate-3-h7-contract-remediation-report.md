@@ -2,9 +2,9 @@
 
 **Date:** 2026-09-13  
 **Contract Version:** 3.5.3  
-**Functional Commit (H7.4.2-0):** `0808eadb7e97b11f8ac980511efb3fab98041065`  
-**Prior Functional Commit (H7.4.1-0):** `548bb08817cd6faea731c85cdf2c884b9bfa029e`  
-**Prior Report Commit (H7.4.1):** `dca44ef1603652f41b4625fe8aea1c6be9a23ba1`  
+**Functional Commit (H7.4.4.1-0):** `dd8563b10fa3fb5f7db2a3cb9d91f2bac6e87100`  
+**Prior Functional Commit (H7.4.4-0):** `6560586eefc1865959bd3bc937a09cb1527ecac4`  
+**Prior Report Commit (H7.4.4):** `a02a8b0a9fc50b75b9fe68f09b735b63c628b4cb`  
 **Classification:** `STRUCTURAL_VERIFIER_AND_LOGICAL_PARSING_REMEDIATION`  
 **Mode:** STRICTLY OFFLINE  
 **Live Provider Calls:** 0  
@@ -589,7 +589,7 @@ H7.4.4 resolves all seven host-oracle BLOCKERs (B-01 through B-07) and two proce
    - `classify_mutation_command()` un-wraps POSIX `-c` commands (e.g., `sh -c 'rm ...'`, `bash -c ...`, `/bin/sh -c ...`) and identifies mutation verbs (`rm`, `mv`, `cp`).
    - Rejects POSIX shell wrappers as `MUTATION_UNSUPPORTED` with reason `"POSIX shell mutation wrappers are unsupported for deterministic resource mutation analysis"`.
    - Rejects bare commands (e.g. `del accounts.dat` without `cmd /c`) as `MUTATION_UNSUPPORTED`.
-   - Both categories fail closed with `UNSUPPORTED_RELEVANT`, blocking evaluation coverage while preserving opaque command and platform dependency facts.
+   - Both categories fail closed with `UNSUPPORTED_RELEVANT`, blocking evaluation coverage while preserving opaque `CommandInvocationFact` grounding. In accordance with Contract 3.5.3 wire domain closure (where `PlatformFamily = Literal["WINDOWS"]`), POSIX commands emit strictly zero `PlatformDependencyFact`.
 
 5. **B-05: Lossless Mutation Tokenization**
    - `tokenize_windows_mutation_operands()` rejects lossy whitespace: consecutive spaces (`\s{2,}`) or boundary whitespace inside operands.
@@ -644,10 +644,85 @@ H7.4.4 resolves all seven host-oracle BLOCKERs (B-01 through B-07) and two proce
 
 ---
 
-## 17. Final Status (H7.4.4 Release)
+## 17. Historical Status (H7.4.4 Release)
 
 - **Functional Commit (H7.4.4-0):** `6560586eefc1865959bd3bc937a09cb1527ecac4`
-- **Report Commit (H7.4.4):** Direct report-only child of `H7.4.4-0`
+- **Report Commit (H7.4.4):** `a02a8b0a9fc50b75b9fe68f09b735b63c628b4cb`
+- **Remote Branch:** `feat/gate-3-system-analysis`
+- **Baseline-v3 Spec:** `evals/baselines/gate-3-baseline-v3.json` (`candidate_git_sha = ""`)
+- **Execution Status:** Strictly offline. Zero provider calls, zero baseline runs, no baseline-v3 reservation, baseline-v2 reservation byte-for-byte preserved.
+
+---
+
+## 18. H7.4.4.1 / Contract 3.5.3 Final Domain-Closure Hotfix Details
+
+### 18.1 Domain-Closure Remediation (PlatformDependencyFact)
+- **Host / Model Wire Asymmetry Elimination:** Contract 3.5.3 frozen wire schema specifies `PlatformFamily = Literal["WINDOWS"]`. In H7.4.4, `src/cobol/system_cobol_parser.py` was emitting `PlatformDependencyFact(platform_family="POSIX")` for POSIX shell commands (`/bin/sh -c ...`, `sh -c ...`, `bash -c ...`, `/usr/bin/bash -c ...`).
+- **Domain Closure Enforcement:** The host parser now emits `PlatformDependencyFact(platform_family="WINDOWS")` strictly for supported Windows commands (`cmd /c ...`, `cmd.exe /c ...`). For all POSIX shell invocations, the host parser emits **zero** `PlatformDependencyFact` because `"POSIX"` is not a model-visible platform token in Contract 3.5.3.
+- **Exact Opaque Command Invocation Preservation:** Exact opaque `CommandInvocationFact` remains grounded for valid `MOVE -> CALL 'SYSTEM'` bindings regardless of dialect.
+- **POSIX Mutation vs Non-Mutation Coverage:**
+  - *POSIX Mutation Commands* (`/bin/sh -c rm ...`, `bash -c mv ...`): Retain exact `CommandInvocationFact`, emit zero `PlatformDependencyFact`, fail closed as `MUTATION_UNSUPPORTED` (`unsupported_relevant_count >= 1`, `is_evaluation_blocked = True`), and derive zero `OperationSequenceFact` and zero `BehavioralRiskFact`.
+  - *POSIX Non-Mutation Commands* (`/bin/sh -c echo test`, `sh -c echo test`, `bash -c echo test`): Retain exact `CommandInvocationFact`, emit zero `PlatformDependencyFact`, derive zero sequence/risk, and maintain clean coverage (`unsupported_relevant_count == 0`, `is_evaluation_blocked = False`). Clean coverage does not conceal a model-visible platform fact.
+- **Domain-Closure Invariant:** All constructors of `PlatformDependencyFact` throughout the codebase enforce `platform_family="WINDOWS"`. Host parser can emit only tokens representable by the frozen wire schema (`07655be0a119440e1f693cbd3242842ed87e82c43518bce61f741bc7dc4423dc`).
+
+### 18.2 Explanation of Coverage Certificate Byte Identity Change
+Historical independent H7.4.3 review recorded legacy coverage certificate:
+`74148cdb6b5c28c576406db77a8c84ae171a7fd1eec568c4d5a15256ef08f177`
+H7.4.4 and H7.4.4.1 report:
+`e5900cba53db046c80e0e5f64618b549e894631a0eebfe42f8c502fe0ae948be`
+
+An exact semantic diff between H7.4.3 and H7.4.4.1 classification lists (`per_statement_classifications` on `legacy/core-banking-system`) identifies exactly 4 changed statement classifications out of 207 total statements (the remaining 203 statements are 100% identical):
+
+| File | Span | Old Classification (H7.4.3) | New Classification (H7.4.4.1) | Rationale Introduced in H7.4.4 |
+|---|---|---|---|---|
+| `legacy/core-banking-system/BANK-MAIN.CBL` | `[34, 34]` | `verb='PARAGRAPH_HEADER'`, `RECOGNIZED_BUT_UNSCORED` | `verb='END-PERFORM'`, `RECOGNIZED_BUT_UNSCORED` | Correct procedural statement classification; single-token line `END-PERFORM.` is not a paragraph header. |
+| `legacy/core-banking-system/REPORT-GEN.CBL` | `[48, 48]` | `verb='PARAGRAPH_HEADER'`, `RECOGNIZED_BUT_UNSCORED` | `verb='END-PERFORM'`, `RECOGNIZED_BUT_UNSCORED` | Correct procedural statement classification; single-token line `END-PERFORM.` is not a paragraph header. |
+| `legacy/core-banking-system/TRANS-PROC.CBL` | `[79, 79]` | `verb='PARAGRAPH_HEADER'`, `RECOGNIZED_BUT_UNSCORED` | `verb='END-PERFORM'`, `RECOGNIZED_BUT_UNSCORED` | Correct procedural statement classification; single-token line `END-PERFORM.` is not a paragraph header. |
+| `legacy/core-banking-system/TRANS-PROC.CBL` | `[94, 94]` | `verb='PARAGRAPH_HEADER'`, `RECOGNIZED_BUT_UNSCORED` | `verb='END-IF'`, `RECOGNIZED_BUT_UNSCORED` | Correct procedural statement classification; single-token line `END-IF.` is not a paragraph header. |
+
+**Invariance and Soundness Proofs:**
+- `unsupported_relevant_count == 0` is strictly maintained on the frozen legacy fixture.
+- All 80 parser-derived supported facts (`SupportedSystemFact`) are **100% bit-for-bit identical** between H7.4.3 and H7.4.4.1.
+- Frozen golden evaluation against `evals/expected/system-understanding-v3.json`:
+  - Expected Fact Count: 59
+  - Matched Expected Count: 59 (59/59)
+  - Unsupported Count: 0
+  - Precision: **1.0**
+  - Recall: **1.0**
+  - Gate 3 Pass: **True**
+- The change in coverage certificate SHA-256 is entirely and solely attributable to the deliberate grammar correction distinguishing procedural closure tokens from paragraph headers.
+
+### 18.3 Full Original Static Quality Gate (H7.4.4.1)
+- `mypy src agents evals scripts` -> Success: no issues found in 52 source files.
+- `pytest -q` -> 333 passed, 1 warning in 291.80s.
+- `pytest -q evals/tests/test_h7_contract_regressions.py` -> 64 passed in 12.69s.
+- `pytest -q evals/tests/test_adversarial_regressions_gate3.py` -> 24 passed in 2.94s.
+- `pytest -q evals/tests/test_round3_regressions.py` -> 15 passed in 10.94s.
+- `ruff check .` -> All checks passed (0 errors).
+- `ruff format --check .` -> 69 files already formatted.
+- `pip check` -> No broken requirements found.
+
+### 18.4 Complete Scientific Immutability Invariants (CLI-Grounded)
+| Asset | Target / File | Hash / Value | Verification Status |
+|---|---|---|---|
+| Baseline-v1 Spec | `evals/baselines/gate-3-baseline-v1.json` | `b37e8815e2605f279ecc417b8e037f0b235f5e1dcfa64d79b10708e852509695` | Byte-for-byte verified |
+| Baseline-v1 Artifacts | `artifacts/gate-3/baseline-v1/manifest.json` | 13 artifacts matching manifest SHAs | All 13 verified identical |
+| Baseline-v2 Reservation | `artifacts/gate-3/baseline-v2/reservation-state.json` | `108c51b222e476f32bd98c092c5dc814be9a25b4d1b93ae60f0f28ea2f5a631d` | Byte-for-byte verified |
+| Production Prompt | `agents/legacy_analyzer/prompts/system_v3.md` | `4be25cfc25933d6f0e69cbeeae1efe12ccf2e1354857e04c90108d8534ea92e8` | Byte-for-byte verified |
+| Generated Wire Schema | `get_system_openai_wire_schema()` | `07655be0a119440e1f693cbd3242842ed87e82c43518bce61f741bc7dc4423dc` | Byte-for-byte verified |
+| Golden Dataset | `evals/expected/system-understanding-v3.json` | `da5bdee9286dd5fbc79cb8331b70aabf73fca029fe4a3d3c5ede5ed2c984b82b` | Byte-for-byte verified |
+| Dependency Lock | `requirements-lock.txt` | `732cb9370e90af2d0972eeda7fc18fd5745f17cb301f359b268df228fe7f18be` | Byte-for-byte verified |
+| Source Manifest | `evals/baselines/gate-3-baseline-v3.json` (`target_bundle`) | `daf28b3314199db8e31bfacdf2fb8441b54682caa7854ed288e1bc00866a1dd1` | Byte-for-byte verified |
+| Canonical Bundle | `legacy/` (6 artifacts) | `95bb386b51d653c0a1834e1950634a9887b7cb6826b8c317a07c4b6a4167d060` | Byte-for-byte verified |
+| Baseline-v3 Spec | `evals/baselines/gate-3-baseline-v3.json` | `candidate_git_sha = ""` | Verified empty |
+| Baseline-v3 Artifacts | `artifacts/gate-3/baseline-v3` | Does NOT exist | Verified absent |
+
+---
+
+## 19. Final Status (H7.4.4.1 Release)
+
+- **Functional Commit (H7.4.4.1-0):** `dd8563b10fa3fb5f7db2a3cb9d91f2bac6e87100`
+- **Report Commit (H7.4.4.1):** Direct report-only child of `H7.4.4.1-0`
 - **Remote Branch:** `feat/gate-3-system-analysis`
 - **Baseline-v3 Spec:** `evals/baselines/gate-3-baseline-v3.json` (`candidate_git_sha = ""`)
 - **Execution Status:** Strictly offline. Zero provider calls, zero baseline runs, no baseline-v3 reservation, baseline-v2 reservation byte-for-byte preserved.
