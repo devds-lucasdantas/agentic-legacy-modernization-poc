@@ -294,6 +294,42 @@ def is_cobol_structural_boundary(line: str) -> bool:
     return False
 
 
+PROCEDURAL_CONTROL_FLOW_BARRIERS = {
+    "IF",
+    "ELSE",
+    "END-IF",
+    "EVALUATE",
+    "WHEN",
+    "END-EVALUATE",
+    "PERFORM",
+    "END-PERFORM",
+    "GO",
+    "GOTO",
+    "STOP",
+    "GOBACK",
+    "DISPLAY",
+    "ACCEPT",
+    "READ",
+    "WRITE",
+    "OPEN",
+    "CLOSE",
+    "ADD",
+    "SUBTRACT",
+    "COMPUTE",
+    "MULTIPLY",
+    "DIVIDE",
+    "EXIT",
+    "SECTION",
+}
+
+
+def is_unquoted_barrier(tok: str) -> bool:
+    """Check if an unquoted token is a procedural control-flow barrier."""
+    if (tok.startswith("'") and tok.endswith("'")) or (tok.startswith('"') and tok.endswith('"')):
+        return False
+    return tok.upper().rstrip(".") in PROCEDURAL_CONTROL_FLOW_BARRIERS
+
+
 def has_procedural_barrier_between(
     lines: list[str],
     line_start_excl: int,
@@ -308,24 +344,32 @@ def has_procedural_barrier_between(
     - Regional markers: SECTION headers, paragraph label lines
     - I/O / side-effect statements: DISPLAY, ACCEPT
     """
-    barrier_words = {
-        "IF",
-        "ELSE",
-        "END-IF",
-        "EVALUATE",
-        "WHEN",
-        "END-EVALUATE",
-        "PERFORM",
-        "END-PERFORM",
-        "DISPLAY",
-        "ACCEPT",
-        "GO",
-        "GOTO",
-        "STOP",
-        "GOBACK",
-        "EXIT",
-        "SECTION",
-    }
+    # 1. Check endpoint lines for control-flow delimiters outside statement
+    if 1 <= line_start_excl <= len(lines):
+        raw_start = lines[line_start_excl - 1].strip()
+        if (
+            raw_start
+            and not raw_start.startswith("*")
+            and not (len(lines[line_start_excl - 1]) >= 7 and lines[line_start_excl - 1][6] == "*")
+        ):
+            toks_start = tokenize_cobol_line(raw_start)
+            for t in toks_start:
+                if is_unquoted_barrier(t) and t.upper().rstrip(".") not in ("MOVE", "CALL"):
+                    return True
+
+    if 1 <= line_end_excl <= len(lines):
+        raw_end = lines[line_end_excl - 1].strip()
+        if (
+            raw_end
+            and not raw_end.startswith("*")
+            and not (len(lines[line_end_excl - 1]) >= 7 and lines[line_end_excl - 1][6] == "*")
+        ):
+            toks_end = tokenize_cobol_line(raw_end)
+            for t in toks_end:
+                if is_unquoted_barrier(t) and t.upper().rstrip(".") not in ("MOVE", "CALL"):
+                    return True
+
+    # 2. Check intervening lines
     for l_num in range(line_start_excl + 1, line_end_excl):
         if l_num > len(lines):
             break
@@ -335,7 +379,7 @@ def has_procedural_barrier_between(
             continue
         toks = tokenize_cobol_line(raw)
         toks_upper = [t.upper() for t in toks if t != "."]
-        if any(w in toks_upper for w in barrier_words):
+        if any(w in toks_upper for w in PROCEDURAL_CONTROL_FLOW_BARRIERS):
             return True
         # Paragraph label heuristic: single token on line ending with period
         if stripped.endswith(".") and len(toks_upper) == 1:
@@ -1086,20 +1130,97 @@ class SystemCobolParser:
 
             # PROCEDURAL VERBS
             if first == "CALL":
-                raw_target = tokens[1] if len(tokens) > 1 else ""
-                is_lit = (
-                    raw_target.startswith("'") and raw_target.endswith("'") and len(raw_target) >= 2
-                ) or (
-                    raw_target.startswith('"') and raw_target.endswith('"') and len(raw_target) >= 2
+                tokens_clean = list(tokens)
+                if tokens_clean and tokens_clean[-1] == ".":
+                    tokens_clean = tokens_clean[:-1]
+                elif tokens_clean and tokens_clean[-1].endswith("."):
+                    tokens_clean[-1] = tokens_clean[-1][:-1]
+
+                if len(tokens_clean) < 2:
+                    self.statements.append(
+                        ClassifiedStatement(
+                            target_file.relative_path,
+                            line_num,
+                            line_num,
+                            "CALL",
+                            raw_line,
+                            StatementClassification.UNSUPPORTED_RELEVANT,
+                            "Missing target in CALL statement",
+                        )
+                    )
+                    i += 1
+                    continue
+
+                raw_target = tokens_clean[1]
+
+                # Same-line barrier detection across tokens
+                has_same_line_barrier = any(
+                    is_unquoted_barrier(t) for t in tokens_clean[2:]
+                ) or is_unquoted_barrier(raw_target)
+
+                # Target validation
+                is_quote_like = (
+                    raw_target.startswith("'")
+                    or raw_target.startswith('"')
+                    or "'" in raw_target
+                    or '"' in raw_target
                 )
-                if is_lit:
-                    target_str = exact_syntactic_unquote(raw_target)
+                target_valid = False
+                is_lit = False
+                target_str = ""
+
+                if is_quote_like:
+                    quote_char = raw_target[0] if raw_target[0] in ("'", '"') else None
+                    if (
+                        quote_char
+                        and raw_target.endswith(quote_char)
+                        and len(raw_target) >= 2
+                        and "\\" not in raw_target
+                    ):
+                        content = raw_target[1:-1]
+                        if quote_char not in content and len(content) > 0:
+                            target_valid = True
+                            is_lit = True
+                            target_str = content
                 else:
-                    target_str = raw_target
+                    # Dynamic target: canonical COBOL identifier
+                    if re.match(r"^[A-Za-z0-9]+(-[A-Za-z0-9]+)*$", raw_target):
+                        target_valid = True
+                        is_lit = False
+                        target_str = raw_target
+
+                # Arguments parsing (CALL target [USING arg1 ...])
+                using_valid = True
                 using_list: list[str] = []
-                if "USING" in [t.upper() for t in tokens]:
-                    u_idx = [t.upper() for t in tokens].index("USING")
-                    using_list = [t.rstrip(".") for t in tokens[u_idx + 1 :]]
+                if len(tokens_clean) > 2:
+                    if tokens_clean[2].upper() != "USING":
+                        using_valid = False
+                    else:
+                        args = tokens_clean[3:]
+                        if not args:
+                            using_valid = False
+                        else:
+                            for a in args:
+                                if not re.match(r"^[A-Za-z0-9]+(-[A-Za-z0-9]+)*$", a):
+                                    using_valid = False
+                                    break
+                            if using_valid and not has_same_line_barrier:
+                                using_list = list(args)
+
+                if not target_valid or not using_valid or has_same_line_barrier:
+                    self.statements.append(
+                        ClassifiedStatement(
+                            target_file.relative_path,
+                            line_num,
+                            line_num,
+                            "CALL",
+                            raw_line,
+                            StatementClassification.UNSUPPORTED_RELEVANT,
+                            "Unsupported CALL target, operands, or same-line control-flow barrier",
+                        )
+                    )
+                    i += 1
+                    continue
 
                 call_node = ASTCall(
                     verb="CALL",
@@ -1125,29 +1246,119 @@ class SystemCobolParser:
                 continue
 
             if first == "MOVE":
-                to_idx = (
-                    [t.upper() for t in tokens].index("TO")
-                    if "TO" in [t.upper() for t in tokens]
-                    else -1
-                )
-                src = (
-                    " ".join(tokens[1:to_idx])
-                    if to_idx > 1
-                    else tokens[1]
-                    if len(tokens) > 1
-                    else ""
-                )
-                dest = (
-                    tokens[to_idx + 1].rstrip(".")
-                    if to_idx != -1 and to_idx + 1 < len(tokens)
-                    else ""
-                )
-                is_lit_src = src.startswith("'") or src.startswith('"')
+                tokens_clean = list(tokens)
+                if tokens_clean and tokens_clean[-1] == ".":
+                    tokens_clean = tokens_clean[:-1]
+                elif tokens_clean and tokens_clean[-1].endswith("."):
+                    tokens_clean[-1] = tokens_clean[-1][:-1]
+
+                # Check same-line barrier tokens
+                has_same_line_barrier = any(is_unquoted_barrier(t) for t in tokens_clean[1:])
+
+                # Locate TO
+                to_indices = [
+                    idx
+                    for idx, t in enumerate(tokens_clean)
+                    if t.upper() == "TO"
+                    and not (
+                        (t.startswith("'") and t.endswith("'"))
+                        or (t.startswith('"') and t.endswith('"'))
+                    )
+                ]
+
+                move_valid = True
+                src_val = ""
+                dest_val = ""
+                is_lit_src = False
+
+                if len(to_indices) != 1 or to_indices[0] <= 1:
+                    move_valid = False
+                else:
+                    to_idx = to_indices[0]
+                    src_tokens = tokens_clean[1:to_idx]
+                    dest_tokens = tokens_clean[to_idx + 1 :]
+
+                    if len(src_tokens) != 1 or len(dest_tokens) != 1:
+                        move_valid = False
+                    else:
+                        src_raw = src_tokens[0]
+                        dest_raw = dest_tokens[0]
+
+                        # Validate target operand
+                        if not re.match(r"^[A-Za-z0-9]+(-[A-Za-z0-9]+)*$", dest_raw):
+                            move_valid = False
+                        else:
+                            dest_val = dest_raw
+
+                        # Validate source operand
+                        is_quote_like = (
+                            src_raw.startswith("'")
+                            or src_raw.startswith('"')
+                            or "'" in src_raw
+                            or '"' in src_raw
+                        )
+                        if is_quote_like:
+                            if (
+                                src_raw[0] in ("'", '"')
+                                and src_raw.endswith(src_raw[0])
+                                and len(src_raw) >= 2
+                                and "\\" not in src_raw
+                            ):
+                                quote_char = src_raw[0]
+                                content = src_raw[1:-1]
+                                if quote_char not in content:
+                                    is_lit_src = True
+                                    src_val = src_raw
+                                else:
+                                    move_valid = False
+                            else:
+                                move_valid = False
+                        else:
+                            # Non-literal: identifier, number, or figurative constant
+                            figurative = {
+                                "ZERO",
+                                "ZEROS",
+                                "ZEROES",
+                                "SPACE",
+                                "SPACES",
+                                "HIGH-VALUE",
+                                "HIGH-VALUES",
+                                "LOW-VALUE",
+                                "LOW-VALUES",
+                                "QUOTE",
+                                "QUOTES",
+                                "NULL",
+                                "NULLS",
+                            }
+                            if (
+                                src_raw.upper() in figurative
+                                or re.match(r"^[+-]?[0-9]+(\.[0-9]+)?$", src_raw)
+                                or re.match(r"^[A-Za-z0-9]+(-[A-Za-z0-9]+)*$", src_raw)
+                            ):
+                                is_lit_src = False
+                                src_val = src_raw
+                            else:
+                                move_valid = False
+
+                if not move_valid or has_same_line_barrier:
+                    self.statements.append(
+                        ClassifiedStatement(
+                            target_file.relative_path,
+                            line_num,
+                            line_num,
+                            "MOVE",
+                            raw_line,
+                            StatementClassification.UNSUPPORTED_RELEVANT,
+                            "Unsupported MOVE syntax, literal, operands, or same-line barrier",
+                        )
+                    )
+                    i += 1
+                    continue
 
                 move_node = ASTMove(
                     verb="MOVE",
-                    source_operand=src,
-                    target_operand=dest,
+                    source_operand=src_val,
+                    target_operand=dest_val,
                     is_literal_source=is_lit_src,
                     line_start=line_num,
                     line_end=line_num,
@@ -1322,17 +1533,55 @@ class SystemCobolParser:
                 continue
 
             if first in ("IF", "EVALUATE", "WHEN"):
-                self.statements.append(
-                    ClassifiedStatement(
-                        target_file.relative_path,
-                        line_num,
-                        line_num,
-                        first,
-                        raw_line,
-                        StatementClassification.PARSED_AND_SCORED,
-                        f"Branching {first} statement",
+                tokens_clean = [
+                    t.upper().rstrip(".")
+                    for t in tokens[1:]
+                    if not (
+                        (t.startswith("'") and t.endswith("'"))
+                        or (t.startswith('"') and t.endswith('"'))
                     )
-                )
+                ]
+                executable_verbs = {
+                    "CALL",
+                    "MOVE",
+                    "PERFORM",
+                    "DISPLAY",
+                    "ACCEPT",
+                    "READ",
+                    "WRITE",
+                    "OPEN",
+                    "CLOSE",
+                    "ADD",
+                    "SUBTRACT",
+                    "GO",
+                    "GOTO",
+                    "STOP",
+                    "GOBACK",
+                }
+                if any(t in executable_verbs for t in tokens_clean):
+                    self.statements.append(
+                        ClassifiedStatement(
+                            target_file.relative_path,
+                            line_num,
+                            line_num,
+                            first,
+                            raw_line,
+                            StatementClassification.UNSUPPORTED_RELEVANT,
+                            f"Compound {first} statement with inline executable verbs",
+                        )
+                    )
+                else:
+                    self.statements.append(
+                        ClassifiedStatement(
+                            target_file.relative_path,
+                            line_num,
+                            line_num,
+                            first,
+                            raw_line,
+                            StatementClassification.PARSED_AND_SCORED,
+                            f"Branching {first} statement",
+                        )
+                    )
                 i += 1
                 continue
 
@@ -1348,17 +1597,57 @@ class SystemCobolParser:
                 "NOT",
                 "FROM",
             ):
-                self.statements.append(
-                    ClassifiedStatement(
-                        target_file.relative_path,
-                        line_num,
-                        line_num,
-                        first,
-                        raw_line,
-                        StatementClassification.RECOGNIZED_BUT_UNSCORED,
-                        f"Procedural helper {first}",
+                tokens_clean = [
+                    t.upper().rstrip(".")
+                    for t in tokens[1:]
+                    if not (
+                        (t.startswith("'") and t.endswith("'"))
+                        or (t.startswith('"') and t.endswith('"'))
                     )
-                )
+                ]
+                executable_verbs = {
+                    "CALL",
+                    "MOVE",
+                    "PERFORM",
+                    "DISPLAY",
+                    "ACCEPT",
+                    "READ",
+                    "WRITE",
+                    "OPEN",
+                    "CLOSE",
+                    "ADD",
+                    "SUBTRACT",
+                    "GO",
+                    "GOTO",
+                    "STOP",
+                    "GOBACK",
+                }
+                if first in ("ELSE", "END-IF", "END-EVALUATE", "END-PERFORM") and any(
+                    t in executable_verbs for t in tokens_clean
+                ):
+                    self.statements.append(
+                        ClassifiedStatement(
+                            target_file.relative_path,
+                            line_num,
+                            line_num,
+                            first,
+                            raw_line,
+                            StatementClassification.UNSUPPORTED_RELEVANT,
+                            f"Compound {first} statement with inline executable verbs",
+                        )
+                    )
+                else:
+                    self.statements.append(
+                        ClassifiedStatement(
+                            target_file.relative_path,
+                            line_num,
+                            line_num,
+                            first,
+                            raw_line,
+                            StatementClassification.RECOGNIZED_BUT_UNSCORED,
+                            f"Procedural helper {first}",
+                        )
+                    )
                 i += 1
                 continue
 
@@ -1697,27 +1986,6 @@ class SystemCobolParser:
                                 )
                             )
 
-            # Validate external command operations: non-DELETE/RENAME fail closed in coverage
-            for m_cmd, c_cmd, _, _ in commands_in_unit:
-                c_clean = exact_syntactic_unquote(m_cmd.source_operand)
-                op_k, _, _ = classify_command_operation(c_clean)
-                if op_k not in ("DELETE", "RENAME"):
-                    for stmt_cand in (m_cmd, c_cmd):
-                        for idx_s, s in enumerate(self.statements):
-                            if (
-                                s.file_path == unit.file_path
-                                and s.line_start == stmt_cand.line_start
-                            ):
-                                self.statements[idx_s] = ClassifiedStatement(
-                                    s.file_path,
-                                    s.line_start,
-                                    s.line_end,
-                                    s.verb,
-                                    s.raw_text,
-                                    StatementClassification.UNSUPPORTED_RELEVANT,
-                                    f"Unsupported external command operation: {op_k}",
-                                )
-
             # Operation sequence and non-atomic risk: generic operand-aware
             if len(commands_in_unit) >= 2:
                 for c_idx in range(len(commands_in_unit) - 1):
@@ -1795,24 +2063,6 @@ class SystemCobolParser:
                                     },
                                 )
                             )
-                    else:
-                        # Any other pair of recognized operations is unsupported sequence shape
-                        # Mark statements forming sequence as UNSUPPORTED_RELEVANT
-                        for stmt_cand in (m1, c1, m2, c2):
-                            for idx_s, s in enumerate(self.statements):
-                                if (
-                                    s.file_path == unit.file_path
-                                    and s.line_start == stmt_cand.line_start
-                                ):
-                                    self.statements[idx_s] = ClassifiedStatement(
-                                        s.file_path,
-                                        s.line_start,
-                                        s.line_end,
-                                        s.verb,
-                                        s.raw_text,
-                                        StatementClassification.UNSUPPORTED_RELEVANT,
-                                        f"Unsupported sequence: {op1_kind} -> {op2_kind}",
-                                    )
 
         # 7. Record-to-Record Data Transfer Relations
         for unit in self.compilation_units:

@@ -54,6 +54,8 @@ from agents.legacy_analyzer.schemas.system_export import get_system_openai_wire_
 from src.cobol.multi_source_reader import MultiSourceBundle, TargetFile, read_system_bundle
 from src.cobol.system_atomic_facts import (
     BehavioralRiskFact,
+    CallEdgeFact,
+    CallOccurrenceFact,
     CommandInvocationFact,
     DataStateComparisonFact,
     EvidenceSpan,
@@ -1849,7 +1851,7 @@ def test_h7_3_1_unsupported_external_command_sequences_fail_closed() -> None:
     assert seq_facts1[0].first_operation == "DELETE"
     assert seq_facts1[0].second_operation == "RENAME"
 
-    # 2. Unsupported sequence: RENAME -> DELETE
+    # 2. Sequence shape: RENAME -> DELETE (commands supported, no sequence emitted)
     src_ren_del = """       IDENTIFICATION DIVISION.
        PROGRAM-ID. SEQRENDEL.
        DATA DIVISION.
@@ -1864,12 +1866,16 @@ def test_h7_3_1_unsupported_external_command_sequences_fail_closed() -> None:
 """
     p2 = SystemCobolParser(_make_synth_bundle(src_ren_del))
     cert2 = p2.parse_system()
-    assert cert2.unsupported_relevant_count > 0, "RENAME -> DELETE must fail closed in coverage"
-    assert cert2.is_evaluation_blocked is True
+    assert cert2.unsupported_relevant_count == 0, "Valid commands must have clean coverage"
+    assert cert2.is_evaluation_blocked is False
     seq_facts2 = [f.fact for f in p2.supported_facts if isinstance(f.fact, OperationSequenceFact)]
-    assert len(seq_facts2) == 0, "No OperationSequenceFact should be emitted for unsupported shape"
+    assert len(seq_facts2) == 0, "No OperationSequenceFact for non-DELETE->RENAME"
+    cmd_facts2 = [f.fact for f in p2.supported_facts if isinstance(f.fact, CommandInvocationFact)]
+    assert len(cmd_facts2) == 2, "Both commands must be supported individually"
+    risk_facts2 = [f.fact for f in p2.supported_facts if isinstance(f.fact, BehavioralRiskFact)]
+    assert len(risk_facts2) == 0, "No non-atomic risk for RENAME -> DELETE"
 
-    # 3. Unsupported sequence: DELETE -> DELETE
+    # 3. Sequence shape: DELETE -> DELETE (commands supported, no sequence emitted)
     src_del_del = """       IDENTIFICATION DIVISION.
        PROGRAM-ID. SEQDELDEL.
        DATA DIVISION.
@@ -1884,12 +1890,16 @@ def test_h7_3_1_unsupported_external_command_sequences_fail_closed() -> None:
 """
     p3 = SystemCobolParser(_make_synth_bundle(src_del_del))
     cert3 = p3.parse_system()
-    assert cert3.unsupported_relevant_count > 0, "DELETE -> DELETE must fail closed in coverage"
-    assert cert3.is_evaluation_blocked is True
+    assert cert3.unsupported_relevant_count == 0, "Valid commands must have clean coverage"
+    assert cert3.is_evaluation_blocked is False
     seq_facts3 = [f.fact for f in p3.supported_facts if isinstance(f.fact, OperationSequenceFact)]
     assert len(seq_facts3) == 0
+    cmd_facts3 = [f.fact for f in p3.supported_facts if isinstance(f.fact, CommandInvocationFact)]
+    assert len(cmd_facts3) == 2
+    risk_facts3 = [f.fact for f in p3.supported_facts if isinstance(f.fact, BehavioralRiskFact)]
+    assert len(risk_facts3) == 0
 
-    # 4. Unsupported sequence: RENAME -> RENAME
+    # 4. Sequence shape: RENAME -> RENAME (commands supported, no sequence emitted)
     src_ren_ren = """       IDENTIFICATION DIVISION.
        PROGRAM-ID. SEQRENREN.
        DATA DIVISION.
@@ -1904,12 +1914,16 @@ def test_h7_3_1_unsupported_external_command_sequences_fail_closed() -> None:
 """
     p4 = SystemCobolParser(_make_synth_bundle(src_ren_ren))
     cert4 = p4.parse_system()
-    assert cert4.unsupported_relevant_count > 0, "RENAME -> RENAME must fail closed in coverage"
-    assert cert4.is_evaluation_blocked is True
+    assert cert4.unsupported_relevant_count == 0, "Valid commands must have clean coverage"
+    assert cert4.is_evaluation_blocked is False
     seq_facts4 = [f.fact for f in p4.supported_facts if isinstance(f.fact, OperationSequenceFact)]
     assert len(seq_facts4) == 0
+    cmd_facts4 = [f.fact for f in p4.supported_facts if isinstance(f.fact, CommandInvocationFact)]
+    assert len(cmd_facts4) == 2
+    risk_facts4 = [f.fact for f in p4.supported_facts if isinstance(f.fact, BehavioralRiskFact)]
+    assert len(risk_facts4) == 0
 
-    # 5. Unsupported command: COPY -> RENAME
+    # 5. Sequence shape: COPY -> RENAME (commands supported, no sequence emitted)
     src_copy_ren = """       IDENTIFICATION DIVISION.
        PROGRAM-ID. SEQCOPYREN.
        DATA DIVISION.
@@ -1924,10 +1938,14 @@ def test_h7_3_1_unsupported_external_command_sequences_fail_closed() -> None:
 """
     p5 = SystemCobolParser(_make_synth_bundle(src_copy_ren))
     cert5 = p5.parse_system()
-    assert cert5.unsupported_relevant_count > 0, "COPY -> RENAME must fail closed in coverage"
-    assert cert5.is_evaluation_blocked is True
+    assert cert5.unsupported_relevant_count == 0, "Valid commands must have clean coverage"
+    assert cert5.is_evaluation_blocked is False
     seq_facts5 = [f.fact for f in p5.supported_facts if isinstance(f.fact, OperationSequenceFact)]
     assert len(seq_facts5) == 0
+    cmd_facts5 = [f.fact for f in p5.supported_facts if isinstance(f.fact, CommandInvocationFact)]
+    assert len(cmd_facts5) == 2
+    risk_facts5 = [f.fact for f in p5.supported_facts if isinstance(f.fact, BehavioralRiskFact)]
+    assert len(risk_facts5) == 0
 
 
 # ======================================================================
@@ -3167,3 +3185,368 @@ def test_h7_4_1_file_organization_field_description() -> None:
     assert "LINE_SEQUENTIAL or SEQUENTIAL" in org_desc
     assert "INDEXED" not in org_desc
     assert "RELATIVE" not in org_desc
+
+
+# ======================================================================
+# 16. H7.4.2 PROCEDURAL SYNTAX & COVERAGE HOTFIX REGRESSION SUITE
+# ======================================================================
+
+
+def test_h7_4_2_b01_strict_call_target_syntax() -> None:
+    """H7.4.2 B-01: Strict CALL target syntax before ASTCall emission."""
+    # A. Supported literal target
+    src_valid_single = """       IDENTIFICATION DIVISION.
+       PROGRAM-ID. CALLV1.
+       PROCEDURE DIVISION.
+           CALL 'TARGET'
+           STOP RUN.
+"""
+    p_v1 = SystemCobolParser(_make_synth_bundle(src_valid_single))
+    cert_v1 = p_v1.parse_system()
+    assert cert_v1.unsupported_relevant_count == 0
+    call_facts_v1 = [f.fact for f in p_v1.supported_facts if isinstance(f.fact, CallOccurrenceFact)]
+    assert len(call_facts_v1) == 1
+    assert call_facts_v1[0].target_program == "TARGET"
+    assert call_facts_v1[0].call_mechanism == "LITERAL_TARGET"
+
+    src_valid_double = """       IDENTIFICATION DIVISION.
+       PROGRAM-ID. CALLV2.
+       PROCEDURE DIVISION.
+           CALL "TARGET"
+           STOP RUN.
+"""
+    p_v2 = SystemCobolParser(_make_synth_bundle(src_valid_double))
+    cert_v2 = p_v2.parse_system()
+    assert cert_v2.unsupported_relevant_count == 0
+    call_facts_v2 = [f.fact for f in p_v2.supported_facts if isinstance(f.fact, CallOccurrenceFact)]
+    assert len(call_facts_v2) == 1
+    assert call_facts_v2[0].target_program == "TARGET"
+
+    # B. Supported dynamic target
+    src_valid_dyn = """       IDENTIFICATION DIVISION.
+       PROGRAM-ID. CALLV3.
+       PROCEDURE DIVISION.
+           CALL TARGET-NAME
+           STOP RUN.
+"""
+    p_v3 = SystemCobolParser(_make_synth_bundle(src_valid_dyn))
+    cert_v3 = p_v3.parse_system()
+    assert cert_v3.unsupported_relevant_count == 0
+    call_facts_v3 = [f.fact for f in p_v3.supported_facts if isinstance(f.fact, CallOccurrenceFact)]
+    assert len(call_facts_v3) == 1
+    assert call_facts_v3[0].target_program == "TARGET-NAME"
+    assert call_facts_v3[0].call_mechanism == "DYNAMIC_TARGET"
+
+    # C. Malformed target probes: each must fail closed and emit 0 call facts
+    malformed_targets = [
+        "CALL 'TARGET",
+        'CALL "TARGET',
+        "CALL 'A''B'",
+        'CALL "A""B"',
+        "CALL 'TARGET'xyz",
+        r"CALL 'TARGET\X'",
+        "CALL ''",
+        'CALL ""',
+    ]
+    for probe in malformed_targets:
+        src_mal = f"""       IDENTIFICATION DIVISION.
+       PROGRAM-ID. CALLBAD.
+       PROCEDURE DIVISION.
+           {probe}
+           STOP RUN.
+"""
+        p_mal = SystemCobolParser(_make_synth_bundle(src_mal))
+        cert_mal = p_mal.parse_system()
+        assert cert_mal.unsupported_relevant_count > 0, f"Probe {probe} must fail closed"
+        assert cert_mal.is_evaluation_blocked is True
+        call_facts_mal = [
+            f.fact
+            for f in p_mal.supported_facts
+            if isinstance(f.fact, (CallOccurrenceFact, CallEdgeFact))
+        ]
+        assert len(call_facts_mal) == 0, f"Probe {probe} must emit zero call facts"
+
+    # D. Malformed CALL 'SYSTEM specifically: must never enter command dispatch
+    src_mal_sys = """       IDENTIFICATION DIVISION.
+       PROGRAM-ID. MALSYSCMD.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 WS-CMD PIC X(100).
+       PROCEDURE DIVISION.
+           MOVE "cmd /c echo test" TO WS-CMD.
+           CALL 'SYSTEM
+           STOP RUN.
+"""
+    p_msys = SystemCobolParser(_make_synth_bundle(src_mal_sys))
+    cert_msys = p_msys.parse_system()
+    assert cert_msys.unsupported_relevant_count > 0
+    cmd_facts_msys = [
+        f.fact
+        for f in p_msys.supported_facts
+        if isinstance(f.fact, (CommandInvocationFact, PlatformDependencyFact))
+    ]
+    assert len(cmd_facts_msys) == 0, "Malformed CALL 'SYSTEM must never enter command dispatch"
+
+
+def test_h7_4_2_b02_same_line_barriers_and_procedural_grammar() -> None:
+    """H7.4.2 B-02: Same-line barriers must block coverage and prevent false sequence/risk."""
+    # Auditor's exact fixture: same-line ELSE
+    src_else_fixture = """       IDENTIFICATION DIVISION.
+       PROGRAM-ID. AUDITELSE.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 BUFFER PIC X(100).
+       01 FLAG PIC 9 VALUE 1.
+       PROCEDURE DIVISION.
+           IF FLAG = 1
+               MOVE 'cmd /c del accounts.dat' TO BUFFER
+               CALL 'SYSTEM' USING BUFFER ELSE
+               MOVE 'cmd /c ren accounts.tmp accounts.dat' TO BUFFER
+               CALL 'SYSTEM' USING BUFFER
+           END-IF
+           STOP RUN.
+"""
+    p_else = SystemCobolParser(_make_synth_bundle(src_else_fixture))
+    cert_else = p_else.parse_system()
+    assert cert_else.unsupported_relevant_count > 0, "Same-line ELSE must fail closed"
+    assert cert_else.is_evaluation_blocked is True
+    seq_facts = [
+        f.fact for f in p_else.supported_facts if isinstance(f.fact, OperationSequenceFact)
+    ]
+    assert len(seq_facts) == 0, "Same-line ELSE must NOT produce false DELETE -> RENAME sequence"
+    risk_facts = [f.fact for f in p_else.supported_facts if isinstance(f.fact, BehavioralRiskFact)]
+    assert len(risk_facts) == 0, "Same-line ELSE must NOT produce false non-atomic risk"
+
+    # Same-line barriers on CALL line: END-IF, WHEN, DISPLAY
+    call_barrier_probes = [
+        "CALL 'SYSTEM' USING BUFFER END-IF",
+        "CALL 'SYSTEM' USING BUFFER WHEN 1",
+        "CALL 'SYSTEM' USING BUFFER DISPLAY 'DONE'",
+        "CALL 'SYSTEM' DISPLAY 'DONE'",
+        "CALL 'SYSTEM' USING BUFFER ELSE",
+    ]
+    for probe in call_barrier_probes:
+        src_b = f"""       IDENTIFICATION DIVISION.
+       PROGRAM-ID. CALLBAR.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 BUFFER PIC X(100).
+       PROCEDURE DIVISION.
+           MOVE 'cmd /c echo test' TO BUFFER
+           {probe}
+           STOP RUN.
+"""
+        p_b = SystemCobolParser(_make_synth_bundle(src_b))
+        cert_b = p_b.parse_system()
+        assert cert_b.unsupported_relevant_count > 0, f"CALL barrier probe {probe} must fail closed"
+        assert cert_b.is_evaluation_blocked is True
+
+    # Same-line barriers on MOVE line: ELSE, END-IF, DISPLAY, WHEN
+    move_barrier_probes = [
+        "MOVE 'TARGET' TO BUFFER ELSE",
+        "MOVE 'TARGET' TO BUFFER END-IF",
+        "MOVE 'TARGET' TO BUFFER DISPLAY 'X'",
+        "MOVE 'TARGET' TO BUFFER WHEN 1",
+    ]
+    for probe in move_barrier_probes:
+        src_mb = f"""       IDENTIFICATION DIVISION.
+       PROGRAM-ID. MOVEBAR.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 BUFFER PIC X(100).
+       PROCEDURE DIVISION.
+           {probe}
+           CALL 'SYSTEM' USING BUFFER
+           STOP RUN.
+"""
+        p_mb = SystemCobolParser(_make_synth_bundle(src_mb))
+        cert_mb = p_mb.parse_system()
+        assert cert_mb.unsupported_relevant_count > 0, (
+            f"MOVE barrier probe {probe} must fail closed"
+        )
+        assert cert_mb.is_evaluation_blocked is True
+        cmd_facts_mb = [
+            f.fact
+            for f in p_mb.supported_facts
+            if isinstance(f.fact, (CommandInvocationFact, PlatformDependencyFact))
+        ]
+        assert len(cmd_facts_mb) == 0
+
+
+def test_h7_4_2_h01_move_syntax_validation() -> None:
+    """H7.4.2 H-01: Validate literal MOVE syntax during MOVE parsing."""
+    # Valid literal MOVE
+    src_valid_move = """       IDENTIFICATION DIVISION.
+       PROGRAM-ID. MOVEV.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 BUFFER PIC X(100).
+       PROCEDURE DIVISION.
+           MOVE 'TARGET' TO BUFFER
+           STOP RUN.
+"""
+    p_vm = SystemCobolParser(_make_synth_bundle(src_valid_move))
+    cert_vm = p_vm.parse_system()
+    assert cert_vm.unsupported_relevant_count == 0
+    assert cert_vm.is_evaluation_blocked is False
+
+    # Malformed MOVE probes
+    malformed_moves = [
+        "MOVE 'TARGET TO BUFFER",
+        'MOVE "TARGET TO BUFFER',
+        "MOVE 'A''B' TO BUFFER",
+        "MOVE 'TARGET'xyz TO BUFFER",
+        "MOVE 'TARGET'",
+        "MOVE 'TARGET' TO",
+        r"MOVE 'TARGET\X' TO BUFFER",
+    ]
+    for probe in malformed_moves:
+        src_mal = f"""       IDENTIFICATION DIVISION.
+       PROGRAM-ID. MOVEBAD.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 BUFFER PIC X(100).
+       PROCEDURE DIVISION.
+           {probe}
+           CALL 'SYSTEM' USING BUFFER
+           STOP RUN.
+"""
+        p_mal = SystemCobolParser(_make_synth_bundle(src_mal))
+        cert_mal = p_mal.parse_system()
+        assert cert_mal.unsupported_relevant_count > 0, f"MOVE probe {probe} must fail closed"
+        assert cert_mal.is_evaluation_blocked is True
+        cmd_facts = [
+            f.fact
+            for f in p_mal.supported_facts
+            if isinstance(f.fact, (CommandInvocationFact, PlatformDependencyFact))
+        ]
+        assert len(cmd_facts) == 0, f"MOVE probe {probe} must produce no command facts"
+
+
+def test_h7_4_2_h02_decoupled_command_and_sequence_support() -> None:
+    """H7.4.2 H-02: Decouple command fact support from operation-sequence support."""
+    # 1. Exact positive echo traversal: cmd /c echo test
+    src_echo = """       IDENTIFICATION DIVISION.
+       PROGRAM-ID. ECHOCMD.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 BUFFER PIC X(100).
+       PROCEDURE DIVISION.
+           MOVE ' cmd /c echo test ' TO BUFFER
+           CALL 'SYSTEM' USING BUFFER
+           STOP RUN.
+"""
+    bundle = _make_synth_bundle(src_echo)
+    p_echo = SystemCobolParser(bundle)
+    cert_echo = p_echo.parse_system()
+    assert cert_echo.unsupported_relevant_count == 0, "Valid echo command must have clean coverage"
+    assert cert_echo.is_evaluation_blocked is False
+
+    cmd_facts = [
+        f.fact for f in p_echo.supported_facts if isinstance(f.fact, CommandInvocationFact)
+    ]
+    assert len(cmd_facts) == 1
+    assert cmd_facts[0].command_template == " cmd /c echo test "
+
+    plat_facts = [
+        f.fact for f in p_echo.supported_facts if isinstance(f.fact, PlatformDependencyFact)
+    ]
+    assert len(plat_facts) == 1
+    assert plat_facts[0].command_literal == " cmd /c echo test "
+    assert plat_facts[0].platform_family == "WINDOWS"
+
+    seq_facts = [
+        f.fact for f in p_echo.supported_facts if isinstance(f.fact, OperationSequenceFact)
+    ]
+    assert len(seq_facts) == 0, "Echo command is not a mutation sequence"
+    risk_facts = [f.fact for f in p_echo.supported_facts if isinstance(f.fact, BehavioralRiskFact)]
+    assert len(risk_facts) == 0, "Echo command has no non-atomic risk"
+
+    # Evaluator traversal
+    idx = SystemSupportIndex(p_echo.supported_facts, bundle)
+    ev = SystemEvaluatorV3(idx)
+
+    # Positive exact model
+    model_exact = SystemAssessment(system_name="Echo")
+    model_exact.command_invocations.append(
+        CommandInvocation(
+            program_id="ECHOCMD",
+            command_template=" cmd /c echo test ",
+            target_operand="BUFFER",
+            assignment_evidence=SourceEvidence(file_path="TEST.CBL", line_start=7, line_end=7),
+            call_evidence=SourceEvidence(file_path="TEST.CBL", line_start=8, line_end=8),
+        )
+    )
+    model_exact.platform_dependencies.append(
+        PlatformDependency(
+            program_id="ECHOCMD",
+            platform_family="WINDOWS",
+            command_literal=" cmd /c echo test ",
+            evidence=SourceEvidence(file_path="TEST.CBL", line_start=7, line_end=7),
+        )
+    )
+    m_exact, preds_exact = ev.evaluate_assessment(model_exact)
+    assert m_exact.unsupported_predicted_count == 0
+    assert len(preds_exact) == 2
+    assert all(p.is_supported for p in preds_exact)
+
+    # Mutated model: trimmed whitespace -> evaluator rejects
+    model_trim = SystemAssessment(system_name="Echo")
+    model_trim.command_invocations.append(
+        CommandInvocation(
+            program_id="ECHOCMD",
+            command_template="cmd /c echo test",
+            target_operand="BUFFER",
+            assignment_evidence=SourceEvidence(file_path="TEST.CBL", line_start=7, line_end=7),
+            call_evidence=SourceEvidence(file_path="TEST.CBL", line_start=8, line_end=8),
+        )
+    )
+    model_trim.platform_dependencies.append(
+        PlatformDependency(
+            program_id="ECHOCMD",
+            platform_family="WINDOWS",
+            command_literal="cmd /c echo test",
+            evidence=SourceEvidence(file_path="TEST.CBL", line_start=7, line_end=7),
+        )
+    )
+    m_trim, preds_trim = ev.evaluate_assessment(model_trim)
+    assert m_trim.unsupported_predicted_count == 2
+    assert all(not p.is_supported for p in preds_trim)
+
+    # 2. Other valid commands: dir, del with wildcard
+    for cmd_str in ("cmd /c dir", "cmd /c del *.tmp"):
+        src_cmd = f"""       IDENTIFICATION DIVISION.
+       PROGRAM-ID. CONCCMD.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 BUFFER PIC X(100).
+       PROCEDURE DIVISION.
+           MOVE '{cmd_str}' TO BUFFER
+           CALL 'SYSTEM' USING BUFFER
+           STOP RUN.
+"""
+        p_c = SystemCobolParser(_make_synth_bundle(src_cmd))
+        cert_c = p_c.parse_system()
+        assert cert_c.unsupported_relevant_count == 0, f"Command {cmd_str} must have clean coverage"
+        assert cert_c.is_evaluation_blocked is False
+        cmds = [f.fact for f in p_c.supported_facts if isinstance(f.fact, CommandInvocationFact)]
+        assert len(cmds) == 1
+        assert cmds[0].command_template == cmd_str
+
+    # 3. Single DELETE and single RENAME: command supported, no sequence, clean coverage
+    for single_op in ("cmd /c del accounts.dat", "cmd /c ren accounts.tmp accounts.dat"):
+        src_s = f"""       IDENTIFICATION DIVISION.
+       PROGRAM-ID. SINGLEOP.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 BUFFER PIC X(100).
+       PROCEDURE DIVISION.
+           MOVE '{single_op}' TO BUFFER
+           CALL 'SYSTEM' USING BUFFER
+           STOP RUN.
+"""
+        p_s = SystemCobolParser(_make_synth_bundle(src_s))
+        cert_s = p_s.parse_system()
+        assert cert_s.unsupported_relevant_count == 0
+        seqs = [f.fact for f in p_s.supported_facts if isinstance(f.fact, OperationSequenceFact)]
+        assert len(seqs) == 0, "Single command must produce no sequence fact"
