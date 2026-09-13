@@ -12,7 +12,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-SCHEMA_VERSION: str = "3.5.1"
+SCHEMA_VERSION: str = "3.5.2"
 
 
 def validate_canonical_identifier(name: str, value: str) -> str:
@@ -34,10 +34,10 @@ def validate_canonical_literal_text(name: str, value: str) -> str:
     """Validate that source/literal text is in canonical unquoted form without whitespace repair."""
     if not value or value != value.strip():
         raise ValueError(f"{name} must not have leading or trailing whitespace, got '{value}'")
-    if (value.startswith("'") and value.endswith("'")) or (
-        value.startswith('"') and value.endswith('"')
-    ):
-        raise ValueError(f"{name} must not be enclosed in quotes, got '{value}'")
+    if value.startswith("'") or value.endswith("'") or value.startswith('"') or value.endswith('"'):
+        raise ValueError(
+            f"{name} must not be enclosed in quotes or contain boundary quotes, got '{value}'"
+        )
     return value
 
 
@@ -59,20 +59,12 @@ LifecycleOperationVerb = Literal[
     "OPEN_EXTEND",
     "READ",
     "WRITE",
-    "REWRITE",
-    "DELETE",
     "CLOSE",
 ]
-OperationKind = Literal["DELETE", "RENAME", "COPY", "MOVE", "EXECUTE"]
+OperationKind = Literal["DELETE", "RENAME"]
 RecordRelationType = Literal["IDENTICAL", "EQUIVALENT", "REPRESENTATION_MISMATCH"]
 FileOrganization = Literal["LINE_SEQUENTIAL", "SEQUENTIAL", "INDEXED", "RELATIVE"]
-CausalProvenance = Literal[
-    "UNKNOWN",
-    "INITIALIZER_DISCREPANCY",
-    "CONCURRENT_MUTATION",
-    "UNTRACKED_TRANSACTION_BATCH",
-    "CORRUPTED_RECORD",
-]
+CausalProvenance = Literal["UNKNOWN"]
 RiskCategory = Literal[
     "IO_ERROR_HANDLING",
     "DATA_INTEGRITY",
@@ -420,8 +412,7 @@ class FileOperation(BaseModel):
     internal_file_name: str = Field(description="COBOL internal file handle")
     operation_verb: LifecycleOperationVerb = Field(
         description=(
-            "COBOL I/O verb: OPEN_INPUT, OPEN_OUTPUT, OPEN_IO, OPEN_EXTEND, "
-            "READ, WRITE, REWRITE, DELETE, CLOSE"
+            "COBOL I/O verb: OPEN_INPUT, OPEN_OUTPUT, OPEN_IO, OPEN_EXTEND, READ, WRITE, CLOSE"
         )
     )
     evidence: SourceEvidence = Field(
@@ -598,12 +589,8 @@ class OperationSequence(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     program_id: str = Field(description="Program containing the sequence")
-    first_operation: OperationKind = Field(
-        description="First operation kind: DELETE, RENAME, COPY, MOVE, EXECUTE"
-    )
-    second_operation: OperationKind = Field(
-        description="Second operation kind: DELETE, RENAME, COPY, MOVE, EXECUTE"
-    )
+    first_operation: Literal["DELETE"] = Field(description="First operation kind: DELETE")
+    second_operation: Literal["RENAME"] = Field(description="Second operation kind: RENAME")
     first_assignment_evidence: SourceEvidence = Field(
         description="Evidence of first command literal assignment"
     )
@@ -721,8 +708,9 @@ class BehavioralRisk(BaseModel):
         description=(
             "Exact physical line span of the affected resource declaration "
             "(for MISSING_ERROR_STATUS: exact SELECT/ASSIGN binding span; "
-            "for NON_ATOMIC_EXTERNAL_MUTATION: exact target-identifying command assignment "
-            "statement)"
+            "for NON_ATOMIC_EXTERNAL_MUTATION: exact command-assignment statement constructing the "
+            "final replacement/rename operation that identifies the persistent target "
+            "receiving the temporary data, not the preceding delete assignment)"
         )
     )
 
@@ -748,10 +736,7 @@ class DataStateComparison(BaseModel):
     dat_record_value: str = Field(description="Value observed in persistent DAT record")
     initializer_code_value: str = Field(description="Value written by initialization program")
     causal_provenance: CausalProvenance = Field(
-        description=(
-            "Causal provenance classification: UNKNOWN, INITIALIZER_DISCREPANCY, "
-            "CONCURRENT_MUTATION, UNTRACKED_TRANSACTION_BATCH, or CORRUPTED_RECORD"
-        )
+        description="Causal provenance classification: UNKNOWN"
     )
     dat_evidence: SourceEvidence = Field(description="Evidence from data file")
     initializer_evidence: SourceEvidence = Field(description="Evidence from initializer program")

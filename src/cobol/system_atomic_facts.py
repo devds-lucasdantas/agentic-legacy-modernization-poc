@@ -27,6 +27,32 @@ def canonicalize_token(text: str) -> str:
     return cleaned.replace(" ", "_").replace("-", "_")
 
 
+def canonicalize_picture(text: str) -> str:
+    """Canonicalize COBOL PICTURE syntax (host parser only).
+
+    - Strips leading PIC / PICTURE keyword if present.
+    - Strips leading and trailing whitespace.
+    - Strips terminal COBOL period '.' if present.
+    - Uppercases alphabetic symbols (X, 9, S, V, Z, CR, DB, etc.).
+    - Preserves all punctuation symbols exactly (+, -, ., ,, (, ), $, *, /).
+    - NEVER replaces '-' with '_'.
+    - NEVER replaces spaces or hyphens through generic token normalization.
+    """
+    cleaned = text.strip()
+    upper = cleaned.upper()
+    if upper.startswith("PICTURE"):
+        rem = cleaned[7:].lstrip()
+        if rem:
+            cleaned = rem
+    elif upper.startswith("PIC"):
+        rem = cleaned[3:].lstrip()
+        if rem:
+            cleaned = rem
+    if cleaned.endswith("."):
+        cleaned = cleaned[:-1].rstrip()
+    return cleaned.upper()
+
+
 # ---------------------------------------------------------------------------
 # Base Semantic Fact Definition
 # ---------------------------------------------------------------------------
@@ -208,15 +234,18 @@ class RecordFieldFact:
         object.__setattr__(self, "field_kind", canonicalize_token(self.field_kind))
         object.__setattr__(self, "name", normalize_identifier(self.name))
         if self.picture is not None:
-            object.__setattr__(self, "picture", canonicalize_token(self.picture))
+            # Model values must be pre-canonical; do NOT repair via canonicalize_picture
+            object.__setattr__(self, "picture", self.picture)
         if self.usage is not None:
             u = self.usage.strip().upper()
             object.__setattr__(self, "usage", u)
         if self.condition_values:
+            # Condition values are source literal content: do NOT uppercase,
+            # do NOT replace hyphens, do NOT strip
             object.__setattr__(
                 self,
                 "condition_values",
-                tuple(canonicalize_token(v.strip("'\"")) for v in self.condition_values),
+                tuple(self.condition_values),
             )
 
 
@@ -291,8 +320,8 @@ class FileBindingFact(SystemAtomicFact):
         object.__setattr__(
             self, "internal_file_name", normalize_identifier(self.internal_file_name)
         )
-        clean_ext = self.external_file_name.strip("'\"")
-        object.__setattr__(self, "external_file_name", normalize_identifier(clean_ext))
+        # external_file_name is SOURCE LITERAL CONTENT: preserve case, punctuation, interior content
+        object.__setattr__(self, "external_file_name", self.external_file_name)
         object.__setattr__(self, "organization", canonicalize_token(self.organization))
 
     def get_semantic_key(self) -> str:
@@ -390,8 +419,9 @@ class CommandInvocationFact(SystemAtomicFact):
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "program_id", normalize_identifier(self.program_id))
-        clean_cmd = self.command_template.strip("'\"")
-        object.__setattr__(self, "command_template", clean_cmd)
+        # command_template is SOURCE LITERAL CONTENT: preserve as parsed,
+        # do not strip in fact constructor
+        object.__setattr__(self, "command_template", self.command_template)
         object.__setattr__(self, "target_operand", normalize_identifier(self.target_operand))
 
     def get_semantic_key(self) -> str:
@@ -539,8 +569,9 @@ class PlatformDependencyFact(SystemAtomicFact):
         if plat in ("WINDOWS_CMD", "WIN_CMD", "WINDOWS_CMD_SHELL"):
             plat = "WINDOWS"
         object.__setattr__(self, "platform_family", plat)
-        clean_cmd = self.command_literal.strip("'\"")
-        object.__setattr__(self, "command_literal", clean_cmd)
+        # command_literal is SOURCE LITERAL CONTENT: preserve as parsed,
+        # do not strip in fact constructor
+        object.__setattr__(self, "command_literal", self.command_literal)
 
     def get_semantic_key(self) -> str:
         return f"PLATFORM:{self.program_id}:{self.platform_family}:{self.command_literal}"
@@ -612,8 +643,8 @@ class DataStateComparisonFact(SystemAtomicFact):
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "entity_id", normalize_identifier(self.entity_id))
-        object.__setattr__(self, "dat_record_value", self.dat_record_value.strip())
-        object.__setattr__(self, "initializer_code_value", self.initializer_code_value.strip())
+        object.__setattr__(self, "dat_record_value", self.dat_record_value)
+        object.__setattr__(self, "initializer_code_value", self.initializer_code_value)
         object.__setattr__(self, "causal_provenance", canonicalize_token(self.causal_provenance))
 
     def get_semantic_key(self) -> str:

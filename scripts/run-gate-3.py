@@ -54,12 +54,12 @@ from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
-SPEC_VERSION = "3.5.1"
-SCHEMA_VERSION = "3.5.1"
-PROMPT_VERSION = "3.5.1"
-EVALUATOR_VERSION = "3.5.1"
-GOLDEN_DATASET_VERSION = "3.5.1"
-SUPPORTED_CONTRACT_VERSIONS = {"3.4.3", "3.5.0", "3.5.1"}
+SPEC_VERSION = "3.5.2"
+SCHEMA_VERSION = "3.5.2"
+PROMPT_VERSION = "3.5.2"
+EVALUATOR_VERSION = "3.5.2"
+GOLDEN_DATASET_VERSION = "3.5.2"
+SUPPORTED_CONTRACT_VERSIONS = {"3.4.3", "3.5.0", "3.5.1", "3.5.2"}
 
 SAFE_RUN_LABEL_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 HEX_64_PATTERN = re.compile(r"^[0-9a-f]{64}$")

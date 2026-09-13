@@ -16,10 +16,13 @@ Verifies:
 
 from __future__ import annotations
 
+import argparse
+import copy
 import hashlib
 import json
+import tempfile
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import pytest
 from pydantic import ValidationError
@@ -46,8 +49,14 @@ from agents.legacy_analyzer.schemas.system_assessment import (
     SystemAssessment,
     TerminationSite,
 )
-from src.cobol.multi_source_reader import read_system_bundle
-from src.cobol.system_atomic_facts import BehavioralRiskFact, RecordLayoutRelationFact
+from src.cobol.multi_source_reader import MultiSourceBundle, TargetFile, read_system_bundle
+from src.cobol.system_atomic_facts import (
+    BehavioralRiskFact,
+    FileBindingFact,
+    RecordFieldFact,
+    RecordLayoutRelationFact,
+    canonicalize_picture,
+)
 from src.cobol.system_cobol_parser import SystemCobolParser
 from src.cobol.system_support_index import SystemSupportIndex
 from src.validation.evaluator_v3 import SystemEvaluatorV3, load_golden_assessment
@@ -957,7 +966,7 @@ def test_h7_strict_runtime_version_equality_negative_tests():
     runner_mod = importlib.util.module_from_spec(spec_mod)
     spec_mod.loader.exec_module(runner_mod)
 
-    assert runner_mod.SUPPORTED_CONTRACT_VERSIONS == {"3.4.3", "3.5.0", "3.5.1"}
+    assert runner_mod.SUPPORTED_CONTRACT_VERSIONS == {"3.4.3", "3.5.0", "3.5.1", "3.5.2"}
 
 
 # ======================================================================
@@ -999,3 +1008,627 @@ def test_h7_duplicate_call_edge_detection():
     assert metrics.duplicate_prediction_count == 1
     assert metrics.supported_predicted_count == 1
     assert preds[1].is_duplicate is True
+
+
+# ======================================================================
+# TEST X (5A): REAL ASSESSMENT MUTATION REGRESSIONS
+# ======================================================================
+
+
+def test_h7_3_real_assessment_mutation_regressions():
+    """Verify that model-side mutations across categories fail strictly without repair."""
+    # 1. Closed categorical tokens: lowercase or invalid tokens rejected by schema
+    with pytest.raises(ValidationError):
+        CallEdge(
+            caller_program="BANK-MAIN",
+            target_program="INIT-DB",
+            call_mechanism=cast(Any, "literal_target"),  # must be LITERAL_TARGET
+            evidence=SourceEvidence(
+                file_path="legacy/core-banking-system/BANK-MAIN.CBL", line_start=24, line_end=24
+            ),
+        )
+
+    with pytest.raises(ValidationError):
+        TerminationSite(
+            program_id="BANK-MAIN",
+            statement_type=cast(Any, "stop run"),  # must be STOP_RUN
+            evidence=SourceEvidence(
+                file_path="legacy/core-banking-system/BANK-MAIN.CBL", line_start=27, line_end=27
+            ),
+        )
+
+    with pytest.raises(ValidationError):
+        PlatformDependency(
+            program_id="TRANS-PROC",
+            platform_family=cast(Any, "WIN_CMD"),  # must be WINDOWS
+            command_literal="cmd /c del ACCOUNTS.DAT",
+            evidence=SourceEvidence(
+                file_path="legacy/core-banking-system/TRANS-PROC.CBL", line_start=86, line_end=86
+            ),
+        )
+
+    # 2. COBOL identifiers: lowercase and leading/trailing whitespace rejected by schema
+    with pytest.raises(ValidationError):
+        ProgramDeclaration(
+            program_id="bank-main",
+            evidence=SourceEvidence(
+                file_path="legacy/core-banking-system/BANK-MAIN.CBL", line_start=2, line_end=2
+            ),
+        )
+
+    with pytest.raises(ValidationError):
+        ProgramDeclaration(
+            program_id=" BANK-MAIN ",
+            evidence=SourceEvidence(
+                file_path="legacy/core-banking-system/BANK-MAIN.CBL", line_start=2, line_end=2
+            ),
+        )
+
+    # 3. Source literal content: quotes rejected by schema
+    with pytest.raises(ValidationError):
+        PlatformDependency(
+            program_id="TRANS-PROC",
+            platform_family="WINDOWS",
+            command_literal="'cmd /c del ACCOUNTS.DAT'",  # must be unquoted content
+            evidence=SourceEvidence(
+                file_path="legacy/core-banking-system/TRANS-PROC.CBL", line_start=86, line_end=86
+            ),
+        )
+
+    # 4. FileBinding external_file_name literal preservation (no casing repair in fact constructor)
+    fb_lower = FileBindingFact(
+        program_id="P",
+        internal_file_name="F",
+        external_file_name="accounts.dat",
+        organization="SEQUENTIAL",
+    )
+    assert fb_lower.external_file_name == "accounts.dat"
+
+    # Synthetic bundle with lowercase accounts.dat
+    src = (
+        "IDENTIFICATION DIVISION.\n"
+        "PROGRAM-ID. TESTPROG.\n"
+        "ENVIRONMENT DIVISION.\n"
+        "INPUT-OUTPUT SECTION.\n"
+        "FILE-CONTROL.\n"
+        "    SELECT IN-FILE ASSIGN TO 'accounts.dat'\n"
+        "    ORGANIZATION IS LINE SEQUENTIAL.\n"
+        "DATA DIVISION.\n"
+        "FILE SECTION.\n"
+        "FD IN-FILE.\n"
+        "01 IN-REC PIC X(10).\n"
+        "PROCEDURE DIVISION.\n"
+        "    OPEN INPUT IN-FILE.\n"
+        "    CLOSE IN-FILE.\n"
+        "    STOP RUN.\n"
+    )
+    numbered = "\n".join(f"{i:06d} {line}" for i, line in enumerate(src.splitlines(), start=1))
+    tf = TargetFile(
+        relative_path="TEST.CBL",
+        file_type="PROGRAM",
+        raw_content=src,
+        numbered_content=numbered,
+        sha256=hashlib.sha256(src.encode("utf-8")).hexdigest(),
+        line_count=len(src.splitlines()),
+    )
+    b = MultiSourceBundle(
+        files={"TEST.CBL": tf},
+        total_physical_lines=tf.line_count,
+        bundle_sha256="synth",
+        formatted_prompt_payload="synth",
+    )
+    p = SystemCobolParser(b)
+    p_facts = p.get_supported_facts()
+    idx = SystemSupportIndex(p_facts, b, file_status_certificate=p.file_status_certificate)
+    ev = SystemEvaluatorV3(idx)
+
+    # Exact lowercase matches
+    ass_pass = SystemAssessment(system_name="Test")
+    ass_pass.file_bindings.append(
+        FileBinding(
+            program_id="TESTPROG",
+            internal_file_name="IN-FILE",
+            external_file_name="accounts.dat",
+            organization="LINE_SEQUENTIAL",
+            evidence=SourceEvidence(file_path="TEST.CBL", line_start=6, line_end=7),
+        )
+    )
+    m_pass, _ = ev.evaluate_assessment(ass_pass)
+    assert m_pass.supported_predicted_count == 1
+
+    # Uppercased fails exact match
+    ass_fail = SystemAssessment(system_name="Test")
+    ass_fail.file_bindings.append(
+        FileBinding(
+            program_id="TESTPROG",
+            internal_file_name="IN-FILE",
+            external_file_name="ACCOUNTS.DAT",
+            organization="LINE_SEQUENTIAL",
+            evidence=SourceEvidence(file_path="TEST.CBL", line_start=6, line_end=7),
+        )
+    )
+    m_fail, _ = ev.evaluate_assessment(ass_fail)
+    assert m_fail.supported_predicted_count == 0
+
+    # 5. Condition values: exact content preserved without uppercase repair
+    golden = load_golden_assessment()
+    mut_cond = copy.deepcopy(golden)
+    found_cond = False
+    for lay in mut_cond.record_layouts:
+        for fld in lay.fields:
+            if fld.condition_values == ["A"]:
+                fld.condition_values = ["a"]
+                found_cond = True
+    assert found_cond
+    real_bundle = read_system_bundle(REPO_ROOT)
+    real_parser = SystemCobolParser(real_bundle)
+    real_idx = SystemSupportIndex(
+        real_parser.get_supported_facts(),
+        real_bundle,
+        file_status_certificate=real_parser.file_status_certificate,
+    )
+    real_ev = SystemEvaluatorV3(real_idx)
+    metrics_cond, _ = real_ev.evaluate_assessment(mut_cond)
+    assert metrics_cond.supported_predicted_count < 59
+
+    # 6. PICTURE punctuation: -(10)9 preserved exactly; _(10)9 fails exact match against host fact
+    assert canonicalize_picture("-(10)9") == "-(10)9"
+    assert canonicalize_picture("-(10)9") != "_(10)9"
+    rf_pic = RecordFieldFact(
+        field_kind="DATA_FIELD", level=5, name="VAL", picture="-(10)9", usage="DISPLAY"
+    )
+    assert rf_pic.picture == "-(10)9"
+
+    with pytest.raises(ValidationError):
+        RecordField(
+            field_kind="DATA_FIELD", level=5, name="VAL", picture=" -(10)9", usage="DISPLAY"
+        )
+    with pytest.raises(ValidationError):
+        RecordField(
+            field_kind="DATA_FIELD", level=5, name="VAL", picture="pic 9(10)", usage="DISPLAY"
+        )
+    with pytest.raises(ValidationError):
+        RecordField(field_kind="DATA_FIELD", level=5, name="VAL", picture="9(10).", usage="DISPLAY")
+
+
+# ======================================================================
+# TEST Y (5B): EXHAUSTIVE LAYOUT ENDPOINT PERMUTATIONS
+# ======================================================================
+
+
+def test_h7_3_layout_endpoint_permutations_exhaustive():
+    """Verify normal, reverse, names-only swap, and evidence-only swap.
+
+    Evaluates completeness across all 10 layout pairs.
+    """
+    bundle = read_system_bundle(REPO_ROOT)
+    parser = SystemCobolParser(bundle)
+    facts = parser.get_supported_facts()
+    index = SystemSupportIndex(
+        facts, bundle, file_status_certificate=parser.file_status_certificate
+    )
+    evaluator = SystemEvaluatorV3(index)
+
+    rel_facts = [sf for sf in facts if sf.fact.fact_category == "RECORD_LAYOUT_RELATION"]
+    assert len(rel_facts) == 10, f"Expected 10 layout relations, got {len(rel_facts)}"
+
+    for sf in rel_facts:
+        assert isinstance(sf.fact, RecordLayoutRelationFact)
+        f = sf.fact
+        ev_a = sf.evidence_spans["evidence_a"]
+        ev_b = sf.evidence_spans["evidence_b"]
+
+        # 1. Normal orientation -> PASS
+        ass_norm = SystemAssessment(system_name="Core Banking System")
+        ass_norm.record_layout_relations.append(
+            RecordLayoutRelation(
+                layout_a_name=f.layout_a_name,
+                layout_b_name=f.layout_b_name,
+                relation_type=cast(Any, f.relation_type),
+                evidence_a=SourceEvidence(
+                    file_path=ev_a.file_path, line_start=ev_a.line_start, line_end=ev_a.line_end
+                ),
+                evidence_b=SourceEvidence(
+                    file_path=ev_b.file_path, line_start=ev_b.line_start, line_end=ev_b.line_end
+                ),
+            )
+        )
+        m_norm, _ = evaluator.evaluate_assessment(ass_norm)
+        assert m_norm.supported_predicted_count == 1, (
+            f"Normal orientation failed for {f.get_semantic_key()}"
+        )
+
+        # 2. Complete reverse orientation -> PASS
+        ass_rev = SystemAssessment(system_name="Core Banking System")
+        ass_rev.record_layout_relations.append(
+            RecordLayoutRelation(
+                layout_a_name=f.layout_b_name,
+                layout_b_name=f.layout_a_name,
+                relation_type=cast(Any, f.relation_type),
+                evidence_a=SourceEvidence(
+                    file_path=ev_b.file_path, line_start=ev_b.line_start, line_end=ev_b.line_end
+                ),
+                evidence_b=SourceEvidence(
+                    file_path=ev_a.file_path, line_start=ev_a.line_start, line_end=ev_a.line_end
+                ),
+            )
+        )
+        m_rev, _ = evaluator.evaluate_assessment(ass_rev)
+        assert m_rev.supported_predicted_count == 1, (
+            f"Reverse orientation failed for {f.get_semantic_key()}"
+        )
+
+        # 3. Duplicate detection: emitting both orientations in same assessment flags 1 duplicate
+        ass_both = SystemAssessment(system_name="Core Banking System")
+        ass_both.record_layout_relations.extend(
+            [
+                ass_norm.record_layout_relations[0],
+                ass_rev.record_layout_relations[0],
+            ]
+        )
+        m_both, preds = evaluator.evaluate_assessment(ass_both)
+        assert m_both.raw_predicted_count == 2
+        assert m_both.duplicate_prediction_count == 1
+        assert m_both.supported_predicted_count == 1
+        assert preds[1].is_duplicate is True
+
+        # 4. Names-only swap (evidence NOT swapped) -> FAIL
+        if f.layout_a_name != f.layout_b_name and (
+            ev_a.file_path != ev_b.file_path or ev_a.line_start != ev_b.line_start
+        ):
+            ass_names_swap = SystemAssessment(system_name="Core Banking System")
+            ass_names_swap.record_layout_relations.append(
+                RecordLayoutRelation(
+                    layout_a_name=f.layout_b_name,
+                    layout_b_name=f.layout_a_name,
+                    relation_type=cast(Any, f.relation_type),
+                    evidence_a=SourceEvidence(
+                        file_path=ev_a.file_path,
+                        line_start=ev_a.line_start,
+                        line_end=ev_a.line_end,
+                    ),
+                    evidence_b=SourceEvidence(
+                        file_path=ev_b.file_path,
+                        line_start=ev_b.line_start,
+                        line_end=ev_b.line_end,
+                    ),
+                )
+            )
+            m_ns, _ = evaluator.evaluate_assessment(ass_names_swap)
+            assert m_ns.supported_predicted_count == 0, (
+                f"Names-only swap should fail for {f.get_semantic_key()}"
+            )
+
+        # 5. Evidence-only swap (names NOT swapped) -> FAIL
+        if f.layout_a_name != f.layout_b_name and (
+            ev_a.file_path != ev_b.file_path or ev_a.line_start != ev_b.line_start
+        ):
+            ass_ev_swap = SystemAssessment(system_name="Core Banking System")
+            ass_ev_swap.record_layout_relations.append(
+                RecordLayoutRelation(
+                    layout_a_name=f.layout_a_name,
+                    layout_b_name=f.layout_b_name,
+                    relation_type=cast(Any, f.relation_type),
+                    evidence_a=SourceEvidence(
+                        file_path=ev_b.file_path,
+                        line_start=ev_b.line_start,
+                        line_end=ev_b.line_end,
+                    ),
+                    evidence_b=SourceEvidence(
+                        file_path=ev_a.file_path,
+                        line_start=ev_a.line_start,
+                        line_end=ev_a.line_end,
+                    ),
+                )
+            )
+            m_es, _ = evaluator.evaluate_assessment(ass_ev_swap)
+            assert m_es.supported_predicted_count == 0, (
+                f"Evidence-only swap should fail for {f.get_semantic_key()}"
+            )
+
+
+# ======================================================================
+# TEST Z (5C): TOTAL LAYOUT COMPARATOR IN-MEMORY PROBES
+# ======================================================================
+
+
+def test_h7_3_total_layout_comparator_in_memory_probes():
+    """Verify total layout comparator behavior.
+
+    Field count, picture, and usage mismatches all yield REPRESENTATION_MISMATCH.
+    """
+    from src.cobol.system_cobol_parser import ASTDataField, ASTRecordDeclaration
+
+    bundle = read_system_bundle(REPO_ROOT)
+    parser = SystemCobolParser(bundle)
+
+    def make_ast_record(name: str, fields: list[ASTDataField]) -> ASTRecordDeclaration:
+        return ASTRecordDeclaration(
+            container_name=name,
+            line_start=1,
+            line_end=10,
+            fields=fields,
+        )
+
+    # Probe 1: Field count mismatch (e.g. 3 fields vs 4 fields)
+    f3 = [
+        ASTDataField(
+            level=5, name="F1", picture="9(10)", usage="DISPLAY", line_start=2, line_end=2
+        ),
+        ASTDataField(
+            level=5, name="F2", picture="X(20)", usage="DISPLAY", line_start=3, line_end=3
+        ),
+        ASTDataField(level=5, name="F3", picture="9(5)", usage="DISPLAY", line_start=4, line_end=4),
+    ]
+    f4 = [
+        ASTDataField(
+            level=5, name="F1", picture="9(10)", usage="DISPLAY", line_start=2, line_end=2
+        ),
+        ASTDataField(
+            level=5, name="F2", picture="X(20)", usage="DISPLAY", line_start=3, line_end=3
+        ),
+        ASTDataField(level=5, name="F3", picture="9(5)", usage="DISPLAY", line_start=4, line_end=4),
+        ASTDataField(level=5, name="F4", picture="X(1)", usage="DISPLAY", line_start=5, line_end=5),
+    ]
+    records_p1 = [make_ast_record(f"REC{i}", f3 if i % 2 == 0 else f4) for i in range(5)]
+    pairs_p1 = 0
+    for i in range(len(records_p1)):
+        for j in range(i + 1, len(records_p1)):
+            rel = parser._compare_records_generically(records_p1[i], records_p1[j])
+            pairs_p1 += 1
+            if len(records_p1[i].fields) != len(records_p1[j].fields):
+                assert rel == "REPRESENTATION_MISMATCH"
+            else:
+                assert rel in ("IDENTICAL", "EQUIVALENT")
+    assert pairs_p1 == 10
+
+    # Probe 2: PICTURE mismatch (same field count, different picture)
+    f_pic_a = [
+        ASTDataField(
+            level=5, name="F1", picture="9(10)", usage="DISPLAY", line_start=2, line_end=2
+        ),
+        ASTDataField(
+            level=5, name="F2", picture="X(30)", usage="DISPLAY", line_start=3, line_end=3
+        ),
+    ]
+    f_pic_b = [
+        ASTDataField(
+            level=5, name="F1", picture="9(10)", usage="DISPLAY", line_start=2, line_end=2
+        ),
+        ASTDataField(
+            level=5, name="F2", picture="X(20)", usage="DISPLAY", line_start=3, line_end=3
+        ),
+    ]
+    records_p2 = [make_ast_record(f"REC{i}", f_pic_a if i % 2 == 0 else f_pic_b) for i in range(5)]
+    pairs_p2 = 0
+    for i in range(len(records_p2)):
+        for j in range(i + 1, len(records_p2)):
+            rel = parser._compare_records_generically(records_p2[i], records_p2[j])
+            pairs_p2 += 1
+            if records_p2[i].fields[1].picture != records_p2[j].fields[1].picture:
+                assert rel == "REPRESENTATION_MISMATCH"
+            else:
+                assert rel in ("IDENTICAL", "EQUIVALENT")
+    assert pairs_p2 == 10
+
+    # Probe 3: USAGE mismatch (same picture and names, different usage)
+    f_usg_a = [
+        ASTDataField(
+            level=5, name="F1", picture="S9(13)V99", usage="DISPLAY", line_start=2, line_end=2
+        ),
+    ]
+    f_usg_b = [
+        ASTDataField(
+            level=5, name="F1", picture="S9(13)V99", usage="COMP-3", line_start=2, line_end=2
+        ),
+    ]
+    records_p3 = [make_ast_record(f"REC{i}", f_usg_a if i % 2 == 0 else f_usg_b) for i in range(5)]
+    pairs_p3 = 0
+    for i in range(len(records_p3)):
+        for j in range(i + 1, len(records_p3)):
+            rel = parser._compare_records_generically(records_p3[i], records_p3[j])
+            pairs_p3 += 1
+            if records_p3[i].fields[0].usage != records_p3[j].fields[0].usage:
+                assert rel == "REPRESENTATION_MISMATCH"
+            else:
+                assert rel in ("IDENTICAL", "EQUIVALENT")
+    assert pairs_p3 == 10
+
+
+# ======================================================================
+# TEST AA (5D): BEHAVIORAL RISK EVIDENCE DISAMBIGUATION
+# ======================================================================
+
+
+def test_h7_3_behavioral_risk_evidence_disambiguation():
+    """Verify that NON_ATOMIC_EXTERNAL_MUTATION accepts RENAME assignment and rejects DELETE."""
+    bundle = read_system_bundle(REPO_ROOT)
+    parser = SystemCobolParser(bundle)
+    facts = parser.get_supported_facts()
+    index = SystemSupportIndex(
+        facts, bundle, file_status_certificate=parser.file_status_certificate
+    )
+    evaluator = SystemEvaluatorV3(index)
+
+    # 1. Correct RENAME assignment (line 88: MOVE 'cmd /c ren...' TO WS-CMD) -> PASS
+    ass_pass = SystemAssessment(system_name="Core Banking System")
+    ass_pass.behavioral_risks.append(
+        BehavioralRisk(
+            program_id="TRANS-PROC",
+            risk_category="DATA_INTEGRITY",
+            risk_basis_kind="NON_ATOMIC_EXTERNAL_MUTATION",
+            impact_category="DATA_INTEGRITY",
+            resource_name="ACCOUNTS.DAT",
+            operation_evidence=SourceEvidence(
+                file_path="legacy/core-banking-system/TRANS-PROC.CBL", line_start=87, line_end=89
+            ),
+            affected_resource_evidence=SourceEvidence(
+                file_path="legacy/core-banking-system/TRANS-PROC.CBL", line_start=88, line_end=88
+            ),
+        )
+    )
+    m_pass, _ = evaluator.evaluate_assessment(ass_pass)
+    assert m_pass.supported_predicted_count == 1
+
+    # 2. Preceding DELETE assignment (line 86: MOVE 'cmd /c del ACCOUNTS.DAT' TO WS-CMD) -> FAIL
+    ass_fail = SystemAssessment(system_name="Core Banking System")
+    ass_fail.behavioral_risks.append(
+        BehavioralRisk(
+            program_id="TRANS-PROC",
+            risk_category="DATA_INTEGRITY",
+            risk_basis_kind="NON_ATOMIC_EXTERNAL_MUTATION",
+            impact_category="DATA_INTEGRITY",
+            resource_name="ACCOUNTS.DAT",
+            operation_evidence=SourceEvidence(
+                file_path="legacy/core-banking-system/TRANS-PROC.CBL", line_start=87, line_end=89
+            ),
+            affected_resource_evidence=SourceEvidence(
+                file_path="legacy/core-banking-system/TRANS-PROC.CBL", line_start=86, line_end=86
+            ),
+        )
+    )
+    m_fail, _ = evaluator.evaluate_assessment(ass_fail)
+    assert m_fail.supported_predicted_count == 0
+
+
+# ======================================================================
+# TEST AB (5E): CHILD AUTHORIZATION SPEC PATH VERIFICATION
+# ======================================================================
+
+
+def test_h7_3_child_authorization_spec_path_verification(monkeypatch):
+    """Exercise execute_internal_child and observe rel_spec_path passed to git loader."""
+    import importlib.util
+
+    spec_mod = importlib.util.spec_from_file_location(
+        "runner_mod_child", REPO_ROOT / "scripts/run-gate-3.py"
+    )
+    assert spec_mod is not None and spec_mod.loader is not None
+    runner_mod = importlib.util.module_from_spec(spec_mod)
+    spec_mod.loader.exec_module(runner_mod)
+
+    monkeypatch.setattr(runner_mod, "is_isolated_python", lambda: True)
+    monkeypatch.setattr(runner_mod, "is_bytecode_writing_disabled", lambda: True)
+    monkeypatch.setattr(runner_mod, "verify_trusted_runner_bootstrap", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        runner_mod, "verify_snapshot_against_git_objects", lambda *args, **kwargs: None
+    )
+
+    captured_paths: list[str] = []
+    orig_loader = runner_mod.load_authorization_spec_from_git
+
+    def spy_loader(repo, commit, rel_path):
+        captured_paths.append(rel_path)
+        return orig_loader(repo, commit, rel_path)
+
+    monkeypatch.setattr(runner_mod, "load_authorization_spec_from_git", spy_loader)
+
+    # 1. Execute internal child for v1
+    with tempfile.TemporaryDirectory() as td:
+        args_v1 = argparse.Namespace(
+            internal_child=True,
+            provenance_repo=str(REPO_ROOT),
+            snapshot_dir=str(REPO_ROOT),
+            artifact_dir=td,
+            auth_spec=str(REPO_ROOT / "evals/baselines/gate-3-baseline-v1.json"),
+            run_label="baseline-v1",
+            authorized_git_sha="9f5c5d2dbe4f1c61aa666f3a3388b54d89751669",
+            authorization_commit_sha="9672708e6bcdc01f9d6377535afbb9e11258126e",
+            synthetic=True,
+            dry_run=False,
+            allow_dirty=False,
+            golden_path=None,
+        )
+        runner_mod.execute_internal_child(args_v1)
+        assert len(captured_paths) == 1
+        assert captured_paths[0] == "evals/baselines/gate-3-baseline-v1.json"
+
+    # 2. Execute internal child for v2
+    with tempfile.TemporaryDirectory() as td:
+        args_v2 = argparse.Namespace(
+            internal_child=True,
+            provenance_repo=str(REPO_ROOT),
+            snapshot_dir=str(REPO_ROOT),
+            artifact_dir=td,
+            auth_spec=str(REPO_ROOT / "evals/baselines/gate-3-baseline-v2.json"),
+            run_label="baseline-v2",
+            authorized_git_sha="c559ece8fde0512759b29108978b2e528b752b87",
+            authorization_commit_sha="0913549fa80ceca9ca9c86151cd323799e0e4be2",
+            synthetic=True,
+            dry_run=False,
+            allow_dirty=False,
+            golden_path=None,
+        )
+        runner_mod.execute_internal_child(args_v2)
+        assert len(captured_paths) == 2
+        assert captured_paths[1] == "evals/baselines/gate-3-baseline-v2.json"
+
+
+# ======================================================================
+# TEST AC (5F): RUNTIME VERSION MISMATCH REAL CHILD NEGATIVE TESTS
+# ======================================================================
+
+
+def test_h7_3_runtime_version_mismatch_real_child_negative_tests(monkeypatch):
+    """Force each runtime mismatch through execute_internal_child and verify zero provider calls."""
+    import importlib.util
+
+    spec_mod = importlib.util.spec_from_file_location(
+        "runner_mod_mismatch", REPO_ROOT / "scripts/run-gate-3.py"
+    )
+    assert spec_mod is not None and spec_mod.loader is not None
+    runner_mod = importlib.util.module_from_spec(spec_mod)
+    spec_mod.loader.exec_module(runner_mod)
+
+    monkeypatch.setattr(runner_mod, "is_isolated_python", lambda: True)
+    monkeypatch.setattr(runner_mod, "is_bytecode_writing_disabled", lambda: True)
+    monkeypatch.setattr(runner_mod, "verify_trusted_runner_bootstrap", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        runner_mod, "verify_snapshot_against_git_objects", lambda *args, **kwargs: None
+    )
+
+    from agents.legacy_analyzer.system_agent import SystemAnalyzerAgent
+
+    provider_calls = 0
+
+    def mock_invoke_raw(*args, **kwargs):
+        nonlocal provider_calls
+        provider_calls += 1
+        raise RuntimeError("Provider call must not be reached on mismatch!")
+
+    monkeypatch.setattr(SystemAnalyzerAgent, "invoke_raw", mock_invoke_raw)
+
+    base_spec_path = REPO_ROOT / "evals/baselines/gate-3-baseline-v2.json"
+    base_spec = json.loads(base_spec_path.read_text(encoding="utf-8"))
+
+    mismatches = [
+        ("golden_dataset_version", "9.9.9"),
+        ("schema_version", "9.9.9"),
+        ("evaluator_version", "9.9.9"),
+        ("prompt_version", "9.9.9"),
+    ]
+
+    for field, bad_val in mismatches:
+        with tempfile.TemporaryDirectory() as td:
+            temp_spec = dict(base_spec)
+            temp_spec[field] = bad_val
+            temp_spec_file = Path(td) / "test-spec.json"
+            temp_spec_file.write_text(json.dumps(temp_spec), encoding="utf-8")
+
+            args = argparse.Namespace(
+                internal_child=True,
+                provenance_repo=str(REPO_ROOT),
+                snapshot_dir=str(REPO_ROOT),
+                artifact_dir=td,
+                auth_spec=str(temp_spec_file),
+                run_label="baseline-v2",
+                authorized_git_sha="",
+                authorization_commit_sha="",
+                synthetic=True,
+                dry_run=False,
+                allow_dirty=True,
+                golden_path=None,
+            )
+            rc = runner_mod.execute_internal_child(args)
+            assert rc != 0, f"Expected non-zero return code for mismatched {field}, got {rc}"
+            assert provider_calls == 0, f"Provider called during failed child preflight for {field}"

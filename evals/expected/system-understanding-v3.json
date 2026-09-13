@@ -1,5 +1,5 @@
 {
-  "version": "3.5.1",
+  "version": "3.5.2",
   "benchmark_design": "GATE_3_SYSTEM_UNDERSTANDING_APPROVED_CONTRACT",
   "golden_authoring_method": "INDEPENDENT_STATIC_SOURCE_AUDIT",
   "provenance_notes": "Authored directly from independent static source audit of the six legacy repository artifacts without runtime parser dependencies.",

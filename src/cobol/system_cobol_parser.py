@@ -40,6 +40,7 @@ from src.cobol.system_atomic_facts import (
     ResourceLifecycleFact,
     SupportedSystemFact,
     TerminationSiteFact,
+    canonicalize_picture,
 )
 
 
@@ -693,10 +694,12 @@ class SystemCobolParser:
                 f_name = tokens[1].rstrip(".") if len(tokens) > 1 else ""
                 pic_val = None
                 usage_val = "DISPLAY"
-                if "PIC" in [t.upper() for t in tokens]:
-                    idx = [t.upper() for t in tokens].index("PIC")
-                    if idx + 1 < len(tokens):
-                        pic_val = tokens[idx + 1].rstrip(".")
+                for pic_kw in ("PIC", "PICTURE"):
+                    if pic_kw in [t.upper() for t in tokens]:
+                        idx = [t.upper() for t in tokens].index(pic_kw)
+                        if idx + 1 < len(tokens):
+                            pic_val = canonicalize_picture(tokens[idx + 1])
+                        break
                 if "COMP-3" in [t.upper() for t in tokens]:
                     usage_val = "COMP-3"
                 elif "COMP" in [t.upper() for t in tokens] or "BINARY" in [
@@ -745,7 +748,13 @@ class SystemCobolParser:
                         break
                 if start_idx != -1:
                     for t in tokens[start_idx:]:
-                        t_clean = t.rstrip(".").strip("'\"")
+                        t_clean = t.rstrip(".")
+                        if (
+                            t_clean.startswith("'") and t_clean.endswith("'") and len(t_clean) >= 2
+                        ) or (
+                            t_clean.startswith('"') and t_clean.endswith('"') and len(t_clean) >= 2
+                        ):
+                            t_clean = t_clean[1:-1]
                         if t_clean and t.upper() not in ("THRU", "THROUGH", "OR"):
                             cond_vals.append(t_clean)
 
@@ -893,7 +902,12 @@ class SystemCobolParser:
                 target_f = ""
                 if first == "OPEN":
                     mode_token = tokens[1].upper() if len(tokens) > 1 else "I-O"
-                    mode = "IO" if mode_token in ("I-O", "IO") else mode_token
+                    if mode_token in ("I-O", "IO"):
+                        mode = "IO"
+                    elif mode_token in ("INPUT", "OUTPUT", "EXTEND"):
+                        mode = mode_token
+                    else:
+                        mode = mode_token
                     target_f = tokens[2].rstrip(".") if len(tokens) > 2 else ""
                 elif first == "READ":
                     target_f = tokens[1].rstrip(".") if len(tokens) > 1 else ""
@@ -1293,7 +1307,7 @@ class SystemCobolParser:
                         field_kind=f.field_kind,
                         level=f.level,
                         name=f.name,
-                        picture=f.picture,
+                        picture=canonicalize_picture(f.picture) if f.picture is not None else None,
                         usage=f.usage if f.field_kind == "DATA_FIELD" else None,
                         condition_values=tuple(f.condition_values)
                         if f.field_kind == "CONDITION_NAME"
@@ -1374,6 +1388,23 @@ class SystemCobolParser:
                                         )
                                     },
                                 )
+                            )
+
+            # Validate external command operations: non-DELETE/RENAME fail closed in coverage
+            for m_cmd, c_cmd in commands_in_unit:
+                c_clean = m_cmd.source_operand.strip("'\"")
+                op_k, _, _ = classify_command_operation(c_clean)
+                if op_k not in ("DELETE", "RENAME"):
+                    for idx_s, s in enumerate(self.statements):
+                        if s.file_path == unit.file_path and s.line_start == m_cmd.line_start:
+                            self.statements[idx_s] = ClassifiedStatement(
+                                s.file_path,
+                                s.line_start,
+                                s.line_end,
+                                s.verb,
+                                s.raw_text,
+                                StatementClassification.UNSUPPORTED_RELEVANT,
+                                f"Unsupported external command operation: {op_k}",
                             )
 
             # Operation sequence and non-atomic risk: generic operand-aware
@@ -1519,11 +1550,10 @@ class SystemCobolParser:
                     if stmt.verb == "WRITE" and target_res.upper() in rec_to_fd:
                         target_res = rec_to_fd[target_res.upper()]
                     if stmt.verb == "OPEN":
-                        op_verb = (
-                            f"OPEN_{stmt.access_mode}"
-                            if stmt.access_mode in ("INPUT", "OUTPUT")
-                            else "OPEN"
-                        )
+                        if stmt.access_mode in ("INPUT", "OUTPUT", "IO", "EXTEND"):
+                            op_verb = f"OPEN_{stmt.access_mode}"
+                        else:
+                            op_verb = "OPEN"
                     else:
                         op_verb = stmt.verb
                     f_tag = target_res.lower().replace("-", "_")

@@ -42,7 +42,7 @@ from src.cobol.system_atomic_facts import (
 )
 from src.cobol.system_support_index import SystemSupportIndex
 
-EVALUATOR_VERSION: str = "3.5.1"
+EVALUATOR_VERSION: str = "3.5.2"
 
 
 def _single_span(ev: Any) -> dict[str, EvidenceSpan]:
@@ -261,8 +261,13 @@ class SystemEvaluatorV3:
                     condition_values=tuple(fld.condition_values),
                 )
                 _assert_canonical(fld.name, rf.name, "field.name")
+                if fld.picture is not None:
+                    _assert_canonical(fld.picture, rf.picture, "field.picture")
                 if fld.usage is not None:
                     _assert_canonical(fld.usage, rf.usage, "field.usage")
+                _assert_canonical(
+                    tuple(fld.condition_values), rf.condition_values, "field.condition_values"
+                )
                 fields.append(rf)
             f_lay = RecordLayoutFact(
                 program_id=lay.program_id,
