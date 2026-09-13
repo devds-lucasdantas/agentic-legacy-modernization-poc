@@ -680,8 +680,11 @@ def test_cf10_changed_delete_rename_ordering(tmp_path: Path):
     )
     parser = SystemCobolParser(bundle)
     cert = parser.parse_system()
-    assert cert.unsupported_relevant_count == 0
+    # Under F2 fail-closed semantics, RENAME -> DELETE is unsupported sequence shape
+    assert cert.unsupported_relevant_count > 0
     facts = parser.get_supported_facts()
+    op_seqs = [f.fact for f in facts if f.fact.fact_category == "OPERATION_SEQUENCE"]
+    assert len(op_seqs) == 0
     non_atomic_risks = [
         f.fact
         for f in facts

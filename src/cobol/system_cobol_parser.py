@@ -737,7 +737,6 @@ class SystemCobolParser:
 
             if first == "88":
                 cond_name = tokens[1].rstrip(".") if len(tokens) > 1 else ""
-                cond_vals: list[str] = []
                 val_tokens = [t.upper() for t in tokens]
                 start_idx = -1
                 for v_key in ("VALUE", "VALUES"):
@@ -746,43 +745,101 @@ class SystemCobolParser:
                         if start_idx < len(tokens) and val_tokens[start_idx] in ("IS", "ARE"):
                             start_idx += 1
                         break
-                if start_idx != -1:
-                    for t in tokens[start_idx:]:
-                        t_clean = t.rstrip(".")
-                        if (
-                            t_clean.startswith("'") and t_clean.endswith("'") and len(t_clean) >= 2
-                        ) or (
-                            t_clean.startswith('"') and t_clean.endswith('"') and len(t_clean) >= 2
-                        ):
-                            t_clean = t_clean[1:-1]
-                        if t_clean and t.upper() not in ("THRU", "THROUGH", "OR"):
-                            cond_vals.append(t_clean)
 
-                ast_cond = ASTDataField(
-                    level=88,
-                    name=cond_name,
-                    picture=None,
-                    usage="DISPLAY",
-                    line_start=line_num,
-                    line_end=line_num,
-                    field_kind="CONDITION_NAME",
-                    condition_values=cond_vals,
-                )
-                if current_record:
-                    current_record.fields.append(ast_cond)
-                    current_record.line_end = line_num
+                is_supported = True
+                cond_vals: list[str] = []
 
-                self.statements.append(
-                    ClassifiedStatement(
-                        target_file.relative_path,
-                        line_num,
-                        line_num,
-                        "CONDITION_88",
-                        raw_line,
-                        StatementClassification.PARSED_AND_SCORED,
-                        "Condition level 88",
+                if not cond_name or start_idx == -1 or start_idx >= len(tokens):
+                    is_supported = False
+                else:
+                    # Check raw line in VALUE clause for doubled quote escaping or backslashes
+                    val_kw_idx = -1
+                    upper_raw = raw_line.upper()
+                    for kw in ("VALUES", "VALUE"):
+                        kpos = upper_raw.find(kw)
+                        if kpos != -1:
+                            val_kw_idx = kpos + len(kw)
+                            break
+                    if val_kw_idx != -1:
+                        val_portion = raw_line[val_kw_idx:]
+                        if "''" in val_portion or '""' in val_portion or "\\" in val_portion:
+                            is_supported = False
+
+                    if is_supported:
+                        for t in tokens[start_idx:]:
+                            t_upper = t.rstrip(".,").upper()
+                            # Reject range keywords, logical connectors, and unsupported tokens
+                            if t_upper in ("THRU", "THROUGH", "OR", "AND", "TO", "WHEN", "ALSO"):
+                                is_supported = False
+                                break
+                            if ".." in t:
+                                is_supported = False
+                                break
+
+                            t_clean = t.rstrip(".,")
+                            if not t_clean:
+                                continue
+
+                            # Check for string literal
+                            if t_clean.startswith("'") or t_clean.startswith('"'):
+                                quote_char = t_clean[0]
+                                if not t_clean.endswith(quote_char) or len(t_clean) < 2:
+                                    is_supported = False
+                                    break
+                                inner = t_clean[1:-1]
+                                if "'" in inner or '"' in inner:
+                                    is_supported = False
+                                    break
+                                cond_vals.append(inner)
+                            else:
+                                # Check for simple numeric literal (integer or decimal)
+                                if re.match(r"^[+-]?\d+(?:\.\d+)?$", t_clean):
+                                    cond_vals.append(t_clean)
+                                else:
+                                    is_supported = False
+                                    break
+
+                        if not cond_vals:
+                            is_supported = False
+
+                if is_supported:
+                    ast_cond = ASTDataField(
+                        level=88,
+                        name=cond_name,
+                        picture=None,
+                        usage="DISPLAY",
+                        line_start=line_num,
+                        line_end=line_num,
+                        field_kind="CONDITION_NAME",
+                        condition_values=cond_vals,
                     )
-                )
+                    if current_record:
+                        current_record.fields.append(ast_cond)
+                        current_record.line_end = line_num
+
+                    self.statements.append(
+                        ClassifiedStatement(
+                            target_file.relative_path,
+                            line_num,
+                            line_num,
+                            "CONDITION_88",
+                            raw_line,
+                            StatementClassification.PARSED_AND_SCORED,
+                            "Condition level 88",
+                        )
+                    )
+                else:
+                    self.statements.append(
+                        ClassifiedStatement(
+                            target_file.relative_path,
+                            line_num,
+                            line_num,
+                            "CONDITION_88",
+                            raw_line,
+                            StatementClassification.UNSUPPORTED_RELEVANT,
+                            "Unsupported condition level 88 syntax",
+                        )
+                    )
                 i += 1
                 continue
 
@@ -1337,7 +1394,7 @@ class SystemCobolParser:
         for unit in self.compilation_units:
             caller = unit.program_id or "UNKNOWN"
             n_stmts = len(unit.statements)
-            commands_in_unit: list[tuple[ASTMove, ASTCall]] = []
+            commands_in_unit: list[tuple[ASTMove, ASTCall, int, int]] = []
 
             for idx in range(n_stmts - 1):
                 s1 = unit.statements[idx]
@@ -1350,7 +1407,7 @@ class SystemCobolParser:
                         and s1.target_operand in s2.using_args
                     ):
                         cmd_clean = s1.source_operand.strip("'\"")
-                        commands_in_unit.append((s1, s2))
+                        commands_in_unit.append((s1, s2, idx, idx + 1))
 
                         # Command invocation
                         self.supported_facts.append(
@@ -1391,27 +1448,43 @@ class SystemCobolParser:
                             )
 
             # Validate external command operations: non-DELETE/RENAME fail closed in coverage
-            for m_cmd, c_cmd in commands_in_unit:
+            for m_cmd, c_cmd, _, _ in commands_in_unit:
                 c_clean = m_cmd.source_operand.strip("'\"")
                 op_k, _, _ = classify_command_operation(c_clean)
                 if op_k not in ("DELETE", "RENAME"):
-                    for idx_s, s in enumerate(self.statements):
-                        if s.file_path == unit.file_path and s.line_start == m_cmd.line_start:
-                            self.statements[idx_s] = ClassifiedStatement(
-                                s.file_path,
-                                s.line_start,
-                                s.line_end,
-                                s.verb,
-                                s.raw_text,
-                                StatementClassification.UNSUPPORTED_RELEVANT,
-                                f"Unsupported external command operation: {op_k}",
-                            )
+                    for stmt_cand in (m_cmd, c_cmd):
+                        for idx_s, s in enumerate(self.statements):
+                            if (
+                                s.file_path == unit.file_path
+                                and s.line_start == stmt_cand.line_start
+                            ):
+                                self.statements[idx_s] = ClassifiedStatement(
+                                    s.file_path,
+                                    s.line_start,
+                                    s.line_end,
+                                    s.verb,
+                                    s.raw_text,
+                                    StatementClassification.UNSUPPORTED_RELEVANT,
+                                    f"Unsupported external command operation: {op_k}",
+                                )
 
             # Operation sequence and non-atomic risk: generic operand-aware
             if len(commands_in_unit) >= 2:
                 for c_idx in range(len(commands_in_unit) - 1):
-                    m1, c1 = commands_in_unit[c_idx]
-                    m2, c2 = commands_in_unit[c_idx + 1]
+                    m1, c1, m1_idx, c1_idx = commands_in_unit[c_idx]
+                    m2, c2, m2_idx, c2_idx = commands_in_unit[c_idx + 1]
+
+                    # Sequences require adjacent command dispatches
+                    # (no intervening procedural statements)
+                    if m2_idx != c1_idx + 1:
+                        continue
+                    has_intervening = any(
+                        s.file_path == unit.file_path and c1.line_end < s.line_start < m2.line_start
+                        for s in self.statements
+                    )
+                    if has_intervening:
+                        continue
+
                     cmd1_clean = m1.source_operand.strip("'\"")
                     cmd2_clean = m2.source_operand.strip("'\"")
 
@@ -1469,6 +1542,24 @@ class SystemCobolParser:
                                     },
                                 )
                             )
+                    else:
+                        # Any other pair of recognized operations is unsupported sequence shape
+                        # Mark statements forming sequence as UNSUPPORTED_RELEVANT
+                        for stmt_cand in (m1, c1, m2, c2):
+                            for idx_s, s in enumerate(self.statements):
+                                if (
+                                    s.file_path == unit.file_path
+                                    and s.line_start == stmt_cand.line_start
+                                ):
+                                    self.statements[idx_s] = ClassifiedStatement(
+                                        s.file_path,
+                                        s.line_start,
+                                        s.line_end,
+                                        s.verb,
+                                        s.raw_text,
+                                        StatementClassification.UNSUPPORTED_RELEVANT,
+                                        f"Unsupported sequence: {op1_kind} -> {op2_kind}",
+                                    )
 
         # 7. Record-to-Record Data Transfer Relations
         for unit in self.compilation_units:

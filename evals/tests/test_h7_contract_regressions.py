@@ -53,7 +53,9 @@ from src.cobol.multi_source_reader import MultiSourceBundle, TargetFile, read_sy
 from src.cobol.system_atomic_facts import (
     BehavioralRiskFact,
     FileBindingFact,
+    OperationSequenceFact,
     RecordFieldFact,
+    RecordLayoutFact,
     RecordLayoutRelationFact,
     canonicalize_picture,
 )
@@ -1632,3 +1634,238 @@ def test_h7_3_runtime_version_mismatch_real_child_negative_tests(monkeypatch):
             rc = runner_mod.execute_internal_child(args)
             assert rc != 0, f"Expected non-zero return code for mismatched {field}, got {rc}"
             assert provider_calls == 0, f"Provider called during failed child preflight for {field}"
+
+
+def _make_synth_bundle(source_code: str, filename: str = "TEST.CBL") -> MultiSourceBundle:
+    lines = source_code.splitlines()
+    numbered = "\n".join(f"{idx + 1:06d} {line}" for idx, line in enumerate(lines))
+    tf = TargetFile(
+        relative_path=filename,
+        file_type="COBOL",
+        raw_content=source_code,
+        numbered_content=numbered,
+        sha256=hashlib.sha256(source_code.encode("utf-8")).hexdigest(),
+        line_count=len(lines),
+    )
+    return MultiSourceBundle(
+        files={filename: tf},
+        total_physical_lines=tf.line_count,
+        bundle_sha256="synth",
+        formatted_prompt_payload="synth",
+    )
+
+
+def test_h7_3_1_level_88_unsupported_value_syntax_fail_closed() -> None:
+    """F1: Ensure supported level-88 values pass cleanly and unsupported syntax fails closed."""
+    # 1. Supported simple literal: single value
+    src_simple = """       IDENTIFICATION DIVISION.
+       PROGRAM-ID. T88SIMPLE.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 WS-REC.
+          05 WS-STATUS PIC X(1).
+             88 STATUS-ACTIVE VALUE 'A'.
+"""
+    p1 = SystemCobolParser(_make_synth_bundle(src_simple))
+    cert1 = p1.parse_system()
+    assert cert1.unsupported_relevant_count == 0
+    assert cert1.is_evaluation_blocked is False
+    rec_facts1 = [f.fact for f in p1.supported_facts if isinstance(f.fact, RecordLayoutFact)]
+    assert len(rec_facts1) == 1
+    cond_fields1 = [f for f in rec_facts1[0].fields if f.field_kind == "CONDITION_NAME"]
+    assert len(cond_fields1) == 1
+    assert cond_fields1[0].name == "STATUS-ACTIVE"
+    assert cond_fields1[0].condition_values == ("A",)
+
+    # 2. Supported simple multi-value literal list
+    src_multi = """       IDENTIFICATION DIVISION.
+       PROGRAM-ID. T88MULTI.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 WS-REC.
+          05 WS-STATUS PIC X(1).
+             88 STATUS-VALID VALUES 'A' 'B' 'C'.
+"""
+    p2 = SystemCobolParser(_make_synth_bundle(src_multi))
+    cert2 = p2.parse_system()
+    assert cert2.unsupported_relevant_count == 0
+    assert cert2.is_evaluation_blocked is False
+    rec_facts2 = [f.fact for f in p2.supported_facts if isinstance(f.fact, RecordLayoutFact)]
+    assert len(rec_facts2) == 1
+    cond_fields2 = [f for f in rec_facts2[0].fields if f.field_kind == "CONDITION_NAME"]
+    assert len(cond_fields2) == 1
+    assert cond_fields2[0].name == "STATUS-VALID"
+    assert cond_fields2[0].condition_values == ("A", "B", "C")
+
+    # 3. Unsupported range with THRU -> fail closed
+    src_thru = """       IDENTIFICATION DIVISION.
+       PROGRAM-ID. T88THRU.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 WS-REC.
+          05 WS-STATUS PIC X(1).
+             88 STATUS-RANGE VALUE 'A' THRU 'Z'.
+"""
+    p3 = SystemCobolParser(_make_synth_bundle(src_thru))
+    cert3 = p3.parse_system()
+    assert cert3.unsupported_relevant_count == 1
+    assert cert3.is_evaluation_blocked is True
+    rec_facts3 = [f.fact for f in p3.supported_facts if isinstance(f.fact, RecordLayoutFact)]
+    cond_fields3 = [f for f in rec_facts3[0].fields if f.field_kind == "CONDITION_NAME"]
+    assert len(cond_fields3) == 0, "Unsupported THRU range must not emit approximated fact"
+
+    # 4. Unsupported range with THROUGH -> fail closed
+    src_through = """       IDENTIFICATION DIVISION.
+       PROGRAM-ID. T88THROUGH.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 WS-REC.
+          05 WS-STATUS PIC X(1).
+             88 STATUS-RANGE VALUE 'A' THROUGH 'Z'.
+"""
+    p4 = SystemCobolParser(_make_synth_bundle(src_through))
+    cert4 = p4.parse_system()
+    assert cert4.unsupported_relevant_count == 1
+    assert cert4.is_evaluation_blocked is True
+    rec_facts4 = [f.fact for f in p4.supported_facts if isinstance(f.fact, RecordLayoutFact)]
+    cond_fields4 = [f for f in rec_facts4[0].fields if f.field_kind == "CONDITION_NAME"]
+    assert len(cond_fields4) == 0, "Unsupported THROUGH range must not emit approximated fact"
+
+    # 5. Unsupported logical OR separator -> fail closed
+    src_or = """       IDENTIFICATION DIVISION.
+       PROGRAM-ID. T88OR.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 WS-REC.
+          05 WS-STATUS PIC X(1).
+             88 STATUS-OR VALUE 'A' OR 'B'.
+"""
+    p5 = SystemCobolParser(_make_synth_bundle(src_or))
+    cert5 = p5.parse_system()
+    assert cert5.unsupported_relevant_count == 1
+    assert cert5.is_evaluation_blocked is True
+    rec_facts5 = [f.fact for f in p5.supported_facts if isinstance(f.fact, RecordLayoutFact)]
+    cond_fields5 = [f for f in rec_facts5[0].fields if f.field_kind == "CONDITION_NAME"]
+    assert len(cond_fields5) == 0, "Unsupported OR syntax must not emit approximated fact"
+
+    # 6. Unsupported escaped / interior quoting -> fail closed
+    src_escaped = """       IDENTIFICATION DIVISION.
+       PROGRAM-ID. T88ESC.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 WS-REC.
+          05 WS-NAME PIC X(20).
+             88 NAME-VAL VALUE 'O''REILLY'.
+"""
+    p6 = SystemCobolParser(_make_synth_bundle(src_escaped))
+    cert6 = p6.parse_system()
+    assert cert6.unsupported_relevant_count == 1
+    assert cert6.is_evaluation_blocked is True
+    rec_facts6 = [f.fact for f in p6.supported_facts if isinstance(f.fact, RecordLayoutFact)]
+    cond_fields6 = [f for f in rec_facts6[0].fields if f.field_kind == "CONDITION_NAME"]
+    assert len(cond_fields6) == 0, "Unsupported interior quoting must not emit approximated fact"
+
+
+def test_h7_3_1_unsupported_external_command_sequences_fail_closed() -> None:
+    """F2: Ensure supported DELETE->RENAME passes and unsupported sequences fail closed."""
+    # 1. Supported sequence: DELETE -> RENAME
+    src_del_ren = """       IDENTIFICATION DIVISION.
+       PROGRAM-ID. SEQDELREN.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 WS-CMD PIC X(100).
+       PROCEDURE DIVISION.
+           MOVE "cmd /c del ACCOUNTS.DAT" TO WS-CMD.
+           CALL "SYSTEM" USING WS-CMD.
+           MOVE "cmd /c ren ACCOUNTS.TMP ACCOUNTS.DAT" TO WS-CMD.
+           CALL "SYSTEM" USING WS-CMD.
+           STOP RUN.
+"""
+    p1 = SystemCobolParser(_make_synth_bundle(src_del_ren))
+    cert1 = p1.parse_system()
+    assert cert1.unsupported_relevant_count == 0
+    assert cert1.is_evaluation_blocked is False
+    seq_facts1 = [f.fact for f in p1.supported_facts if isinstance(f.fact, OperationSequenceFact)]
+    assert len(seq_facts1) == 1
+    assert seq_facts1[0].first_operation == "DELETE"
+    assert seq_facts1[0].second_operation == "RENAME"
+
+    # 2. Unsupported sequence: RENAME -> DELETE
+    src_ren_del = """       IDENTIFICATION DIVISION.
+       PROGRAM-ID. SEQRENDEL.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 WS-CMD PIC X(100).
+       PROCEDURE DIVISION.
+           MOVE "cmd /c ren ACCOUNTS.TMP ACCOUNTS.DAT" TO WS-CMD.
+           CALL "SYSTEM" USING WS-CMD.
+           MOVE "cmd /c del ACCOUNTS.DAT" TO WS-CMD.
+           CALL "SYSTEM" USING WS-CMD.
+           STOP RUN.
+"""
+    p2 = SystemCobolParser(_make_synth_bundle(src_ren_del))
+    cert2 = p2.parse_system()
+    assert cert2.unsupported_relevant_count > 0, "RENAME -> DELETE must fail closed in coverage"
+    assert cert2.is_evaluation_blocked is True
+    seq_facts2 = [f.fact for f in p2.supported_facts if isinstance(f.fact, OperationSequenceFact)]
+    assert len(seq_facts2) == 0, "No OperationSequenceFact should be emitted for unsupported shape"
+
+    # 3. Unsupported sequence: DELETE -> DELETE
+    src_del_del = """       IDENTIFICATION DIVISION.
+       PROGRAM-ID. SEQDELDEL.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 WS-CMD PIC X(100).
+       PROCEDURE DIVISION.
+           MOVE "cmd /c del ACCOUNTS.DAT" TO WS-CMD.
+           CALL "SYSTEM" USING WS-CMD.
+           MOVE "cmd /c del ACCOUNTS.BAK" TO WS-CMD.
+           CALL "SYSTEM" USING WS-CMD.
+           STOP RUN.
+"""
+    p3 = SystemCobolParser(_make_synth_bundle(src_del_del))
+    cert3 = p3.parse_system()
+    assert cert3.unsupported_relevant_count > 0, "DELETE -> DELETE must fail closed in coverage"
+    assert cert3.is_evaluation_blocked is True
+    seq_facts3 = [f.fact for f in p3.supported_facts if isinstance(f.fact, OperationSequenceFact)]
+    assert len(seq_facts3) == 0
+
+    # 4. Unsupported sequence: RENAME -> RENAME
+    src_ren_ren = """       IDENTIFICATION DIVISION.
+       PROGRAM-ID. SEQRENREN.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 WS-CMD PIC X(100).
+       PROCEDURE DIVISION.
+           MOVE "cmd /c ren ACCOUNTS.TMP ACCOUNTS.DAT" TO WS-CMD.
+           CALL "SYSTEM" USING WS-CMD.
+           MOVE "cmd /c ren ACCOUNTS.DAT ACCOUNTS.BAK" TO WS-CMD.
+           CALL "SYSTEM" USING WS-CMD.
+           STOP RUN.
+"""
+    p4 = SystemCobolParser(_make_synth_bundle(src_ren_ren))
+    cert4 = p4.parse_system()
+    assert cert4.unsupported_relevant_count > 0, "RENAME -> RENAME must fail closed in coverage"
+    assert cert4.is_evaluation_blocked is True
+    seq_facts4 = [f.fact for f in p4.supported_facts if isinstance(f.fact, OperationSequenceFact)]
+    assert len(seq_facts4) == 0
+
+    # 5. Unsupported command: COPY -> RENAME
+    src_copy_ren = """       IDENTIFICATION DIVISION.
+       PROGRAM-ID. SEQCOPYREN.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 WS-CMD PIC X(100).
+       PROCEDURE DIVISION.
+           MOVE "cmd /c copy ACCOUNTS.TMP ACCOUNTS.DAT" TO WS-CMD.
+           CALL "SYSTEM" USING WS-CMD.
+           MOVE "cmd /c ren ACCOUNTS.TMP ACCOUNTS.DAT" TO WS-CMD.
+           CALL "SYSTEM" USING WS-CMD.
+           STOP RUN.
+"""
+    p5 = SystemCobolParser(_make_synth_bundle(src_copy_ren))
+    cert5 = p5.parse_system()
+    assert cert5.unsupported_relevant_count > 0, "COPY -> RENAME must fail closed in coverage"
+    assert cert5.is_evaluation_blocked is True
+    seq_facts5 = [f.fact for f in p5.supported_facts if isinstance(f.fact, OperationSequenceFact)]
+    assert len(seq_facts5) == 0
