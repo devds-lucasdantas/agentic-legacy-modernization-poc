@@ -294,33 +294,53 @@ def is_cobol_structural_boundary(line: str) -> bool:
     return False
 
 
-PROCEDURAL_CONTROL_FLOW_BARRIERS = {
-    "IF",
-    "ELSE",
-    "END-IF",
-    "EVALUATE",
-    "WHEN",
-    "END-EVALUATE",
-    "PERFORM",
-    "END-PERFORM",
-    "GO",
-    "GOTO",
-    "STOP",
-    "GOBACK",
-    "DISPLAY",
-    "ACCEPT",
-    "READ",
-    "WRITE",
-    "OPEN",
-    "CLOSE",
-    "ADD",
-    "SUBTRACT",
-    "COMPUTE",
-    "MULTIPLY",
-    "DIVIDE",
-    "EXIT",
-    "SECTION",
-}
+PROCEDURAL_KEYWORD_VOCABULARY: frozenset[str] = frozenset(
+    {
+        "CALL",
+        "MOVE",
+        "IF",
+        "ELSE",
+        "END-IF",
+        "EVALUATE",
+        "WHEN",
+        "END-EVALUATE",
+        "PERFORM",
+        "END-PERFORM",
+        "GO",
+        "GOTO",
+        "STOP",
+        "GOBACK",
+        "DISPLAY",
+        "ACCEPT",
+        "READ",
+        "WRITE",
+        "OPEN",
+        "CLOSE",
+        "ADD",
+        "SUBTRACT",
+        "COMPUTE",
+        "MULTIPLY",
+        "DIVIDE",
+        "EXIT",
+        "SECTION",
+    }
+)
+
+PROCEDURAL_STATEMENT_STARTERS: frozenset[str] = frozenset(
+    k for k in PROCEDURAL_KEYWORD_VOCABULARY if k != "SECTION"
+)
+
+PROCEDURAL_CONTROL_FLOW_BARRIERS: frozenset[str] = PROCEDURAL_KEYWORD_VOCABULARY
+
+
+def is_unquoted_procedural_starter(tok: str) -> bool:
+    """Check if an unquoted token is an exact procedural statement starter.
+
+    Quoted literals and hyphenated identifiers (e.g. ELSE-FLAG) return False.
+    """
+    if (tok.startswith("'") and tok.endswith("'")) or (tok.startswith('"') and tok.endswith('"')):
+        return False
+    return tok.upper().rstrip(".") in PROCEDURAL_STATEMENT_STARTERS
 
 
 def is_unquoted_barrier(tok: str) -> bool:
@@ -328,6 +348,45 @@ def is_unquoted_barrier(tok: str) -> bool:
     if (tok.startswith("'") and tok.endswith("'")) or (tok.startswith('"') and tok.endswith('"')):
         return False
     return tok.upper().rstrip(".") in PROCEDURAL_CONTROL_FLOW_BARRIERS
+
+
+def consume_optional_terminal_period(tokens: list[str]) -> tuple[bool, list[str]]:
+    """Consume single terminal period token from procedural tokens.
+
+    Returns (True, clean_tokens) if valid: exactly 0 or 1 terminal period, and zero
+    interior period tokens.
+    Returns (False, tokens) if period occurs at an interior position (e.g. CALL . TARGET)
+    or if multiple periods occur.
+    Numeric literals (e.g. 100.50) and quoted literals (e.g. 'file.name') are preserved.
+    """
+    if not tokens:
+        return True, []
+
+    clean = list(tokens)
+    # 1. Pop standalone terminal period token if present
+    if clean and clean[-1] == ".":
+        clean.pop()
+    elif (
+        clean
+        and clean[-1].endswith(".")
+        and not (
+            (clean[-1].startswith("'") and clean[-1].endswith("'"))
+            or (clean[-1].startswith('"') and clean[-1].endswith('"'))
+        )
+    ):
+        val = clean[-1]
+        if not re.match(r"^[+-]?[0-9]+\.[0-9]+$", val):
+            clean[-1] = val[:-1]
+
+    # 2. Verify no unquoted interior period exists in clean tokens
+    for t in clean:
+        if t == ".":
+            return False, tokens
+        if not ((t.startswith("'") and t.endswith("'")) or (t.startswith('"') and t.endswith('"'))):
+            if "." in t and not re.match(r"^[+-]?[0-9]+\.[0-9]+$", t):
+                return False, tokens
+
+    return True, clean
 
 
 def has_procedural_barrier_between(
@@ -418,51 +477,169 @@ def parse_cobol_picture(pic: str | None) -> tuple[int, int]:
     return (int_len + dec_len, dec_len)
 
 
-def classify_command_operation(cmd_text: str) -> tuple[str, str | None, str | None]:
-    """Classify a shell/system command generically into:
-    (operation_kind, source_resource, target_resource).
+@dataclass(frozen=True)
+class MutationCommandResult:
+    status: str  # "NOT_MUTATION", "MUTATION_PARSED", "MUTATION_UNSUPPORTED"
+    operation: str | None = None  # "DELETE", "RENAME", "COPY"
+    source_operand: str | None = None
+    target_operand: str | None = None
+    reason: str | None = None
 
-    Unnests shell wrappers (e.g. 'cmd /c', '/bin/sh -c', 'sh -c', 'bash -c').
-    Recognizes operations:
-    - DELETE: target is file being deleted
-    - RENAME: source is old file, target is new file
-    - COPY: source is from file, target is to file
-    - MOVE: source is old location, target is new location
-    - EXECUTE: fallback
+
+def tokenize_windows_mutation_operands(text: str) -> tuple[bool, list[str]]:
+    """Tokenize Windows mutation command operands.
+
+    Supports unquoted operands and double-quote grouped operands ("...").
+    Does NOT treat single quotes as Windows grouping quotes.
+    Returns (True, operands) on success.
+    Returns (False, []) on malformed quoting or invalid syntax.
+    """
+    operands: list[str] = []
+    i = 0
+    n = len(text)
+    while i < n:
+        while i < n and text[i].isspace():
+            i += 1
+        if i >= n:
+            break
+        char = text[i]
+        if char == '"':
+            # Double-quoted grouped operand
+            start = i
+            i += 1
+            while i < n and text[i] != '"':
+                i += 1
+            if i >= n:
+                # Unclosed double quote
+                return False, []
+            # Closing double quote at i
+            i += 1
+            # Check trailing character after closing quote
+            if i < n and not text[i].isspace():
+                # Attached unseparated characters, e.g. "file"xyz
+                return False, []
+            raw = text[start:i]
+            semantic = raw[1:-1]
+            if not semantic:
+                # Empty filename operand
+                return False, []
+            operands.append(semantic)
+        elif char == "'":
+            # Single quote in Windows cmd is not grouping syntax;
+            # Reject as unsupported mutation operand syntax
+            return False, []
+        else:
+            # Unquoted operand
+            start = i
+            while i < n and not text[i].isspace():
+                if text[i] in ('"', "'"):
+                    # Stray quote inside word
+                    return False, []
+                i += 1
+            raw = text[start:i]
+            operands.append(raw)
+    return True, operands
+
+
+def classify_mutation_command(cmd_text: str) -> MutationCommandResult:
+    """Classify a shell command for mutation sequence and risk analysis.
+
+    Returns:
+    - NOT_MUTATION: command does not enter the mutation verb family (e.g. echo, dir).
+    - MUTATION_PARSED: command successfully tokenized into deterministic operation and operands.
+    - MUTATION_UNSUPPORTED: command belongs to mutation family but has malformed/unsupported syntax.
     """
     clean = cmd_text.strip()
-    unwrapped = re.sub(
+    m_wrap = re.match(
         r"^(?:cmd(?:\.exe)?\s+/c|/(?:usr/)?bin/(?:ba)?sh\s+-c|(?:ba)?sh\s+-c)\s+",
-        "",
         clean,
         flags=re.IGNORECASE,
-    ).strip()
+    )
+    if m_wrap:
+        unwrapped = clean[m_wrap.end() :].strip()
+    else:
+        unwrapped = clean
 
-    tokens = unwrapped.split()
-    if not tokens:
-        return ("EXECUTE", None, None)
+    words = unwrapped.split()
+    if not words:
+        return MutationCommandResult(status="NOT_MUTATION")
 
-    def _unquote_shell_arg(arg: str) -> str:
-        if (arg.startswith('"') and arg.endswith('"') and len(arg) >= 2) or (
-            arg.startswith("'") and arg.endswith("'") and len(arg) >= 2
-        ):
-            return arg[1:-1]
-        return arg
+    verb = words[0].lower()
+    mutation_verbs = {
+        "del": "DELETE",
+        "delete": "DELETE",
+        "erase": "DELETE",
+        "rm": "DELETE",
+        "ren": "RENAME",
+        "rename": "RENAME",
+        "mv": "RENAME",
+        "move": "RENAME",
+        "copy": "COPY",
+        "cp": "COPY",
+    }
+    if verb not in mutation_verbs:
+        return MutationCommandResult(status="NOT_MUTATION")
 
-    verb = tokens[0].lower()
-    args = tokens[1:]
+    op_type = mutation_verbs[verb]
+    rem_text = unwrapped[len(words[0]) :].strip()
 
-    if verb in ("del", "delete", "erase", "rm"):
-        target = _unquote_shell_arg(args[0]) if args else None
-        return ("DELETE", None, target)
-    elif verb in ("ren", "rename", "mv", "move"):
-        source = _unquote_shell_arg(args[0]) if len(args) > 0 else None
-        target = _unquote_shell_arg(args[1]) if len(args) > 1 else None
-        return ("RENAME", source, target)
-    elif verb in ("copy", "cp"):
-        source = _unquote_shell_arg(args[0]) if len(args) > 0 else None
-        target = _unquote_shell_arg(args[1]) if len(args) > 1 else None
-        return ("COPY", source, target)
+    valid, operands = tokenize_windows_mutation_operands(rem_text)
+    if not valid:
+        return MutationCommandResult(
+            status="MUTATION_UNSUPPORTED",
+            operation=op_type,
+            reason=f"Malformed or unsupported operand syntax for {op_type}",
+        )
+
+    if op_type == "DELETE":
+        if len(operands) != 1:
+            return MutationCommandResult(
+                status="MUTATION_UNSUPPORTED",
+                operation=op_type,
+                reason=f"DELETE expects exactly 1 operand, got {len(operands)}",
+            )
+        return MutationCommandResult(
+            status="MUTATION_PARSED",
+            operation="DELETE",
+            target_operand=operands[0],
+        )
+    elif op_type == "RENAME":
+        if len(operands) != 2:
+            return MutationCommandResult(
+                status="MUTATION_UNSUPPORTED",
+                operation=op_type,
+                reason=f"RENAME expects exactly 2 operands (source, target), got {len(operands)}",
+            )
+        return MutationCommandResult(
+            status="MUTATION_PARSED",
+            operation="RENAME",
+            source_operand=operands[0],
+            target_operand=operands[1],
+        )
+    elif op_type == "COPY":
+        if len(operands) != 2:
+            return MutationCommandResult(
+                status="MUTATION_UNSUPPORTED",
+                operation=op_type,
+                reason=f"COPY expects exactly 2 operands (source, target), got {len(operands)}",
+            )
+        return MutationCommandResult(
+            status="MUTATION_PARSED",
+            operation="COPY",
+            source_operand=operands[0],
+            target_operand=operands[1],
+        )
+
+    return MutationCommandResult(status="NOT_MUTATION")
+
+
+def classify_command_operation(cmd_text: str) -> tuple[str, str | None, str | None]:
+    """Backwards-compatible wrapper around classify_mutation_command."""
+    res = classify_mutation_command(cmd_text)
+    if res.status == "MUTATION_PARSED":
+        return (res.operation or "EXECUTE", res.source_operand, res.target_operand)
+    elif res.status == "MUTATION_UNSUPPORTED":
+        return ("MALFORMED_MUTATION", None, None)
     else:
         return ("EXECUTE", None, None)
 
@@ -624,6 +801,7 @@ class SystemCobolParser:
         n = len(lines)
         current_record: ASTRecordDeclaration | None = None
         current_fd: str | None = None
+        in_procedure_division = False
 
         while i < n:
             raw_line = lines[i]
@@ -638,12 +816,34 @@ class SystemCobolParser:
                 i += 1
                 continue
 
-            tokens = [t for t in tokenize_cobol_line(raw_line) if t != "."]
-            if not tokens:
-                i += 1
-                continue
-
-            first = tokens[0].upper()
+            if not in_procedure_division:
+                tokens = [t for t in tokenize_cobol_line(raw_line) if t != "."]
+                if not tokens:
+                    i += 1
+                    continue
+                first = tokens[0].upper()
+            else:
+                raw_tokens = tokenize_cobol_line(raw_line)
+                valid_period, procedural_tokens = consume_optional_terminal_period(raw_tokens)
+                if not valid_period:
+                    self.statements.append(
+                        ClassifiedStatement(
+                            target_file.relative_path,
+                            line_num,
+                            line_num,
+                            raw_tokens[0] if raw_tokens else "UNKNOWN",
+                            raw_line,
+                            StatementClassification.UNSUPPORTED_RELEVANT,
+                            "Invalid period placement or interior period in procedural statement",
+                        )
+                    )
+                    i += 1
+                    continue
+                if not procedural_tokens:
+                    i += 1
+                    continue
+                tokens = procedural_tokens
+                first = tokens[0].upper()
 
             # IDENTIFICATION DIVISION
             if (
@@ -1094,6 +1294,7 @@ class SystemCobolParser:
 
             # PROCEDURE DIVISION / PARAGRAPHS
             if first == "PROCEDURE" and len(tokens) > 1 and tokens[1].upper().startswith("DIV"):
+                in_procedure_division = True
                 self.statements.append(
                     ClassifiedStatement(
                         target_file.relative_path,
@@ -1103,6 +1304,21 @@ class SystemCobolParser:
                         raw_line,
                         StatementClassification.RECOGNIZED_BUT_UNSCORED,
                         "Procedure division header",
+                    )
+                )
+                i += 1
+                continue
+
+            if len(tokens) == 2 and tokens[1].upper() == "SECTION":
+                self.statements.append(
+                    ClassifiedStatement(
+                        target_file.relative_path,
+                        line_num,
+                        line_num,
+                        "SECTION_HEADER",
+                        raw_line,
+                        StatementClassification.RECOGNIZED_BUT_UNSCORED,
+                        "Section header",
                     )
                 )
                 i += 1
@@ -1130,84 +1346,69 @@ class SystemCobolParser:
 
             # PROCEDURAL VERBS
             if first == "CALL":
-                tokens_clean = list(tokens)
-                if tokens_clean and tokens_clean[-1] == ".":
-                    tokens_clean = tokens_clean[:-1]
-                elif tokens_clean and tokens_clean[-1].endswith("."):
-                    tokens_clean[-1] = tokens_clean[-1][:-1]
-
-                if len(tokens_clean) < 2:
-                    self.statements.append(
-                        ClassifiedStatement(
-                            target_file.relative_path,
-                            line_num,
-                            line_num,
-                            "CALL",
-                            raw_line,
-                            StatementClassification.UNSUPPORTED_RELEVANT,
-                            "Missing target in CALL statement",
-                        )
-                    )
-                    i += 1
-                    continue
-
-                raw_target = tokens_clean[1]
-
-                # Same-line barrier detection across tokens
-                has_same_line_barrier = any(
-                    is_unquoted_barrier(t) for t in tokens_clean[2:]
-                ) or is_unquoted_barrier(raw_target)
-
-                # Target validation
-                is_quote_like = (
-                    raw_target.startswith("'")
-                    or raw_target.startswith('"')
-                    or "'" in raw_target
-                    or '"' in raw_target
-                )
-                target_valid = False
-                is_lit = False
+                call_valid = True
                 target_str = ""
-
-                if is_quote_like:
-                    quote_char = raw_target[0] if raw_target[0] in ("'", '"') else None
-                    if (
-                        quote_char
-                        and raw_target.endswith(quote_char)
-                        and len(raw_target) >= 2
-                        and "\\" not in raw_target
-                    ):
-                        content = raw_target[1:-1]
-                        if quote_char not in content and len(content) > 0:
-                            target_valid = True
-                            is_lit = True
-                            target_str = content
-                else:
-                    # Dynamic target: canonical COBOL identifier
-                    if re.match(r"^[A-Za-z0-9]+(-[A-Za-z0-9]+)*$", raw_target):
-                        target_valid = True
-                        is_lit = False
-                        target_str = raw_target
-
-                # Arguments parsing (CALL target [USING arg1 ...])
-                using_valid = True
+                is_lit = False
                 using_list: list[str] = []
-                if len(tokens_clean) > 2:
-                    if tokens_clean[2].upper() != "USING":
-                        using_valid = False
-                    else:
-                        args = tokens_clean[3:]
-                        if not args:
-                            using_valid = False
-                        else:
-                            for a in args:
-                                if not re.match(r"^[A-Za-z0-9]+(-[A-Za-z0-9]+)*$", a):
-                                    using_valid = False
-                                    break
-                            if using_valid and not has_same_line_barrier:
-                                using_list = list(args)
 
-                if not target_valid or not using_valid or has_same_line_barrier:
+                if len(tokens) not in (2, 4):
+                    call_valid = False
+                elif len(tokens) == 4 and tokens[2].upper() != "USING":
+                    call_valid = False
+                else:
+                    raw_target = tokens[1]
+                    is_quote_like = (
+                        raw_target.startswith("'")
+                        or raw_target.startswith('"')
+                        or "'" in raw_target
+                        or '"' in raw_target
+                    )
+                    if is_quote_like:
+                        quote_char = raw_target[0] if raw_target[0] in ("'", '"') else None
+                        if (
+                            quote_char
+                            and raw_target.endswith(quote_char)
+                            and len(raw_target) >= 2
+                            and "\\" not in raw_target
+                        ):
+                            content = raw_target[1:-1]
+                            if (
+                                quote_char not in content
+                                and content
+                                and content == content.upper()
+                                and content == content.strip()
+                                and re.match(r"^[A-Z0-9]+(-[A-Z0-9]+)*$", content)
+                            ):
+                                target_str = content
+                                is_lit = True
+                            else:
+                                call_valid = False
+                        else:
+                            call_valid = False
+                    else:
+                        # Dynamic target
+                        if (
+                            raw_target == raw_target.upper()
+                            and re.match(r"^[A-Z0-9]+(-[A-Z0-9]+)*$", raw_target)
+                            and not is_unquoted_procedural_starter(raw_target)
+                        ):
+                            target_str = raw_target
+                            is_lit = False
+                        else:
+                            call_valid = False
+
+                    if call_valid and len(tokens) == 4:
+                        arg = tokens[3]
+                        if (
+                            arg == arg.upper()
+                            and re.match(r"^[A-Z0-9]+(-[A-Z0-9]+)*$", arg)
+                            and not is_unquoted_procedural_starter(arg)
+                        ):
+                            using_list = [arg]
+                        else:
+                            call_valid = False
+
+                if not call_valid:
                     self.statements.append(
                         ClassifiedStatement(
                             target_file.relative_path,
@@ -1216,7 +1417,7 @@ class SystemCobolParser:
                             "CALL",
                             raw_line,
                             StatementClassification.UNSUPPORTED_RELEVANT,
-                            "Unsupported CALL target, operands, or same-line control-flow barrier",
+                            "Unsupported CALL target, operands, or unconsumed tokens",
                         )
                     )
                     i += 1
@@ -1246,101 +1447,78 @@ class SystemCobolParser:
                 continue
 
             if first == "MOVE":
-                tokens_clean = list(tokens)
-                if tokens_clean and tokens_clean[-1] == ".":
-                    tokens_clean = tokens_clean[:-1]
-                elif tokens_clean and tokens_clean[-1].endswith("."):
-                    tokens_clean[-1] = tokens_clean[-1][:-1]
-
-                # Check same-line barrier tokens
-                has_same_line_barrier = any(is_unquoted_barrier(t) for t in tokens_clean[1:])
-
-                # Locate TO
-                to_indices = [
-                    idx
-                    for idx, t in enumerate(tokens_clean)
-                    if t.upper() == "TO"
-                    and not (
-                        (t.startswith("'") and t.endswith("'"))
-                        or (t.startswith('"') and t.endswith('"'))
-                    )
-                ]
-
                 move_valid = True
                 src_val = ""
                 dest_val = ""
                 is_lit_src = False
 
-                if len(to_indices) != 1 or to_indices[0] <= 1:
+                if len(tokens) != 4 or tokens[2].upper() != "TO":
                     move_valid = False
                 else:
-                    to_idx = to_indices[0]
-                    src_tokens = tokens_clean[1:to_idx]
-                    dest_tokens = tokens_clean[to_idx + 1 :]
+                    src_raw = tokens[1]
+                    dest_raw = tokens[3]
 
-                    if len(src_tokens) != 1 or len(dest_tokens) != 1:
-                        move_valid = False
+                    if (
+                        dest_raw == dest_raw.upper()
+                        and re.match(r"^[A-Z0-9]+(-[A-Z0-9]+)*$", dest_raw)
+                        and not is_unquoted_procedural_starter(dest_raw)
+                    ):
+                        dest_val = dest_raw
                     else:
-                        src_raw = src_tokens[0]
-                        dest_raw = dest_tokens[0]
+                        move_valid = False
 
-                        # Validate target operand
-                        if not re.match(r"^[A-Za-z0-9]+(-[A-Za-z0-9]+)*$", dest_raw):
-                            move_valid = False
-                        else:
-                            dest_val = dest_raw
-
-                        # Validate source operand
-                        is_quote_like = (
-                            src_raw.startswith("'")
-                            or src_raw.startswith('"')
-                            or "'" in src_raw
-                            or '"' in src_raw
-                        )
-                        if is_quote_like:
-                            if (
-                                src_raw[0] in ("'", '"')
-                                and src_raw.endswith(src_raw[0])
-                                and len(src_raw) >= 2
-                                and "\\" not in src_raw
-                            ):
-                                quote_char = src_raw[0]
-                                content = src_raw[1:-1]
-                                if quote_char not in content:
-                                    is_lit_src = True
-                                    src_val = src_raw
-                                else:
-                                    move_valid = False
-                            else:
-                                move_valid = False
-                        else:
-                            # Non-literal: identifier, number, or figurative constant
-                            figurative = {
-                                "ZERO",
-                                "ZEROS",
-                                "ZEROES",
-                                "SPACE",
-                                "SPACES",
-                                "HIGH-VALUE",
-                                "HIGH-VALUES",
-                                "LOW-VALUE",
-                                "LOW-VALUES",
-                                "QUOTE",
-                                "QUOTES",
-                                "NULL",
-                                "NULLS",
-                            }
-                            if (
-                                src_raw.upper() in figurative
-                                or re.match(r"^[+-]?[0-9]+(\.[0-9]+)?$", src_raw)
-                                or re.match(r"^[A-Za-z0-9]+(-[A-Za-z0-9]+)*$", src_raw)
-                            ):
-                                is_lit_src = False
+                    is_quote_like = (
+                        src_raw.startswith("'")
+                        or src_raw.startswith('"')
+                        or "'" in src_raw
+                        or '"' in src_raw
+                    )
+                    if is_quote_like:
+                        if (
+                            src_raw[0] in ("'", '"')
+                            and src_raw.endswith(src_raw[0])
+                            and len(src_raw) >= 2
+                            and "\\" not in src_raw
+                        ):
+                            quote_char = src_raw[0]
+                            content = src_raw[1:-1]
+                            if quote_char not in content:
+                                is_lit_src = True
                                 src_val = src_raw
                             else:
                                 move_valid = False
+                        else:
+                            move_valid = False
+                    else:
+                        figurative = {
+                            "ZERO",
+                            "ZEROS",
+                            "ZEROES",
+                            "SPACE",
+                            "SPACES",
+                            "HIGH-VALUE",
+                            "HIGH-VALUES",
+                            "LOW-VALUE",
+                            "LOW-VALUES",
+                            "QUOTE",
+                            "QUOTES",
+                            "NULL",
+                            "NULLS",
+                        }
+                        if (
+                            src_raw.upper() in figurative
+                            or re.match(r"^[+-]?[0-9]+(\.[0-9]+)?$", src_raw)
+                            or (
+                                re.match(r"^[A-Z0-9]+(-[A-Z0-9]+)*$", src_raw.upper())
+                                and not is_unquoted_procedural_starter(src_raw)
+                            )
+                        ):
+                            is_lit_src = False
+                            src_val = src_raw
+                        else:
+                            move_valid = False
 
-                if not move_valid or has_same_line_barrier:
+                if not move_valid:
                     self.statements.append(
                         ClassifiedStatement(
                             target_file.relative_path,
@@ -1349,7 +1527,7 @@ class SystemCobolParser:
                             "MOVE",
                             raw_line,
                             StatementClassification.UNSUPPORTED_RELEVANT,
-                            "Unsupported MOVE syntax, literal, operands, or same-line barrier",
+                            "Unsupported MOVE syntax, literal, operands, or unconsumed tokens",
                         )
                     )
                     i += 1
@@ -1378,29 +1556,92 @@ class SystemCobolParser:
                 i += 1
                 continue
 
-            if first in ("OPEN", "READ", "WRITE", "CLOSE"):
-                mode = None
+            if first == "OPEN":
+                open_valid = True
+                mode = "IO"
                 target_f = ""
-                if first == "OPEN":
-                    mode_token = tokens[1].upper() if len(tokens) > 1 else "I-O"
-                    if mode_token in ("I-O", "IO"):
-                        mode = "IO"
-                    elif mode_token in ("INPUT", "OUTPUT", "EXTEND"):
-                        mode = mode_token
+                if len(tokens) != 3:
+                    open_valid = False
+                else:
+                    mode_tok = tokens[1].upper()
+                    if mode_tok in ("INPUT", "OUTPUT", "I-O", "IO", "EXTEND"):
+                        mode = "IO" if mode_tok in ("I-O", "IO") else mode_tok
                     else:
-                        mode = mode_token
-                    target_f = tokens[2].rstrip(".") if len(tokens) > 2 else ""
-                elif first == "READ":
-                    target_f = tokens[1].rstrip(".") if len(tokens) > 1 else ""
-                elif first == "WRITE":
-                    target_f = tokens[1].rstrip(".") if len(tokens) > 1 else ""
-                elif first == "CLOSE":
-                    target_f = tokens[1].rstrip(".") if len(tokens) > 1 else ""
+                        open_valid = False
+                    target_f = tokens[2]
+                    if not re.match(
+                        r"^[A-Z0-9]+(-[A-Z0-9]+)*$", target_f.upper()
+                    ) or is_unquoted_procedural_starter(target_f):
+                        open_valid = False
+
+                if not open_valid:
+                    self.statements.append(
+                        ClassifiedStatement(
+                            target_file.relative_path,
+                            line_num,
+                            line_num,
+                            "OPEN",
+                            raw_line,
+                            StatementClassification.UNSUPPORTED_RELEVANT,
+                            "Unsupported OPEN syntax or unconsumed tokens",
+                        )
+                    )
+                    i += 1
+                    continue
+
+                fop_node = ASTFileOp(
+                    verb="OPEN",
+                    internal_file_name=target_f,
+                    access_mode=mode,
+                    line_start=line_num,
+                    line_end=line_num,
+                )
+                unit.statements.append(fop_node)
+                self.statements.append(
+                    ClassifiedStatement(
+                        target_file.relative_path,
+                        line_num,
+                        line_num,
+                        "OPEN",
+                        raw_line,
+                        StatementClassification.PARSED_AND_SCORED,
+                        "File OPEN statement",
+                    )
+                )
+                i += 1
+                continue
+
+            if first in ("READ", "WRITE", "CLOSE"):
+                fop_valid = True
+                target_f = ""
+                if len(tokens) != 2:
+                    fop_valid = False
+                else:
+                    target_f = tokens[1]
+                    if not re.match(
+                        r"^[A-Z0-9]+(-[A-Z0-9]+)*$", target_f.upper()
+                    ) or is_unquoted_procedural_starter(target_f):
+                        fop_valid = False
+
+                if not fop_valid:
+                    self.statements.append(
+                        ClassifiedStatement(
+                            target_file.relative_path,
+                            line_num,
+                            line_num,
+                            first,
+                            raw_line,
+                            StatementClassification.UNSUPPORTED_RELEVANT,
+                            f"Unsupported {first} syntax or unconsumed tokens",
+                        )
+                    )
+                    i += 1
+                    continue
 
                 fop_node = ASTFileOp(
                     verb=first,
                     internal_file_name=target_f,
-                    access_mode=mode,
+                    access_mode=None,
                     line_start=line_num,
                     line_end=line_num,
                 )
@@ -1432,10 +1673,47 @@ class SystemCobolParser:
                 ):
                     i += 1
                     full_text += " " + lines[i].strip()
-                    cur_toks.extend([t for t in tokenize_cobol_line(lines[i]) if t != "."])
+                    next_valid, next_toks = consume_optional_terminal_period(
+                        tokenize_cobol_line(lines[i])
+                    )
+                    if not next_valid:
+                        cur_toks = ["INVALID_PERIOD"]
+                        break
+                    cur_toks.extend(next_toks)
                 end_l = i + 1
-                op = cur_toks[1] if len(cur_toks) > 1 else ""
-                tgt = cur_toks[-1].rstrip(".") if len(cur_toks) > 2 else ""
+
+                arith_valid = True
+                op = ""
+                tgt = ""
+                if len(cur_toks) != 4:
+                    arith_valid = False
+                elif first == "ADD" and cur_toks[2].upper() != "TO":
+                    arith_valid = False
+                elif first == "SUBTRACT" and cur_toks[2].upper() != "FROM":
+                    arith_valid = False
+                else:
+                    op = cur_toks[1]
+                    tgt = cur_toks[3]
+                    if is_unquoted_procedural_starter(op) or is_unquoted_procedural_starter(tgt):
+                        arith_valid = False
+                    elif not re.match(r"^[A-Z0-9]+(-[A-Z0-9]+)*$", tgt.upper()):
+                        arith_valid = False
+
+                if not arith_valid:
+                    self.statements.append(
+                        ClassifiedStatement(
+                            target_file.relative_path,
+                            start_l,
+                            end_l,
+                            first,
+                            full_text,
+                            StatementClassification.UNSUPPORTED_RELEVANT,
+                            f"Unsupported {first} arithmetic syntax or unconsumed tokens",
+                        )
+                    )
+                    i += 1
+                    continue
+
                 arith_node = ASTArithmetic(
                     verb=first,
                     operand=op,
@@ -1458,8 +1736,76 @@ class SystemCobolParser:
                 i += 1
                 continue
 
+            if first in ("COMPUTE", "MULTIPLY", "DIVIDE"):
+                arith_valid = True
+                op = ""
+                tgt = ""
+                if any(is_unquoted_procedural_starter(t) for t in tokens[1:]):
+                    arith_valid = False
+                elif first == "COMPUTE":
+                    if len(tokens) >= 4 and tokens[2] == "=":
+                        tgt = tokens[1]
+                        op = " ".join(tokens[3:])
+                        if not re.match(r"^[A-Z0-9]+(-[A-Z0-9]+)*$", tgt.upper()):
+                            arith_valid = False
+                    else:
+                        arith_valid = False
+                elif first == "MULTIPLY":
+                    if len(tokens) == 4 and tokens[2].upper() == "BY":
+                        op = tokens[1]
+                        tgt = tokens[3]
+                        if not re.match(r"^[A-Z0-9]+(-[A-Z0-9]+)*$", tgt.upper()):
+                            arith_valid = False
+                    else:
+                        arith_valid = False
+                elif first == "DIVIDE":
+                    if len(tokens) == 4 and tokens[2].upper() == "INTO":
+                        op = tokens[1]
+                        tgt = tokens[3]
+                        if not re.match(r"^[A-Z0-9]+(-[A-Z0-9]+)*$", tgt.upper()):
+                            arith_valid = False
+                    else:
+                        arith_valid = False
+
+                if not arith_valid:
+                    self.statements.append(
+                        ClassifiedStatement(
+                            target_file.relative_path,
+                            line_num,
+                            line_num,
+                            first,
+                            raw_line,
+                            StatementClassification.UNSUPPORTED_RELEVANT,
+                            f"Unsupported or compound {first} statement",
+                        )
+                    )
+                    i += 1
+                    continue
+
+                arith_node = ASTArithmetic(
+                    verb=first,
+                    operand=op,
+                    target=tgt,
+                    line_start=line_num,
+                    line_end=line_num,
+                )
+                unit.statements.append(arith_node)
+                self.statements.append(
+                    ClassifiedStatement(
+                        target_file.relative_path,
+                        line_num,
+                        line_num,
+                        first,
+                        raw_line,
+                        StatementClassification.PARSED_AND_SCORED,
+                        f"Arithmetic {first} statement",
+                    )
+                )
+                i += 1
+                continue
+
             if first == "EXIT":
-                if len(tokens) > 1 and tokens[1].upper().startswith("PROGRAM"):
+                if len(tokens) == 2 and tokens[1].upper() == "PROGRAM":
                     term_verb = "EXIT_PROGRAM"
                     term_node = ASTTermination(
                         verb=term_verb,
@@ -1478,7 +1824,7 @@ class SystemCobolParser:
                             f"Run-unit {term_verb} termination",
                         )
                     )
-                else:
+                elif len(tokens) == 1:
                     self.statements.append(
                         ClassifiedStatement(
                             target_file.relative_path,
@@ -1490,13 +1836,50 @@ class SystemCobolParser:
                             "Common procedure end point EXIT statement",
                         )
                     )
+                else:
+                    self.statements.append(
+                        ClassifiedStatement(
+                            target_file.relative_path,
+                            line_num,
+                            line_num,
+                            "EXIT",
+                            raw_line,
+                            StatementClassification.UNSUPPORTED_RELEVANT,
+                            "Unsupported compound EXIT statement or unconsumed tokens",
+                        )
+                    )
                 i += 1
                 continue
 
-            if first == "GOBACK" or (
-                first == "STOP" and len(tokens) > 1 and tokens[1].upper().startswith("RUN")
-            ):
-                term_verb = "GOBACK" if first == "GOBACK" else "STOP_RUN"
+            if first in ("GOBACK", "STOP"):
+                term_valid = True
+                term_verb = ""
+                if first == "GOBACK":
+                    if len(tokens) != 1:
+                        term_valid = False
+                    else:
+                        term_verb = "GOBACK"
+                elif first == "STOP":
+                    if len(tokens) == 2 and tokens[1].upper() == "RUN":
+                        term_verb = "STOP_RUN"
+                    else:
+                        term_valid = False
+
+                if not term_valid:
+                    self.statements.append(
+                        ClassifiedStatement(
+                            target_file.relative_path,
+                            line_num,
+                            line_num,
+                            first,
+                            raw_line,
+                            StatementClassification.UNSUPPORTED_RELEVANT,
+                            f"Unsupported compound {first} statement or unconsumed tokens",
+                        )
+                    )
+                    i += 1
+                    continue
+
                 term_node = ASTTermination(
                     verb=term_verb,
                     line_start=line_num,
@@ -1518,47 +1901,35 @@ class SystemCobolParser:
                 continue
 
             if first == "PERFORM":
-                self.statements.append(
-                    ClassifiedStatement(
-                        target_file.relative_path,
-                        line_num,
-                        line_num,
-                        "PERFORM",
-                        raw_line,
-                        StatementClassification.PARSED_AND_SCORED,
-                        "Procedural loop PERFORM",
+                if any(is_unquoted_procedural_starter(t) for t in tokens[1:]):
+                    self.statements.append(
+                        ClassifiedStatement(
+                            target_file.relative_path,
+                            line_num,
+                            line_num,
+                            "PERFORM",
+                            raw_line,
+                            StatementClassification.UNSUPPORTED_RELEVANT,
+                            "Compound PERFORM statement with inline procedural starter",
+                        )
                     )
-                )
+                else:
+                    self.statements.append(
+                        ClassifiedStatement(
+                            target_file.relative_path,
+                            line_num,
+                            line_num,
+                            "PERFORM",
+                            raw_line,
+                            StatementClassification.PARSED_AND_SCORED,
+                            "Procedural loop PERFORM",
+                        )
+                    )
                 i += 1
                 continue
 
             if first in ("IF", "EVALUATE", "WHEN"):
-                tokens_clean = [
-                    t.upper().rstrip(".")
-                    for t in tokens[1:]
-                    if not (
-                        (t.startswith("'") and t.endswith("'"))
-                        or (t.startswith('"') and t.endswith('"'))
-                    )
-                ]
-                executable_verbs = {
-                    "CALL",
-                    "MOVE",
-                    "PERFORM",
-                    "DISPLAY",
-                    "ACCEPT",
-                    "READ",
-                    "WRITE",
-                    "OPEN",
-                    "CLOSE",
-                    "ADD",
-                    "SUBTRACT",
-                    "GO",
-                    "GOTO",
-                    "STOP",
-                    "GOBACK",
-                }
-                if any(t in executable_verbs for t in tokens_clean):
+                if any(is_unquoted_procedural_starter(t) for t in tokens[1:]):
                     self.statements.append(
                         ClassifiedStatement(
                             target_file.relative_path,
@@ -1567,7 +1938,7 @@ class SystemCobolParser:
                             first,
                             raw_line,
                             StatementClassification.UNSUPPORTED_RELEVANT,
-                            f"Compound {first} statement with inline executable verbs",
+                            f"Compound {first} statement with inline procedural starter",
                         )
                     )
                 else:
@@ -1585,46 +1956,8 @@ class SystemCobolParser:
                 i += 1
                 continue
 
-            if first in (
-                "DISPLAY",
-                "ACCEPT",
-                "ELSE",
-                "END-IF",
-                "END-EVALUATE",
-                "END-PERFORM",
-                "END-READ",
-                "AT",
-                "NOT",
-                "FROM",
-            ):
-                tokens_clean = [
-                    t.upper().rstrip(".")
-                    for t in tokens[1:]
-                    if not (
-                        (t.startswith("'") and t.endswith("'"))
-                        or (t.startswith('"') and t.endswith('"'))
-                    )
-                ]
-                executable_verbs = {
-                    "CALL",
-                    "MOVE",
-                    "PERFORM",
-                    "DISPLAY",
-                    "ACCEPT",
-                    "READ",
-                    "WRITE",
-                    "OPEN",
-                    "CLOSE",
-                    "ADD",
-                    "SUBTRACT",
-                    "GO",
-                    "GOTO",
-                    "STOP",
-                    "GOBACK",
-                }
-                if first in ("ELSE", "END-IF", "END-EVALUATE", "END-PERFORM") and any(
-                    t in executable_verbs for t in tokens_clean
-                ):
+            if first in ("ELSE", "END-IF", "END-EVALUATE", "END-PERFORM", "END-READ"):
+                if any(is_unquoted_procedural_starter(t) for t in tokens[1:]):
                     self.statements.append(
                         ClassifiedStatement(
                             target_file.relative_path,
@@ -1633,7 +1966,7 @@ class SystemCobolParser:
                             first,
                             raw_line,
                             StatementClassification.UNSUPPORTED_RELEVANT,
-                            f"Compound {first} statement with inline executable verbs",
+                            f"Compound {first} statement with inline procedural starter",
                         )
                     )
                 else:
@@ -1645,7 +1978,91 @@ class SystemCobolParser:
                             first,
                             raw_line,
                             StatementClassification.RECOGNIZED_BUT_UNSCORED,
-                            f"Procedural helper {first}",
+                            f"Procedural delimiter {first}",
+                        )
+                    )
+                i += 1
+                continue
+
+            if first in ("DISPLAY", "ACCEPT"):
+                if any(is_unquoted_procedural_starter(t) for t in tokens[1:]):
+                    self.statements.append(
+                        ClassifiedStatement(
+                            target_file.relative_path,
+                            line_num,
+                            line_num,
+                            first,
+                            raw_line,
+                            StatementClassification.UNSUPPORTED_RELEVANT,
+                            f"Compound {first} statement with inline procedural starter",
+                        )
+                    )
+                else:
+                    self.statements.append(
+                        ClassifiedStatement(
+                            target_file.relative_path,
+                            line_num,
+                            line_num,
+                            first,
+                            raw_line,
+                            StatementClassification.RECOGNIZED_BUT_UNSCORED,
+                            f"Procedural console I/O {first}",
+                        )
+                    )
+                i += 1
+                continue
+
+            if first in ("AT", "NOT", "FROM"):
+                if any(is_unquoted_procedural_starter(t) for t in tokens[1:]):
+                    self.statements.append(
+                        ClassifiedStatement(
+                            target_file.relative_path,
+                            line_num,
+                            line_num,
+                            first,
+                            raw_line,
+                            StatementClassification.UNSUPPORTED_RELEVANT,
+                            f"Compound {first} clause with inline procedural starter",
+                        )
+                    )
+                else:
+                    self.statements.append(
+                        ClassifiedStatement(
+                            target_file.relative_path,
+                            line_num,
+                            line_num,
+                            first,
+                            raw_line,
+                            StatementClassification.RECOGNIZED_BUT_UNSCORED,
+                            f"Procedural clause helper {first}",
+                        )
+                    )
+                i += 1
+                continue
+
+            if first in ("GO", "GOTO"):
+                if any(is_unquoted_procedural_starter(t) for t in tokens[1:]):
+                    self.statements.append(
+                        ClassifiedStatement(
+                            target_file.relative_path,
+                            line_num,
+                            line_num,
+                            first,
+                            raw_line,
+                            StatementClassification.UNSUPPORTED_RELEVANT,
+                            f"Compound {first} statement with inline procedural starter",
+                        )
+                    )
+                else:
+                    self.statements.append(
+                        ClassifiedStatement(
+                            target_file.relative_path,
+                            line_num,
+                            line_num,
+                            first,
+                            raw_line,
+                            StatementClassification.RECOGNIZED_BUT_UNSCORED,
+                            f"Procedural control-flow barrier {first}",
                         )
                     )
                 i += 1
@@ -1751,7 +2168,7 @@ class SystemCobolParser:
                         )
 
                     # Internal call resolution
-                    if target in programs_by_id:
+                    if stmt.is_literal and target in programs_by_id:
                         callee_unit = programs_by_id[target]
                         callee_decl = next(
                             (
@@ -1898,7 +2315,7 @@ class SystemCobolParser:
             n_stmts = len(unit.statements)
             target_unit_file = self.bundle.get_file(unit.file_path)
             unit_raw_lines = target_unit_file.get_lines()
-            commands_in_unit = []
+            commands_in_unit: list[tuple[ASTMove, ASTCall, int, int, MutationCommandResult]] = []
 
             for idx in range(n_stmts - 1):
                 s1 = unit.statements[idx]
@@ -1906,9 +2323,9 @@ class SystemCobolParser:
 
                 if isinstance(s1, ASTMove) and s1.is_literal_source and isinstance(s2, ASTCall):
                     if (
-                        s2.target == "SYSTEM"
-                        and s2.using_args
-                        and s1.target_operand in s2.using_args
+                        s2.is_literal
+                        and s2.target == "SYSTEM"
+                        and s2.using_args == [s1.target_operand]
                     ):
                         # B-03: Strict procedural linearity and barrier check
                         # between MOVE and CALL SYSTEM
@@ -1946,9 +2363,8 @@ class SystemCobolParser:
                                     )
                             continue
 
-                        commands_in_unit.append((s1, s2, idx, idx + 1))
-
-                        # Command invocation
+                        # Command invocation (opaque command fact is derivable)
+                        cmd_idx = len(commands_in_unit) + 1
                         self.supported_facts.append(
                             SupportedSystemFact(
                                 fact=CommandInvocationFact(
@@ -1956,7 +2372,7 @@ class SystemCobolParser:
                                     command_template=cmd_clean,
                                     target_operand=s1.target_operand,
                                 ),
-                                proposition_id=f"prop.command.{caller.lower()}_{len(commands_in_unit)}",
+                                proposition_id=f"prop.command.{caller.lower()}_{cmd_idx}",
                                 evidence_spans={
                                     "assignment_evidence": EvidenceSpan(
                                         unit.file_path, s1.line_start, s1.line_end
@@ -1977,7 +2393,7 @@ class SystemCobolParser:
                                         platform_family="WINDOWS",
                                         command_literal=cmd_clean,
                                     ),
-                                    proposition_id=f"prop.platform.{caller.lower()}_{len(commands_in_unit)}",
+                                    proposition_id=f"prop.platform.{caller.lower()}_{cmd_idx}",
                                     evidence_spans={
                                         "evidence": EvidenceSpan(
                                             unit.file_path, s1.line_start, s1.line_end
@@ -1986,11 +2402,34 @@ class SystemCobolParser:
                                 )
                             )
 
+                        mut_res = classify_mutation_command(cmd_clean)
+                        if mut_res.status == "MUTATION_UNSUPPORTED":
+                            for idx_s, s in enumerate(self.statements):
+                                if s.file_path == unit.file_path and s.line_start in (
+                                    s1.line_start,
+                                    s2.line_start,
+                                ):
+                                    self.statements[idx_s] = ClassifiedStatement(
+                                        s.file_path,
+                                        s.line_start,
+                                        s.line_end,
+                                        s.verb,
+                                        s.raw_text,
+                                        StatementClassification.UNSUPPORTED_RELEVANT,
+                                        (
+                                            "Unsupported or malformed mutation command syntax: "
+                                            f"{mut_res.reason}"
+                                        ),
+                                    )
+                            continue
+
+                        commands_in_unit.append((s1, s2, idx, idx + 1, mut_res))
+
             # Operation sequence and non-atomic risk: generic operand-aware
             if len(commands_in_unit) >= 2:
                 for c_idx in range(len(commands_in_unit) - 1):
-                    m1, c1, m1_idx, c1_idx = commands_in_unit[c_idx]
-                    m2, c2, m2_idx, c2_idx = commands_in_unit[c_idx + 1]
+                    m1, c1, m1_idx, c1_idx, mut1 = commands_in_unit[c_idx]
+                    m2, c2, m2_idx, c2_idx, mut2 = commands_in_unit[c_idx + 1]
 
                     # Sequences require adjacent command dispatches
                     # (no intervening procedural statements or barriers)
@@ -2006,63 +2445,62 @@ class SystemCobolParser:
                     if has_seq_barrier:
                         continue
 
-                    cmd1_clean = exact_syntactic_unquote(m1.source_operand)
-                    cmd2_clean = exact_syntactic_unquote(m2.source_operand)
-
-                    op1_kind, op1_src, op1_tgt = classify_command_operation(cmd1_clean)
-                    op2_kind, op2_src, op2_tgt = classify_command_operation(cmd2_clean)
-
-                    if op1_kind == "DELETE" and op2_kind == "RENAME":
-                        self.supported_facts.append(
-                            SupportedSystemFact(
-                                fact=OperationSequenceFact(
-                                    program_id=caller,
-                                    first_operation="DELETE",
-                                    second_operation="RENAME",
-                                ),
-                                proposition_id=f"prop.op_seq.{caller.lower()}_del_ren",
-                                evidence_spans={
-                                    "first_assignment_evidence": EvidenceSpan(
-                                        unit.file_path, m1.line_start, m1.line_end
-                                    ),
-                                    "first_call_evidence": EvidenceSpan(
-                                        unit.file_path, c1.line_start, c1.line_end
-                                    ),
-                                    "second_assignment_evidence": EvidenceSpan(
-                                        unit.file_path, m2.line_start, m2.line_end
-                                    ),
-                                    "second_call_evidence": EvidenceSpan(
-                                        unit.file_path, c2.line_start, c2.line_end
-                                    ),
-                                },
-                            )
-                        )
-                        # Risk: non-atomic file update derived ONLY when delete target matches
-                        # rename target
-                        if op1_tgt and op2_tgt and op1_tgt.upper() == op2_tgt.upper():
-                            prop_id = (
-                                f"prop.risk.{caller.lower().replace('-', '_')}_non_atomic_update"
-                            )
+                    if mut1.status == "MUTATION_PARSED" and mut2.status == "MUTATION_PARSED":
+                        if mut1.operation == "DELETE" and mut2.operation == "RENAME":
                             self.supported_facts.append(
                                 SupportedSystemFact(
-                                    fact=BehavioralRiskFact(
+                                    fact=OperationSequenceFact(
                                         program_id=caller,
-                                        risk_category="DATA_INTEGRITY",
-                                        risk_basis_kind="NON_ATOMIC_EXTERNAL_MUTATION",
-                                        impact_category="DATA_INTEGRITY",
-                                        resource_name=op2_tgt.upper(),
+                                        first_operation="DELETE",
+                                        second_operation="RENAME",
                                     ),
-                                    proposition_id=prop_id,
+                                    proposition_id=f"prop.op_seq.{caller.lower()}_del_ren",
                                     evidence_spans={
-                                        "operation_evidence": EvidenceSpan(
-                                            unit.file_path, c1.line_start, c2.line_end
+                                        "first_assignment_evidence": EvidenceSpan(
+                                            unit.file_path, m1.line_start, m1.line_end
                                         ),
-                                        "affected_resource_evidence": EvidenceSpan(
+                                        "first_call_evidence": EvidenceSpan(
+                                            unit.file_path, c1.line_start, c1.line_end
+                                        ),
+                                        "second_assignment_evidence": EvidenceSpan(
                                             unit.file_path, m2.line_start, m2.line_end
+                                        ),
+                                        "second_call_evidence": EvidenceSpan(
+                                            unit.file_path, c2.line_start, c2.line_end
                                         ),
                                     },
                                 )
                             )
+                            # Risk: non-atomic file update derived ONLY when delete target matches
+                            # rename target
+                            if (
+                                mut1.target_operand
+                                and mut2.target_operand
+                                and mut1.target_operand.upper() == mut2.target_operand.upper()
+                            ):
+                                canonical_resource = mut2.target_operand.upper()
+                                caller_tag = caller.lower().replace("-", "_")
+                                prop_id = f"prop.risk.{caller_tag}_non_atomic_update"
+                                self.supported_facts.append(
+                                    SupportedSystemFact(
+                                        fact=BehavioralRiskFact(
+                                            program_id=caller,
+                                            risk_category="DATA_INTEGRITY",
+                                            risk_basis_kind="NON_ATOMIC_EXTERNAL_MUTATION",
+                                            impact_category="DATA_INTEGRITY",
+                                            resource_name=canonical_resource,
+                                        ),
+                                        proposition_id=prop_id,
+                                        evidence_spans={
+                                            "operation_evidence": EvidenceSpan(
+                                                unit.file_path, c1.line_start, c2.line_end
+                                            ),
+                                            "affected_resource_evidence": EvidenceSpan(
+                                                unit.file_path, m2.line_start, m2.line_end
+                                            ),
+                                        },
+                                    )
+                                )
 
         # 7. Record-to-Record Data Transfer Relations
         for unit in self.compilation_units:

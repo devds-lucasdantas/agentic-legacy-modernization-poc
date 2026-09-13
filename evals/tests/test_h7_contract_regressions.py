@@ -37,6 +37,7 @@ from agents.legacy_analyzer.schemas.system_assessment import (
     DataTransferRelation,
     FileBinding,
     ImpactCategory,
+    OperationSequence,
     PlatformDependency,
     ProgramDeclaration,
     RecordField,
@@ -55,11 +56,13 @@ from src.cobol.multi_source_reader import MultiSourceBundle, TargetFile, read_sy
 from src.cobol.system_atomic_facts import (
     BehavioralRiskFact,
     CallEdgeFact,
+    CallerContinuationConstraintFact,
     CallOccurrenceFact,
     CommandInvocationFact,
     DataStateComparisonFact,
     EvidenceSpan,
     FileBindingFact,
+    InternalCallResolutionFact,
     OperationSequenceFact,
     PlatformDependencyFact,
     RecordFieldFact,
@@ -3550,3 +3553,538 @@ def test_h7_4_2_h02_decoupled_command_and_sequence_support() -> None:
         assert cert_s.unsupported_relevant_count == 0
         seqs = [f.fact for f in p_s.supported_facts if isinstance(f.fact, OperationSequenceFact)]
         assert len(seqs) == 0, "Single command must produce no sequence fact"
+
+
+# ======================================================================
+# SECTION 17: H7.4.3 / CONTRACT 3.5.3 EXACT PROCEDURAL GRAMMAR & STATIC RESOLUTION REGRESSIONS
+# ======================================================================
+
+
+def test_h7_4_3_f01_f04_call_using_syntax_and_binding():
+    """F-01 / Clarification 4: CALL/USING syntax validation and command binding rules.
+
+    - CALL <target> USING <arg1> <arg2> has 2 USING args -> UNSUPPORTED_RELEVANT, 0 CallOccurrence.
+    - CALL <target> USING <arg> CALL OTHER has trailing starter -> UNSUPPORTED_RELEVANT.
+    - CALL 'SYSTEM' USING OTHER (where MOVE was to BUFFER) -> valid single-arg CALL, clean coverage,
+      but 0 CommandInvocationFact.
+    - CALL 'SYSTEM' USING OTHER BUFFER -> UNSUPPORTED_RELEVANT, 0 CallOccurrence,
+      0 CommandInvocation.
+    """
+    # 1. Multiple USING arguments fail closed
+    src_two_args = """       IDENTIFICATION DIVISION.
+       PROGRAM-ID. TWOARGS.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 ARG1 PIC X(10).
+       01 ARG2 PIC X(10).
+       PROCEDURE DIVISION.
+           CALL 'SUBPROG' USING ARG1 ARG2.
+           STOP RUN.
+"""
+    p_two = SystemCobolParser(_make_synth_bundle(src_two_args))
+    cert_two = p_two.parse_system()
+    assert cert_two.unsupported_relevant_count >= 1
+    calls_two = [f.fact for f in p_two.supported_facts if isinstance(f.fact, CallOccurrenceFact)]
+    assert len(calls_two) == 0
+
+    # 2. Compound CALL trailing in USING argument fails closed
+    src_comp_call = """       IDENTIFICATION DIVISION.
+       PROGRAM-ID. COMPCALL.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 WS-CMD PIC X(50).
+       PROCEDURE DIVISION.
+           MOVE 'cmd /c echo 1' TO WS-CMD.
+           CALL 'SYSTEM' USING WS-CMD CALL OTHER.
+           STOP RUN.
+"""
+    p_comp = SystemCobolParser(_make_synth_bundle(src_comp_call))
+    cert_comp = p_comp.parse_system()
+    assert cert_comp.unsupported_relevant_count >= 1
+    calls_comp = [f.fact for f in p_comp.supported_facts if isinstance(f.fact, CallOccurrenceFact)]
+    assert len(calls_comp) == 0
+    cmds_comp = [
+        f.fact for f in p_comp.supported_facts if isinstance(f.fact, CommandInvocationFact)
+    ]
+    assert len(cmds_comp) == 0
+
+    # 3. Valid single-argument CALL with non-matching identifier produces 0 CommandInvocation
+    src_unbound = """       IDENTIFICATION DIVISION.
+       PROGRAM-ID. UNBOUND.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 BUFFER PIC X(50).
+       01 OTHER  PIC X(50).
+       PROCEDURE DIVISION.
+           MOVE 'cmd /c echo 1' TO BUFFER.
+           CALL 'SYSTEM' USING OTHER.
+           STOP RUN.
+"""
+    p_unbound = SystemCobolParser(_make_synth_bundle(src_unbound))
+    cert_unbound = p_unbound.parse_system()
+    assert cert_unbound.unsupported_relevant_count == 0, (
+        "Syntactically valid CALL USING OTHER must have clean coverage"
+    )
+    calls_unbound = [
+        f.fact for f in p_unbound.supported_facts if isinstance(f.fact, CallOccurrenceFact)
+    ]
+    assert len(calls_unbound) == 1
+    cmds_unbound = [
+        f.fact for f in p_unbound.supported_facts if isinstance(f.fact, CommandInvocationFact)
+    ]
+    assert len(cmds_unbound) == 0, "Unbound CALL USING OTHER must produce 0 CommandInvocation"
+
+    # 4. CALL 'SYSTEM' USING OTHER BUFFER -> UNSUPPORTED_RELEVANT, 0 command dispatch
+    src_sys_two = """       IDENTIFICATION DIVISION.
+       PROGRAM-ID. SYSTWO.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 BUFFER PIC X(50).
+       01 OTHER  PIC X(50).
+       PROCEDURE DIVISION.
+           MOVE 'cmd /c echo 1' TO BUFFER.
+           CALL 'SYSTEM' USING OTHER BUFFER.
+           STOP RUN.
+"""
+    p_sys_two = SystemCobolParser(_make_synth_bundle(src_sys_two))
+    cert_sys_two = p_sys_two.parse_system()
+    assert cert_sys_two.unsupported_relevant_count >= 1
+    calls_sys_two = [
+        f.fact for f in p_sys_two.supported_facts if isinstance(f.fact, CallOccurrenceFact)
+    ]
+    assert len(calls_sys_two) == 0
+    cmds_sys_two = [
+        f.fact for f in p_sys_two.supported_facts if isinstance(f.fact, CommandInvocationFact)
+    ]
+    assert len(cmds_sys_two) == 0
+
+
+def test_h7_4_3_f02_dynamic_call_target_isolation():
+    """F-02 / Clarification 4: Dynamic target isolation.
+
+    Dynamic CALL target does NOT participate in static internal resolution.
+    CALL SYSTEM USING BUFFER where SYSTEM is an identifier:
+    - Valid DYNAMIC_TARGET CallOccurrence
+    - 0 InternalCallResolutionFact
+    - 0 CallerContinuationConstraintFact
+    - 0 CommandInvocationFact
+    - 0 PlatformDependencyFact
+    - 0 OperationSequenceFact
+    - 0 BehavioralRiskFact
+    """
+    src_dyn = """       IDENTIFICATION DIVISION.
+       PROGRAM-ID. DYNCALL.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 SYSTEM PIC X(10) VALUE 'TARGET'.
+       01 BUFFER PIC X(50).
+       PROCEDURE DIVISION.
+           MOVE 'cmd /c del test.dat' TO BUFFER.
+           CALL SYSTEM USING BUFFER.
+           STOP RUN.
+"""
+    p_dyn = SystemCobolParser(_make_synth_bundle(src_dyn))
+    cert_dyn = p_dyn.parse_system()
+    assert cert_dyn.unsupported_relevant_count == 0
+
+    calls = [f.fact for f in p_dyn.supported_facts if isinstance(f.fact, CallOccurrenceFact)]
+    assert len(calls) == 1
+    assert calls[0].call_mechanism == "DYNAMIC_TARGET"
+    assert calls[0].target_program == "SYSTEM"
+
+    res_facts = [
+        f.fact for f in p_dyn.supported_facts if isinstance(f.fact, InternalCallResolutionFact)
+    ]
+    assert len(res_facts) == 0, "Dynamic target must not produce InternalCallResolutionFact"
+
+    cont_facts = [
+        f.fact
+        for f in p_dyn.supported_facts
+        if isinstance(f.fact, CallerContinuationConstraintFact)
+    ]
+    assert len(cont_facts) == 0, "Dynamic target must not produce CallerContinuationConstraintFact"
+
+    cmd_facts = [f.fact for f in p_dyn.supported_facts if isinstance(f.fact, CommandInvocationFact)]
+    assert len(cmd_facts) == 0, "Dynamic target must not dispatch SYSTEM command"
+
+    plat_facts = [
+        f.fact for f in p_dyn.supported_facts if isinstance(f.fact, PlatformDependencyFact)
+    ]
+    assert len(plat_facts) == 0, "Dynamic target must not emit PlatformDependencyFact"
+
+    seq_facts = [f.fact for f in p_dyn.supported_facts if isinstance(f.fact, OperationSequenceFact)]
+    assert len(seq_facts) == 0, "Dynamic target must not emit OperationSequenceFact"
+
+    risk_facts = [f.fact for f in p_dyn.supported_facts if isinstance(f.fact, BehavioralRiskFact)]
+    assert len(risk_facts) == 0, "Dynamic target must not emit BehavioralRiskFact"
+
+
+def test_h7_4_3_f04_windows_mutation_three_outcomes_and_e2e_traversal():
+    """F-04 / Clarification 3 & E2E Requirement:
+
+    Tests three outcomes:
+    A. NOT_MUTATION (echo, dir): CommandInvocation & PlatformDependency supported,
+       clean coverage, not eligible for sequence/risk.
+    B. MUTATION_PARSED:
+       - Different spaced targets ("accounts old.dat" vs "accounts new.dat"):
+         DELETE->RENAME sequence supported, NO risk fact. Fabricated matching risk fails evaluator.
+       - Same spaced target ("accounts old.dat" vs "accounts old.dat"):
+         DELETE->RENAME sequence supported, risk supported with canonical
+         resource_name == "ACCOUNTS OLD.DAT" (never fragmented like '"ACCOUNTS').
+    C. MUTATION_UNSUPPORTED:
+       - Malformed Windows quoting (single quotes e.g. 'accounts old.dat'):
+         Opaque CommandInvocation derived, source marked UNSUPPORTED_RELEVANT,
+         evaluation blocked, 0 sequence, 0 risk.
+    """
+    # Outcome A: NOT_MUTATION
+    src_echo = """       IDENTIFICATION DIVISION.
+       PROGRAM-ID. ECHOTEST.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 BUFFER PIC X(50).
+       PROCEDURE DIVISION.
+           MOVE 'cmd /c echo hello' TO BUFFER.
+           CALL 'SYSTEM' USING BUFFER.
+           STOP RUN.
+"""
+    p_echo = SystemCobolParser(_make_synth_bundle(src_echo))
+    cert_echo = p_echo.parse_system()
+    assert cert_echo.unsupported_relevant_count == 0
+    assert cert_echo.is_evaluation_blocked is False
+    cmds_echo = [
+        f.fact for f in p_echo.supported_facts if isinstance(f.fact, CommandInvocationFact)
+    ]
+    assert len(cmds_echo) == 1
+    seqs_echo = [
+        f.fact for f in p_echo.supported_facts if isinstance(f.fact, OperationSequenceFact)
+    ]
+    assert len(seqs_echo) == 0
+    risks_echo = [f.fact for f in p_echo.supported_facts if isinstance(f.fact, BehavioralRiskFact)]
+    assert len(risks_echo) == 0
+
+    # Outcome B1: MUTATION_PARSED with different spaced targets
+    src_diff = """       IDENTIFICATION DIVISION.
+       PROGRAM-ID. DIFFTGT.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 BUFFER PIC X(100).
+       PROCEDURE DIVISION.
+           MOVE 'cmd /c del "accounts old.dat"' TO BUFFER.
+           CALL 'SYSTEM' USING BUFFER.
+           MOVE 'cmd /c ren temp.tmp "accounts new.dat"' TO BUFFER.
+           CALL 'SYSTEM' USING BUFFER.
+           STOP RUN.
+"""
+    bundle_diff = _make_synth_bundle(src_diff, "DIFFTGT.CBL")
+    p_diff = SystemCobolParser(bundle_diff)
+    cert_diff = p_diff.parse_system()
+    assert cert_diff.unsupported_relevant_count == 0
+    seqs_diff = [
+        f.fact for f in p_diff.supported_facts if isinstance(f.fact, OperationSequenceFact)
+    ]
+    assert len(seqs_diff) == 1
+    assert seqs_diff[0].first_operation == "DELETE"
+    assert seqs_diff[0].second_operation == "RENAME"
+    risks_diff = [f.fact for f in p_diff.supported_facts if isinstance(f.fact, BehavioralRiskFact)]
+    assert len(risks_diff) == 0, "Different targets must produce NO BehavioralRiskFact"
+
+    # Evaluator traversal for B1: fabricated matching risk must FAIL evaluator support
+    idx_diff = SystemSupportIndex(p_diff.supported_facts, bundle_diff)
+    ev_diff = SystemEvaluatorV3(idx_diff)
+
+    model_diff = SystemAssessment(system_name="DiffTgt")
+    model_diff.operation_sequences.append(
+        OperationSequence(
+            program_id="DIFFTGT",
+            first_operation="DELETE",
+            second_operation="RENAME",
+            first_assignment_evidence=SourceEvidence(
+                file_path="DIFFTGT.CBL", line_start=7, line_end=7
+            ),
+            first_call_evidence=SourceEvidence(file_path="DIFFTGT.CBL", line_start=8, line_end=8),
+            second_assignment_evidence=SourceEvidence(
+                file_path="DIFFTGT.CBL", line_start=9, line_end=9
+            ),
+            second_call_evidence=SourceEvidence(
+                file_path="DIFFTGT.CBL", line_start=10, line_end=10
+            ),
+        )
+    )
+    # Fabricated matching-target risk:
+    model_diff.behavioral_risks.append(
+        BehavioralRisk(
+            program_id="DIFFTGT",
+            risk_category="DATA_INTEGRITY",
+            risk_basis_kind="NON_ATOMIC_EXTERNAL_MUTATION",
+            impact_category="DATA_INTEGRITY",
+            resource_name="ACCOUNTS OLD.DAT",
+            operation_evidence=SourceEvidence(file_path="DIFFTGT.CBL", line_start=8, line_end=10),
+            affected_resource_evidence=SourceEvidence(
+                file_path="DIFFTGT.CBL", line_start=9, line_end=9
+            ),
+        )
+    )
+    m_diff, _ = ev_diff.evaluate_assessment(model_diff)
+    assert m_diff.unsupported_predicted_count >= 1, (
+        "Fabricated matching-target risk assertion must FAIL evaluator support"
+    )
+
+    # Outcome B2: MUTATION_PARSED with same spaced targets
+    src_same = """       IDENTIFICATION DIVISION.
+       PROGRAM-ID. SAMETGT.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 BUFFER PIC X(100).
+       PROCEDURE DIVISION.
+           MOVE 'cmd /c del "accounts old.dat"' TO BUFFER.
+           CALL 'SYSTEM' USING BUFFER.
+           MOVE 'cmd /c ren temp.tmp "accounts old.dat"' TO BUFFER.
+           CALL 'SYSTEM' USING BUFFER.
+           STOP RUN.
+"""
+    bundle_same = _make_synth_bundle(src_same, "SAMETGT.CBL")
+    p_same = SystemCobolParser(bundle_same)
+    cert_same = p_same.parse_system()
+    assert cert_same.unsupported_relevant_count == 0
+    seqs_same = [
+        f.fact for f in p_same.supported_facts if isinstance(f.fact, OperationSequenceFact)
+    ]
+    assert len(seqs_same) == 1
+    risks_same = [f.fact for f in p_same.supported_facts if isinstance(f.fact, BehavioralRiskFact)]
+    assert len(risks_same) == 1
+    assert risks_same[0].resource_name == "ACCOUNTS OLD.DAT", (
+        f"Must be canonical uppercase without quotes, got {risks_same[0].resource_name}"
+    )
+    assert not risks_same[0].resource_name.startswith('"'), "Must never be raw quoted syntax"
+
+    # Evaluator traversal for B2: verified support
+    idx_same = SystemSupportIndex(p_same.supported_facts, bundle_same)
+    ev_same = SystemEvaluatorV3(idx_same)
+
+    model_same = SystemAssessment(system_name="SameTgt")
+    model_same.operation_sequences.append(
+        OperationSequence(
+            program_id="SAMETGT",
+            first_operation="DELETE",
+            second_operation="RENAME",
+            first_assignment_evidence=SourceEvidence(
+                file_path="SAMETGT.CBL", line_start=7, line_end=7
+            ),
+            first_call_evidence=SourceEvidence(file_path="SAMETGT.CBL", line_start=8, line_end=8),
+            second_assignment_evidence=SourceEvidence(
+                file_path="SAMETGT.CBL", line_start=9, line_end=9
+            ),
+            second_call_evidence=SourceEvidence(
+                file_path="SAMETGT.CBL", line_start=10, line_end=10
+            ),
+        )
+    )
+    model_same.behavioral_risks.append(
+        BehavioralRisk(
+            program_id="SAMETGT",
+            risk_category="DATA_INTEGRITY",
+            risk_basis_kind="NON_ATOMIC_EXTERNAL_MUTATION",
+            impact_category="DATA_INTEGRITY",
+            resource_name="ACCOUNTS OLD.DAT",
+            operation_evidence=SourceEvidence(file_path="SAMETGT.CBL", line_start=8, line_end=10),
+            affected_resource_evidence=SourceEvidence(
+                file_path="SAMETGT.CBL", line_start=9, line_end=9
+            ),
+        )
+    )
+    m_same, preds_same = ev_same.evaluate_assessment(model_same)
+    assert m_same.unsupported_predicted_count == 0
+    assert len(preds_same) == 2
+    assert all(p.is_supported for p in preds_same)
+
+    # Outcome C: MUTATION_UNSUPPORTED (single quotes as Windows grouping quotes)
+    src_sq = """       IDENTIFICATION DIVISION.
+       PROGRAM-ID. SQMUT.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 BUFFER PIC X(100).
+       PROCEDURE DIVISION.
+           MOVE "cmd /c del 'accounts old.dat'" TO BUFFER.
+           CALL 'SYSTEM' USING BUFFER.
+           STOP RUN.
+"""
+    p_sq = SystemCobolParser(_make_synth_bundle(src_sq))
+    cert_sq = p_sq.parse_system()
+    assert cert_sq.unsupported_relevant_count >= 1
+    assert cert_sq.is_evaluation_blocked is True
+    # Opaque command invocation is still derived
+    cmds_sq = [f.fact for f in p_sq.supported_facts if isinstance(f.fact, CommandInvocationFact)]
+    assert len(cmds_sq) == 1
+    assert cmds_sq[0].command_template == "cmd /c del 'accounts old.dat'"
+    # But zero sequence and zero risk facts
+    seqs_sq = [f.fact for f in p_sq.supported_facts if isinstance(f.fact, OperationSequenceFact)]
+    assert len(seqs_sq) == 0
+    risks_sq = [f.fact for f in p_sq.supported_facts if isinstance(f.fact, BehavioralRiskFact)]
+    assert len(risks_sq) == 0
+
+
+def test_h7_4_3_f05_quoted_call_target_admission():
+    """F-05: Quoted CALL target admission must reject non-canonical targets.
+
+    - CALL 'target' (lowercase) -> UNSUPPORTED_RELEVANT, 0 CallOccurrence
+    - CALL ' TARGET ' (whitespace-padded) -> UNSUPPORTED_RELEVANT, 0 CallOccurrence
+    - CALL 'TARGET' (exact uppercase identifier) -> valid literal CallOccurrence
+    """
+    # Lowercase
+    src_lower = """       IDENTIFICATION DIVISION.
+       PROGRAM-ID. LOWCALL.
+       PROCEDURE DIVISION.
+           CALL 'subprog'.
+           STOP RUN.
+"""
+    p_low = SystemCobolParser(_make_synth_bundle(src_lower))
+    cert_low = p_low.parse_system()
+    assert cert_low.unsupported_relevant_count >= 1
+    calls_low = [f.fact for f in p_low.supported_facts if isinstance(f.fact, CallOccurrenceFact)]
+    assert len(calls_low) == 0
+
+    # Whitespace padded
+    src_pad = """       IDENTIFICATION DIVISION.
+       PROGRAM-ID. PADCALL.
+       PROCEDURE DIVISION.
+           CALL ' SUBPROG '.
+           STOP RUN.
+"""
+    p_pad = SystemCobolParser(_make_synth_bundle(src_pad))
+    cert_pad = p_pad.parse_system()
+    assert cert_pad.unsupported_relevant_count >= 1
+    calls_pad = [f.fact for f in p_pad.supported_facts if isinstance(f.fact, CallOccurrenceFact)]
+    assert len(calls_pad) == 0
+
+    # Valid exact uppercase
+    src_valid = """       IDENTIFICATION DIVISION.
+       PROGRAM-ID. VALCALL.
+       PROCEDURE DIVISION.
+           CALL 'SUBPROG'.
+           STOP RUN.
+"""
+    p_val = SystemCobolParser(_make_synth_bundle(src_valid))
+    cert_val = p_val.parse_system()
+    assert cert_val.unsupported_relevant_count == 0
+    calls_val = [f.fact for f in p_val.supported_facts if isinstance(f.fact, CallOccurrenceFact)]
+    assert len(calls_val) == 1
+    assert calls_val[0].target_program == "SUBPROG"
+
+
+def test_h7_4_3_f06_interior_period_tokens_and_host_facts_invariance():
+    """F-06 / Clarification 1:
+
+    - Procedural parser removes only one terminal sentence-period token.
+    - Interior period tokens fail closed:
+      CALL . TARGET -> UNSUPPORTED_RELEVANT
+      MOVE 'X' . TO BUFFER -> UNSUPPORTED_RELEVANT
+      MOVE . 'X' TO BUFFER -> UNSUPPORTED_RELEVANT
+    - Numeric literals (100.50) and quoted strings ('file.name') remain single tokens.
+    - Legacy host facts remain 100% invariant with SHA
+      74148cdb6b5c28c576406db77a8c84ae171a7fd1eec568c4d5a15256ef08f177.
+    """
+    for bad_stmt in ("CALL . TARGET", "MOVE 'X' . TO BUFFER", "MOVE . 'X' TO BUFFER"):
+        src_bad = f"""       IDENTIFICATION DIVISION.
+       PROGRAM-ID. BADPER.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 BUFFER PIC X(50).
+       PROCEDURE DIVISION.
+           {bad_stmt}.
+           STOP RUN.
+"""
+        p_bad = SystemCobolParser(_make_synth_bundle(src_bad))
+        cert_bad = p_bad.parse_system()
+        assert cert_bad.unsupported_relevant_count >= 1, f"{bad_stmt} must fail closed"
+
+    # Numeric with decimal point preserved
+    src_num = """       IDENTIFICATION DIVISION.
+       PROGRAM-ID. NUMPER.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 NUM-FLD PIC 9(3)V99.
+       PROCEDURE DIVISION.
+           MOVE 100.50 TO NUM-FLD.
+           STOP RUN.
+"""
+    p_num = SystemCobolParser(_make_synth_bundle(src_num))
+    cert_num = p_num.parse_system()
+    assert cert_num.unsupported_relevant_count == 0
+
+    # Quoted with period preserved
+    src_lit = """       IDENTIFICATION DIVISION.
+       PROGRAM-ID. LITPER.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 FILE-NAME PIC X(20).
+       PROCEDURE DIVISION.
+           MOVE 'file.name' TO FILE-NAME.
+           STOP RUN.
+"""
+    p_lit = SystemCobolParser(_make_synth_bundle(src_lit))
+    cert_lit = p_lit.parse_system()
+    assert cert_lit.unsupported_relevant_count == 0
+
+    # Frozen legacy host facts invariance check
+    bundle_legacy = read_system_bundle(REPO_ROOT)
+    p_legacy = SystemCobolParser(bundle_legacy)
+    cert_legacy = p_legacy.parse_system()
+    assert cert_legacy.unsupported_relevant_count == 0
+    assert (
+        cert_legacy.certificate_sha256
+        == "74148cdb6b5c28c576406db77a8c84ae171a7fd1eec568c4d5a15256ef08f177"
+    )
+
+
+def test_h7_4_3_f07_unified_procedural_starters_fail_closed():
+    """F-07 / Clarification 2: Unified procedural starter set governs all branches.
+
+    - Trailing unquoted procedural starter causes branch to fail closed:
+      COMPUTE X = Y CALL OTHER -> UNSUPPORTED_RELEVANT
+      MULTIPLY A BY B CALL OTHER -> UNSUPPORTED_RELEVANT
+      DIVIDE A INTO B CALL OTHER -> UNSUPPORTED_RELEVANT
+      IF X = 1 CALL OTHER -> UNSUPPORTED_RELEVANT
+      ELSE CALL OTHER -> UNSUPPORTED_RELEVANT
+      WHEN 1 CALL OTHER -> UNSUPPORTED_RELEVANT
+    - Quoted content containing starter words must remain valid.
+    """
+    bad_probes = [
+        "COMPUTE X = Y CALL OTHER",
+        "MULTIPLY A BY B CALL OTHER",
+        "DIVIDE A INTO B CALL OTHER",
+        "IF X = 1 CALL OTHER",
+        "ELSE CALL OTHER",
+        "WHEN 1 CALL OTHER",
+    ]
+    for probe in bad_probes:
+        src = f"""       IDENTIFICATION DIVISION.
+       PROGRAM-ID. PROBETEST.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 X PIC 9(5).
+       01 Y PIC 9(5).
+       01 A PIC 9(5).
+       01 B PIC 9(5).
+       PROCEDURE DIVISION.
+           {probe}.
+           STOP RUN.
+"""
+        p = SystemCobolParser(_make_synth_bundle(src))
+        cert = p.parse_system()
+        assert cert.unsupported_relevant_count >= 1, (
+            f"Probe '{probe}' must fail closed as UNSUPPORTED_RELEVANT"
+        )
+
+    # Quoted content containing starter words remains valid
+    src_quoted = """       IDENTIFICATION DIVISION.
+       PROGRAM-ID. QUOTEDSTARTER.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 WS-MSG PIC X(50).
+       PROCEDURE DIVISION.
+           MOVE 'CALL OTHER' TO WS-MSG.
+           STOP RUN.
+"""
+    p_q = SystemCobolParser(_make_synth_bundle(src_quoted))
+    cert_q = p_q.parse_system()
+    assert cert_q.unsupported_relevant_count == 0
