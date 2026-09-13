@@ -52,11 +52,14 @@ from agents.legacy_analyzer.schemas.system_assessment import (
 from src.cobol.multi_source_reader import MultiSourceBundle, TargetFile, read_system_bundle
 from src.cobol.system_atomic_facts import (
     BehavioralRiskFact,
+    CommandInvocationFact,
+    EvidenceSpan,
     FileBindingFact,
     OperationSequenceFact,
     RecordFieldFact,
     RecordLayoutFact,
     RecordLayoutRelationFact,
+    SupportedSystemFact,
     canonicalize_picture,
 )
 from src.cobol.system_cobol_parser import SystemCobolParser
@@ -968,7 +971,7 @@ def test_h7_strict_runtime_version_equality_negative_tests():
     runner_mod = importlib.util.module_from_spec(spec_mod)
     spec_mod.loader.exec_module(runner_mod)
 
-    assert runner_mod.SUPPORTED_CONTRACT_VERSIONS == {"3.4.3", "3.5.0", "3.5.1", "3.5.2"}
+    assert runner_mod.SUPPORTED_CONTRACT_VERSIONS == {"3.4.3", "3.5.0", "3.5.1", "3.5.2", "3.5.3"}
 
 
 # ======================================================================
@@ -1869,3 +1872,461 @@ def test_h7_3_1_unsupported_external_command_sequences_fail_closed() -> None:
     assert cert5.is_evaluation_blocked is True
     seq_facts5 = [f.fact for f in p5.supported_facts if isinstance(f.fact, OperationSequenceFact)]
     assert len(seq_facts5) == 0
+
+
+# ======================================================================
+# H7.4 / CONTRACT 3.5.3 REMEDIATION REGRESSION TEST SUITE
+# ======================================================================
+
+
+def test_h7_4_b01_adversarial_matrix_complete_evaluator_path():
+    """Verify B-01 adversarial matrix through the complete real evaluator/support path.
+
+    1. 7-field host record vs 6-field injected-PICTURE candidate:
+       -> support FAIL, matched_proposition_id None, Gate FAIL.
+    2. Host condition_values ("A", "B") vs candidate ["A,B"] -> FAIL.
+    3. Host condition_values ("A,B",) vs candidate ["A", "B"] -> FAIL.
+    4. Fabricated DATA_FIELD condition_values -> schema validation FAIL.
+    5. Collision resilience: legacy semantic key collides while structural
+       certification distinguishes facts.
+    """
+    golden = load_golden_assessment()
+    bundle = read_system_bundle(REPO_ROOT)
+    parser = SystemCobolParser(bundle)
+    parser.parse_system()
+    facts = parser.get_supported_facts()
+    index = SystemSupportIndex(
+        facts, bundle, file_status_certificate=parser.file_status_certificate
+    )
+    evaluator = SystemEvaluatorV3(index)
+
+    # 1. 7-field host record vs 6-field candidate with injected picture
+    # Target: ACCOUNTS ACCOUNT-RECORD (7 fields in host: 4 data fields + 3 condition names)
+    bad_record_assessment = golden.model_copy(deep=True)
+    bank_main_rec = next(
+        r for r in bad_record_assessment.record_layouts if r.record_name == "ACCOUNT-RECORD"
+    )
+    # Inject 6 fields: remove level-88 and alter picture of first DATA_FIELD
+    assert len(bank_main_rec.fields) == 7
+    bad_fields = [f.model_copy() for f in bank_main_rec.fields[:6]]
+    bad_fields[0].picture = "9(20)"  # injected PICTURE on DATA_FIELD
+    bank_main_rec.fields = bad_fields
+    assert len(bank_main_rec.fields) == 6
+
+    res1, preds1 = evaluator.evaluate_assessment(bad_record_assessment)
+    rec_pred = next(
+        p
+        for p in preds1
+        if p.fact_category == "RECORD_LAYOUT" and "ACCOUNT-RECORD" in p.semantic_key
+    )
+    assert rec_pred.is_supported is False, (
+        "6-field candidate must NOT be supported against 7-field host"
+    )
+    assert rec_pred.matched_proposition_id is None, (
+        "Mismatched structure must yield matched_proposition_id None"
+    )
+    assert res1.gate_3_pass is False, "Gate 3 must FAIL when required record layout fails support"
+
+    # 2. Host condition_values ("A", "B") vs model ["A,B"]
+    host_fact_ab = RecordLayoutFact(
+        program_id="PROG",
+        record_name="REC",
+        fields=(
+            RecordFieldFact(
+                field_kind="CONDITION_NAME",
+                level=88,
+                name="COND-NAME",
+                picture=None,
+                usage=None,
+                condition_values=("A", "B"),
+            ),
+        ),
+    )
+    cand_fact_comma = RecordLayoutFact(
+        program_id="PROG",
+        record_name="REC",
+        fields=(
+            RecordFieldFact(
+                field_kind="CONDITION_NAME",
+                level=88,
+                name="COND-NAME",
+                picture=None,
+                usage=None,
+                condition_values=("A,B",),
+            ),
+        ),
+    )
+    ev_bank = {"evidence": EvidenceSpan("legacy/core-banking-system/BANK-MAIN.CBL", 10, 15)}
+    sf_ab = SupportedSystemFact(
+        fact=host_fact_ab,
+        proposition_id="prop.test.ab",
+        evidence_spans=ev_bank,
+    )
+    idx_ab = SystemSupportIndex([sf_ab], bundle)
+    is_supp_2, reason_2, matched_2 = idx_ab.verify_role_bound_assertion(
+        cand_fact_comma,
+        ev_bank,
+    )
+    assert is_supp_2 is False
+    assert matched_2 is None
+    assert "structural" in reason_2.lower()
+
+    # 3. Host condition_values ("A,B",) vs model ["A", "B"]
+    sf_comma = SupportedSystemFact(
+        fact=cand_fact_comma,
+        proposition_id="prop.test.comma",
+        evidence_spans=ev_bank,
+    )
+    idx_comma = SystemSupportIndex([sf_comma], bundle)
+    is_supp_3, reason_3, matched_3 = idx_comma.verify_role_bound_assertion(
+        host_fact_ab,
+        ev_bank,
+    )
+    assert is_supp_3 is False
+    assert matched_3 is None
+    assert "structural" in reason_3.lower()
+
+    # 4. Fabricated DATA_FIELD condition_values
+    with pytest.raises(ValidationError):
+        RecordField(
+            field_kind="DATA_FIELD",
+            level=5,
+            name="ACC-NUM",
+            picture="9(10)",
+            usage="DISPLAY",
+            condition_values=["FABRICATED"],
+        )
+
+    # 5. Collision resilience: legacy semantic key collides while structural
+    # certification distinguishes facts.
+    sf1 = SupportedSystemFact(
+        fact=host_fact_ab,
+        proposition_id="prop.struct.ab",
+        evidence_spans=ev_bank,
+    )
+    sf2 = SupportedSystemFact(
+        fact=cand_fact_comma,
+        proposition_id="prop.struct.comma",
+        evidence_spans=ev_bank,
+    )
+    # Both have the exact same semantic key LAYOUT:PROG:REC
+    assert host_fact_ab.get_semantic_key() == cand_fact_comma.get_semantic_key()
+    multi_idx = SystemSupportIndex([sf1, sf2], bundle)
+
+    # Candidate matching sf1 matches sf1
+    s_ok1, _, m1 = multi_idx.verify_role_bound_assertion(
+        host_fact_ab,
+        ev_bank,
+    )
+    assert s_ok1 is True
+    assert m1 is not None
+    assert m1.proposition_id == "prop.struct.ab"
+
+    # Candidate matching sf2 matches sf2
+    s_ok2, _, m2 = multi_idx.verify_role_bound_assertion(
+        cand_fact_comma,
+        ev_bank,
+    )
+    assert s_ok2 is True
+    assert m2 is not None
+    assert m2.proposition_id == "prop.struct.comma"
+
+    # Third structure not in index is rejected
+    cand_fact_third = RecordLayoutFact(
+        program_id="PROG",
+        record_name="REC",
+        fields=(
+            RecordFieldFact(
+                field_kind="DATA_FIELD",
+                level=5,
+                name="OTHER-FIELD",
+                picture="X(1)",
+                usage="DISPLAY",
+                condition_values=(),
+            ),
+        ),
+    )
+    s_fail3, _, m3 = multi_idx.verify_role_bound_assertion(
+        cand_fact_third,
+        {"evidence": EvidenceSpan("legacy/core-banking-system/BANK-MAIN.CBL", 10, 15)},
+    )
+    assert s_fail3 is False
+    assert m3 is None
+
+
+def test_h7_4_clarification2_revalidation_attacks_on_typed_objects():
+    """Verify that evaluate_assessment entry rebuilds the complete model tree
+
+    so mutating existing nested typed objects post-init fails revalidation.
+    """
+    golden = load_golden_assessment()
+    bundle = read_system_bundle(REPO_ROOT)
+    parser = SystemCobolParser(bundle)
+    parser.parse_system()
+    facts = parser.get_supported_facts()
+    index = SystemSupportIndex(
+        facts, bundle, file_status_certificate=parser.file_status_certificate
+    )
+    evaluator = SystemEvaluatorV3(index)
+
+    # Attack 1: Mutate field_kind to lowercase 'data-field'
+    att1 = golden.model_copy(deep=True)
+    att1.record_layouts[0].fields[0].field_kind = "data-field"  # type: ignore[assignment]
+    with pytest.raises(ValidationError):
+        evaluator.evaluate_assessment(att1)
+
+    # Attack 2: DATA_FIELD with condition_values = ['FABRICATED']
+    att2 = golden.model_copy(deep=True)
+    att2.record_layouts[0].fields[0].condition_values = ["FABRICATED"]
+    with pytest.raises(ValidationError):
+        evaluator.evaluate_assessment(att2)
+
+    # Attack 3: Noncanonical token / lowercase identifier in program_id
+    att3 = golden.model_copy(deep=True)
+    att3.program_declarations[0].program_id = "bank-main"
+    with pytest.raises(ValidationError):
+        evaluator.evaluate_assessment(att3)
+
+    # Attack 4: Invalid level-88 invariant: DATA_FIELD with level = 88
+    att4 = golden.model_copy(deep=True)
+    att4.record_layouts[0].fields[0].level = 88
+    with pytest.raises(ValidationError):
+        evaluator.evaluate_assessment(att4)
+
+    # Attack 5: Invalid level-88 invariant: CONDITION_NAME with level = 5
+    att5 = golden.model_copy(deep=True)
+    last_fld = [f for f in att5.record_layouts[0].fields if f.field_kind == "CONDITION_NAME"][0]
+    last_fld.level = 5
+    with pytest.raises(ValidationError):
+        evaluator.evaluate_assessment(att5)
+
+    # Prove raw-dict and already-typed inputs have identical validation semantics
+    raw_dict = att2.model_dump(mode="python")
+    with pytest.raises(ValidationError):
+        evaluator.evaluate_assessment(raw_dict)
+
+
+def test_h7_4_b02_bounded_level_88_collector_unclosed_quotes():
+    """Verify B-02 quote-aware level-88 collector stops at structural boundaries,
+
+    fails closed on unclosed quotes, and does not consume subsequent declarations.
+    """
+    cobol_src = """       IDENTIFICATION DIVISION.
+       PROGRAM-ID. B02PROG.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 WS-ACCOUNT-REC.
+          05 WS-VALID-HEADER PIC X(10).
+          05 WS-STATUS PIC X(1).
+             88 WS-UNCLOSED-STATUS VALUE "MALFORMED.
+          05 WS-NEXT-FIELD PIC 9(4) USAGE DISPLAY.
+       PROCEDURE DIVISION.
+           STOP RUN.
+"""
+    bundle = _make_synth_bundle(cobol_src)
+    parser = SystemCobolParser(bundle)
+    cert = parser.parse_system()
+
+    # The unclosed quote level-88 is marked UNSUPPORTED_RELEVANT
+    assert cert.unsupported_relevant_count >= 1, (
+        "Unclosed quote must be classified UNSUPPORTED_RELEVANT"
+    )
+    assert cert.is_evaluation_blocked is True
+
+    # Check record layout fields
+    rec_facts = [f.fact for f in parser.supported_facts if isinstance(f.fact, RecordLayoutFact)]
+    assert len(rec_facts) == 1
+    rec = rec_facts[0]
+    field_names = [f.name for f in rec.fields]
+
+    # Malformed level-88 must emit NO condition fact
+    assert "WS-UNCLOSED-STATUS" not in field_names
+
+    # Subsequent declaration WS-NEXT-FIELD must be independently and cleanly parsed
+    assert "WS-NEXT-FIELD" in field_names
+    next_field = next(f for f in rec.fields if f.name == "WS-NEXT-FIELD")
+    assert next_field.field_kind == "DATA_FIELD"
+    assert next_field.level == 5
+    assert next_field.picture == "9(4)"
+    assert next_field.usage == "DISPLAY"
+
+
+def test_h7_4_b03_procedural_barrier_command_pairing_and_sequencing():
+    """Verify B-03 strict procedural linearity:
+
+    - Intervening control-flow (IF/ELSE/DISPLAY) blocks MOVE -> CALL SYSTEM pairing.
+    - Intervening control-flow blocks DELETE -> RENAME sequence pairing.
+    - Linear execution without barriers succeeds.
+    """
+    # 1. Control flow barrier (IF) between MOVE and CALL SYSTEM -> fails closed
+    src_if_barrier = """       IDENTIFICATION DIVISION.
+       PROGRAM-ID. B03BARRIER1.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 WS-CMD PIC X(100).
+       PROCEDURE DIVISION.
+           MOVE "cmd /c del ACCOUNTS.TMP" TO WS-CMD.
+           IF WS-CMD = "TEST"
+               CALL "SYSTEM" USING WS-CMD
+           END-IF.
+           STOP RUN.
+"""
+    p1 = SystemCobolParser(_make_synth_bundle(src_if_barrier))
+    p1.parse_system()
+    cmd_facts1 = [f.fact for f in p1.supported_facts if isinstance(f.fact, CommandInvocationFact)]
+    assert len(cmd_facts1) == 0, "MOVE and CALL separated by IF must not be paired"
+
+    # 2. Control flow barrier (DISPLAY) between DELETE and RENAME dispatches -> blocks sequence
+    src_display_barrier = """       IDENTIFICATION DIVISION.
+       PROGRAM-ID. B03BARRIER2.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 WS-CMD PIC X(100).
+       PROCEDURE DIVISION.
+           MOVE "cmd /c del ACCOUNTS.TMP" TO WS-CMD.
+           CALL "SYSTEM" USING WS-CMD.
+           DISPLAY "INTERVENING BARRIER".
+           MOVE "cmd /c ren ACCOUNTS.TMP ACCOUNTS.DAT" TO WS-CMD.
+           CALL "SYSTEM" USING WS-CMD.
+           STOP RUN.
+"""
+    p2 = SystemCobolParser(_make_synth_bundle(src_display_barrier))
+    p2.parse_system()
+    cmd_facts2 = [f.fact for f in p2.supported_facts if isinstance(f.fact, CommandInvocationFact)]
+    assert len(cmd_facts2) == 2, "Both commands should be paired individually"
+    seq_facts2 = [f.fact for f in p2.supported_facts if isinstance(f.fact, OperationSequenceFact)]
+    assert len(seq_facts2) == 0, "DELETE -> RENAME sequence must NOT cross DISPLAY barrier"
+
+    # 3. Direct linear dispatches without barriers -> sequence successfully extracted
+    src_linear = """       IDENTIFICATION DIVISION.
+       PROGRAM-ID. B03LINEAR.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 WS-CMD PIC X(100).
+       PROCEDURE DIVISION.
+           MOVE "cmd /c del ACCOUNTS.TMP" TO WS-CMD.
+           CALL "SYSTEM" USING WS-CMD.
+           MOVE "cmd /c ren ACCOUNTS.TMP ACCOUNTS.DAT" TO WS-CMD.
+           CALL "SYSTEM" USING WS-CMD.
+           STOP RUN.
+"""
+    p3 = SystemCobolParser(_make_synth_bundle(src_linear))
+    p3.parse_system()
+    seq_facts3 = [f.fact for f in p3.supported_facts if isinstance(f.fact, OperationSequenceFact)]
+    assert len(seq_facts3) == 1, "Direct sequential commands must produce OperationSequenceFact"
+    assert seq_facts3[0].first_operation == "DELETE"
+    assert seq_facts3[0].second_operation == "RENAME"
+
+
+def test_h7_4_generic_structural_equality_support_index():
+    """Verify exact complete structured dataclass equality in SystemSupportIndex.
+
+    Generic regression proving:
+    same semantic_key + different dataclass structure + same evidence -> UNSUPPORTED.
+    """
+    bundle = read_system_bundle(REPO_ROOT)
+    ev = EvidenceSpan("legacy/core-banking-system/INIT-DB.CBL", 7, 7)
+
+    # RecordLayoutFact: same legacy semantic key via joined condition values,
+    # but different dataclass structure (("A", "B") vs ("A,B",))
+    rec_host = RecordLayoutFact(
+        program_id="INIT-DB",
+        record_name="ACCOUNT-RECORD",
+        fields=(
+            RecordFieldFact(
+                field_kind="CONDITION_NAME",
+                level=88,
+                name="COND-NAME",
+                picture=None,
+                usage=None,
+                condition_values=("A", "B"),
+            ),
+        ),
+    )
+    rec_cand = RecordLayoutFact(
+        program_id="INIT-DB",
+        record_name="ACCOUNT-RECORD",
+        fields=(
+            RecordFieldFact(
+                field_kind="CONDITION_NAME",
+                level=88,
+                name="COND-NAME",
+                picture=None,
+                usage=None,
+                condition_values=("A,B",),
+            ),
+        ),
+    )
+    # Step 1: Prove semantic keys collide
+    assert rec_host.get_semantic_key() == rec_cand.get_semantic_key()
+    # Step 2: Prove dataclass equality is False
+    assert rec_host != rec_cand
+
+    # Step 3: Index lookup with host fact supported
+    sf_rec = SupportedSystemFact(
+        fact=rec_host, proposition_id="prop.rec", evidence_spans={"evidence": ev}
+    )
+    idx_rec = SystemSupportIndex([sf_rec], bundle)
+
+    # Step 4: Verification of candidate with same evidence MUST fail on structural equality
+    ok_rec, reason_rec, m_rec = idx_rec.verify_role_bound_assertion(rec_cand, {"evidence": ev})
+    assert ok_rec is False, "Candidate with different dataclass structure must NOT be supported"
+    assert m_rec is None, "Matched proposition must be None when structural equality fails"
+    assert "structural" in reason_rec.lower(), (
+        f"Rejection reason must cite structural mismatch: {reason_rec}"
+    )
+
+
+def test_h7_4_golden_direct_structural_comparison_vs_a1():
+    """Verify direct structural comparison of golden dataset vs A1 and reservation hashes.
+
+    - Golden dataset structurally equals A1 excluding ONLY 'version': '3.5.3'.
+    - artifacts/gate-3/baseline-v2/reservation-state.json has original exact SHA.
+    - artifacts/gate-3/baseline-v3 DOES NOT EXIST.
+    """
+    import subprocess
+
+    golden_path = REPO_ROOT / "evals/expected/system-understanding-v3.json"
+    current_golden = json.loads(golden_path.read_text(encoding="utf-8"))
+
+    # Fetch golden content from commit A1
+    a1_commit = "9672708e6bcdc01f9d6377535afbb9e11258126e"
+    proc = subprocess.run(
+        ["git", "show", f"{a1_commit}:evals/expected/system-understanding-v3.json"],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    a1_golden = json.loads(proc.stdout)
+
+    # Require equality of all scientific fields
+    assert current_golden["benchmark_design"] == a1_golden["benchmark_design"]
+    assert current_golden["golden_authoring_method"] == a1_golden["golden_authoring_method"]
+    assert current_golden["provenance_notes"] == a1_golden["provenance_notes"]
+    assert current_golden["total_expected_facts"] == 59
+    assert current_golden["total_expected_facts"] == a1_golden["total_expected_facts"]
+    assert current_golden["category_policies"] == a1_golden["category_policies"]
+    assert current_golden["group_counts"] == a1_golden["group_counts"]
+
+    # All 59 propositions identical
+    current_props = current_golden["propositions"]
+    a1_props = a1_golden["propositions"]
+    assert len(current_props) == 59
+    assert len(a1_props) == 59
+    assert current_props == a1_props
+
+    # Exclude ONLY version metadata
+    assert current_golden["version"] == "3.5.3"
+    assert a1_golden["version"] == "3.4.3"
+
+    # Baseline-v2 reservation hash byte-for-byte preserved
+    v2_res_file = REPO_ROOT / "artifacts/gate-3/baseline-v2/reservation-state.json"
+    assert v2_res_file.is_file()
+    expected_v2_sha = "108c51b222e476f32bd98c092c5dc814be9a25b4d1b93ae60f0f28ea2f5a631d"
+    actual_v2_sha = hashlib.sha256(v2_res_file.read_bytes()).hexdigest()
+    assert actual_v2_sha == expected_v2_sha, f"baseline-v2 reservation modified! {actual_v2_sha}"
+
+    # baseline-v3 artifacts MUST NOT EXIST
+    v3_art_dir = REPO_ROOT / "artifacts/gate-3/baseline-v3"
+    assert not v3_art_dir.exists(), "artifacts/gate-3/baseline-v3 must not exist"

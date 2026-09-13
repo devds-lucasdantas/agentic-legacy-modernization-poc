@@ -49,11 +49,11 @@ def test_load_authorization_spec_valid():
     spec, sha256 = mod.load_authorization_spec(spec_path)
 
     assert spec["gate"] == 3
-    assert spec["run_label"] == "baseline-v2"
+    assert spec["run_label"] == "baseline-v3"
     assert spec["requested_model"] == "gpt-5-mini"
-    assert spec["schema_version"] == "3.5.2"
-    assert spec["evaluator_version"] == "3.5.2"
-    assert spec["golden_dataset_version"] == "3.5.2"
+    assert spec["schema_version"] == "3.5.3"
+    assert spec["evaluator_version"] == "3.5.3"
+    assert spec["golden_dataset_version"] == "3.5.3"
     assert len(spec["target_bundle"]) == 6
     assert len(sha256) == 64
 
@@ -262,6 +262,10 @@ def test_f1_cli_default_coherence():
     mod = get_run_gate_3_module()
     v1_spec = REPO_ROOT / mod.CANONICAL_BASELINE_SPEC_V1
     v2_spec = REPO_ROOT / mod.CANONICAL_BASELINE_SPEC_V2
+    v3_spec = REPO_ROOT / mod.CANONICAL_BASELINE_SPEC_V3
+    assert v1_spec.is_file()
+    assert v2_spec.is_file()
+    assert v3_spec.is_file()
 
     # 1. Default CLI configuration
     import argparse
@@ -274,13 +278,13 @@ def test_f1_cli_default_coherence():
     )
     parser.add_argument("--auth-spec", default=mod.DEFAULT_AUTH_SPEC_PATH, help="Path to auth spec")
     args = parser.parse_args([])
-    assert args.auth_spec == mod.CANONICAL_BASELINE_SPEC_V2
+    assert args.auth_spec == mod.CANONICAL_BASELINE_SPEC_V3
     assert args.run_label is None
 
-    spec_v2, _ = mod.load_authorization_spec(REPO_ROOT / args.auth_spec)
-    effective_run_label = args.run_label or spec_v2["run_label"]
-    assert effective_run_label == "baseline-v2"
-    assert spec_v2["run_label"] == effective_run_label
+    spec_v3, _ = mod.load_authorization_spec(REPO_ROOT / args.auth_spec)
+    effective_run_label = args.run_label or spec_v3["run_label"]
+    assert effective_run_label == "baseline-v3"
+    assert spec_v3["run_label"] == effective_run_label
 
     # 2. Explicit mismatched run-label/spec fails closed
     with pytest.raises(ValueError, match="Run label mismatch"):

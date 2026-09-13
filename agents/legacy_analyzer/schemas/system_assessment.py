@@ -12,7 +12,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-SCHEMA_VERSION: str = "3.5.2"
+SCHEMA_VERSION: str = "3.5.3"
 
 
 def validate_canonical_identifier(name: str, value: str) -> str:
@@ -30,13 +30,36 @@ def validate_canonical_identifier(name: str, value: str) -> str:
     return value
 
 
+def validate_source_literal_content(name: str, value: str) -> str:
+    """Validate that source literal content is in unquoted representation.
+
+    Exact literal content preservation:
+    - Does NOT strip leading/trailing whitespace (boundary whitespace inside quotes is preserved).
+    - Does NOT uppercase or collapse whitespace.
+    - Rejects syntactic outer COBOL quote delimiters (starts/ends with matching ' or ").
+    """
+    if not value:
+        raise ValueError(f"{name} must not be empty")
+    if (value.startswith("'") and value.endswith("'") and len(value) >= 2) or (
+        value.startswith('"') and value.endswith('"') and len(value) >= 2
+    ):
+        raise ValueError(
+            f"{name} must be canonical unquoted literal content, "
+            f"not enclosed in quotes, got '{value}'"
+        )
+    return value
+
+
 def validate_canonical_literal_text(name: str, value: str) -> str:
     """Validate that source/literal text is in canonical unquoted form without whitespace repair."""
     if not value or value != value.strip():
         raise ValueError(f"{name} must not have leading or trailing whitespace, got '{value}'")
-    if value.startswith("'") or value.endswith("'") or value.startswith('"') or value.endswith('"'):
+    if (value.startswith("'") and value.endswith("'") and len(value) >= 2) or (
+        value.startswith('"') and value.endswith('"') and len(value) >= 2
+    ):
         raise ValueError(
-            f"{name} must not be enclosed in quotes or contain boundary quotes, got '{value}'"
+            f"{name} must be canonical unquoted literal content, "
+            f"not enclosed in quotes, got '{value}'"
         )
     return value
 
@@ -63,7 +86,7 @@ LifecycleOperationVerb = Literal[
 ]
 OperationKind = Literal["DELETE", "RENAME"]
 RecordRelationType = Literal["IDENTICAL", "EQUIVALENT", "REPRESENTATION_MISMATCH"]
-FileOrganization = Literal["LINE_SEQUENTIAL", "SEQUENTIAL", "INDEXED", "RELATIVE"]
+FileOrganization = Literal["LINE_SEQUENTIAL", "SEQUENTIAL"]
 CausalProvenance = Literal["UNKNOWN"]
 RiskCategory = Literal[
     "IO_ERROR_HANDLING",
@@ -275,6 +298,8 @@ class RecordField(BaseModel):
     @model_validator(mode="after")
     def validate_field_usage_and_picture(self) -> "RecordField":
         if self.field_kind == "DATA_FIELD":
+            if self.level == 88:
+                raise ValueError(f"DATA_FIELD '{self.name}' cannot have level 88")
             if self.usage is None:
                 raise ValueError(
                     f"DATA_FIELD '{self.name}' must explicitly declare usage "
@@ -282,7 +307,16 @@ class RecordField(BaseModel):
                 )
             if self.picture is None:
                 raise ValueError(f"DATA_FIELD '{self.name}' must provide picture specification")
+            if self.condition_values:
+                raise ValueError(
+                    f"DATA_FIELD '{self.name}' must have empty condition_values, "
+                    f"got {self.condition_values}"
+                )
         elif self.field_kind == "CONDITION_NAME":
+            if self.level != 88:
+                raise ValueError(
+                    f"CONDITION_NAME '{self.name}' must have level 88, got {self.level}"
+                )
             if self.usage is not None:
                 raise ValueError(
                     f"CONDITION_NAME '{self.name}' must have null usage, got '{self.usage}'"
@@ -290,6 +324,10 @@ class RecordField(BaseModel):
             if self.picture is not None:
                 raise ValueError(
                     f"CONDITION_NAME '{self.name}' must have null picture, got '{self.picture}'"
+                )
+            if not self.condition_values:
+                raise ValueError(
+                    f"CONDITION_NAME '{self.name}' must provide non-empty condition_values"
                 )
         return self
 

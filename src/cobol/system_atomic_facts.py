@@ -8,7 +8,27 @@ Strictly adheres to Guardrail A:
 - Role-bound multi-evidence coordinates for relational facts.
 """
 
-from dataclasses import dataclass, field
+import json
+from dataclasses import asdict, dataclass, field
+
+
+def exact_syntactic_unquote(raw_token: str) -> str:
+    """Strip exactly one matching pair of outer quotes from a syntactically quoted literal.
+
+    Operates strictly on raw source tokens already classified as quoted literals.
+    - If raw_token starts and ends with matching single quote ' and len >= 2:
+      returns raw_token[1:-1]
+    - If raw_token starts and ends with matching double quote " and len >= 2:
+      returns raw_token[1:-1]
+    - Otherwise raises ValueError (fails closed).
+    Never uses strip/lstrip/rstrip. Preserves all interior characters verbatim.
+    """
+    if len(raw_token) >= 2:
+        if raw_token[0] == "'" and raw_token[-1] == "'":
+            return raw_token[1:-1]
+        if raw_token[0] == '"' and raw_token[-1] == '"':
+            return raw_token[1:-1]
+    raise ValueError(f"Not a syntactically quoted COBOL literal token: {raw_token!r}")
 
 
 def normalize_identifier(text: str) -> str:
@@ -71,6 +91,20 @@ class SystemAtomicFact:
     def semantic_key(self) -> str:
         """Alias for get_semantic_key."""
         return self.get_semantic_key()
+
+    def get_canonical_structured_identity(self) -> str:
+        """Return a deterministic JSON string representing complete structured fact identity.
+
+        Conforms to Contract 3.5.3:
+        - Includes fact class/type discriminator (__fact_type__).
+        - Uses dataclasses.asdict().
+        - Sorts mapping keys deterministically.
+        - Preserves sequence order.
+        - Preserves string content verbatim without normalizing values during serialization.
+        """
+        data = asdict(self)
+        data["__fact_type__"] = self.__class__.__name__
+        return json.dumps(data, sort_keys=True, ensure_ascii=True)
 
 
 # ---------------------------------------------------------------------------

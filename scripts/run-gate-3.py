@@ -54,12 +54,12 @@ from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
-SPEC_VERSION = "3.5.2"
-SCHEMA_VERSION = "3.5.2"
-PROMPT_VERSION = "3.5.2"
-EVALUATOR_VERSION = "3.5.2"
-GOLDEN_DATASET_VERSION = "3.5.2"
-SUPPORTED_CONTRACT_VERSIONS = {"3.4.3", "3.5.0", "3.5.1", "3.5.2"}
+SPEC_VERSION = "3.5.3"
+SCHEMA_VERSION = "3.5.3"
+PROMPT_VERSION = "3.5.3"
+EVALUATOR_VERSION = "3.5.3"
+GOLDEN_DATASET_VERSION = "3.5.3"
+SUPPORTED_CONTRACT_VERSIONS = {"3.4.3", "3.5.0", "3.5.1", "3.5.2", "3.5.3"}
 
 SAFE_RUN_LABEL_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 HEX_64_PATTERN = re.compile(r"^[0-9a-f]{64}$")
@@ -75,12 +75,14 @@ EXCLUDED_DISTRIBUTIONS = {
 AUTHORIZED_BRANCH = "feat/gate-3-system-analysis"
 CANONICAL_BASELINE_SPEC_V1 = "evals/baselines/gate-3-baseline-v1.json"
 CANONICAL_BASELINE_SPEC_V2 = "evals/baselines/gate-3-baseline-v2.json"
+CANONICAL_BASELINE_SPEC_V3 = "evals/baselines/gate-3-baseline-v3.json"
 CANONICAL_BASELINE_SPECS = {
     CANONICAL_BASELINE_SPEC_V1,
     CANONICAL_BASELINE_SPEC_V2,
+    CANONICAL_BASELINE_SPEC_V3,
 }
-CANONICAL_BASELINE_SPEC = CANONICAL_BASELINE_SPEC_V2
-DEFAULT_AUTH_SPEC_PATH = CANONICAL_BASELINE_SPEC_V2
+CANONICAL_BASELINE_SPEC = CANONICAL_BASELINE_SPEC_V3
+DEFAULT_AUTH_SPEC_PATH = CANONICAL_BASELINE_SPEC_V3
 DEFAULT_GOLDEN_PATH = "evals/expected/system-understanding-v3.json"
 RESERVATION_STATE_FILE = "reservation-state.json"
 TERMINAL_RESULT_FILE = "terminal-result.json"
@@ -1049,7 +1051,7 @@ def execute_gate_3(
 
     # Derive effective run_label if omitted, or enforce matching if provided
     if run_label is None:
-        run_label = spec.get("run_label", "baseline-v2")
+        run_label = spec.get("run_label", "baseline-v3")
     elif spec.get("run_label") != run_label:
         raise ValueError(f"Run label mismatch: CLI={run_label}, spec={spec.get('run_label')}")
 

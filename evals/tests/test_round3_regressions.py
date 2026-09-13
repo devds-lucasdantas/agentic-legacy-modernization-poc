@@ -251,14 +251,15 @@ def test_behavioral_risk_missing_error_status_verification():
         and r.risk_basis_kind == "MISSING_ERROR_STATUS"
         and r.affected_resource_evidence.line_start == 7
     )
-    tx_risk.risk_basis_kind = "INVALID_INPUT_HANDLING"  # type: ignore[assignment]
+    tx_risk.risk_basis_kind = "NON_ATOMIC_EXTERNAL_MUTATION"
     res_bad_basis, preds_bad_basis = evaluator.evaluate_assessment(bad_basis_assessment)
     bad_pred = next(
         p
         for p in preds_bad_basis
         if p.fact_category == "BEHAVIORAL_RISK"
         and "TRANS-PROC" in p.semantic_key
-        and "INVALID_INPUT_HANDLING" in p.semantic_key
+        and "IO_ERROR_HANDLING" in p.semantic_key
+        and "NON_ATOMIC_EXTERNAL_MUTATION" in p.semantic_key
     )
     assert bad_pred.is_supported is False
 

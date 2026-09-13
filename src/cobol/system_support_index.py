@@ -101,6 +101,7 @@ class SystemSupportIndex:
                     None,
                 )
 
+        # Step 1: semantic-key bucket lookup
         key = candidate_fact.get_semantic_key()
         grounded_candidates = self._facts_by_semantic_key.get(key, [])
         if not grounded_candidates:
@@ -110,9 +111,20 @@ class SystemSupportIndex:
                 None,
             )
 
-        # Match exact role spans
+        # Match structural equality and exact role spans
+        structural_match_found = False
         for sf in grounded_candidates:
-            # Check if all required roles match
+            # Step 2: exact complete structured fact equality (dataclass equality)
+            if candidate_fact != sf.fact:
+                continue
+            structural_match_found = True
+
+            # Step 3: exact evidence role-set equality
+            if set(candidate_spans.keys()) != set(sf.evidence_spans.keys()):
+                continue
+
+            # Step 4: exact canonical path equality
+            # Step 5: exact line_start / line_end equality
             roles_match = True
             for role_name, expected_span in sf.evidence_spans.items():
                 cand_span = candidate_spans.get(role_name)
@@ -141,126 +153,136 @@ class SystemSupportIndex:
                     roles_match = False
                     break
 
-            if roles_match:
-                if (
-                    isinstance(candidate_fact, BehavioralRiskFact)
-                    and candidate_fact.risk_basis_kind == "MISSING_ERROR_STATUS"
-                ):
-                    if self.file_status_certificate is None:
-                        raise RuntimeError(
-                            "Whole-scope FileStatusCertificate is required to evaluate "
-                            "MISSING_ERROR_STATUS behavioral risk."
-                        )
+            if not roles_match:
+                continue
 
-                    cand_res_span = candidate_spans.get("affected_resource_evidence")
-                    cand_op_span = candidate_spans.get("operation_evidence")
-                    if cand_res_span is None or cand_op_span is None:
-                        return (
-                            False,
-                            "MISSING_ERROR_STATUS requires both affected_resource_evidence "
-                            "and operation_evidence",
-                            None,
-                        )
-
-                    # 1. Structurally identify the file binding from affected_resource_evidence
-                    target_record = None
-                    for (
-                        p_id,
-                        _f_name,
-                    ), rec in self.file_status_certificate.bindings.items():
-                        if p_id.upper() == candidate_fact.program_id.upper():
-                            res_file = rec.resource_span.file_path.replace("\\", "/")
-                            cand_res_file = cand_res_span.file_path.replace("\\", "/")
-                            path_match = (
-                                res_file == cand_res_file
-                                or res_file.endswith("/" + cand_res_file)
-                                or cand_res_file.endswith("/" + res_file)
-                            )
-                            if (
-                                path_match
-                                and cand_res_span.line_start == rec.resource_span.line_start
-                                and cand_res_span.line_end == rec.resource_span.line_end
-                            ):
-                                target_record = rec
-                                break
-
-                    if target_record is None:
-                        return (
-                            False,
-                            "Affected resource evidence does not match any known file binding in "
-                            f"{candidate_fact.program_id}",
-                            None,
-                        )
-
-                    # 1b. If candidate fact provides resource_name, it must match
-                    # target_record.internal_file_name
-                    if (
-                        candidate_fact.resource_name
-                        and candidate_fact.resource_name.upper()
-                        != target_record.internal_file_name.upper()
-                    ):
-                        return (
-                            False,
-                            f"Resource name '{candidate_fact.resource_name}' does not match "
-                            f"identified file binding '{target_record.internal_file_name}'",
-                            None,
-                        )
-
-                    # 2. Certificate must contain that exact binding
-                    if not self.file_status_certificate.binding_exists(
-                        candidate_fact.program_id, target_record.internal_file_name
-                    ):
-                        return (
-                            False,
-                            f"Binding {target_record.internal_file_name} in "
-                            f"{candidate_fact.program_id} missing from host certificate",
-                            None,
-                        )
-
-                    # 3. Certificate must prove has_file_status == False
-                    if target_record.has_file_status:
-                        return (
-                            False,
-                            "Whole-scope certificate proves FILE STATUS is declared for "
-                            f"{target_record.internal_file_name} in {candidate_fact.program_id}",
-                            None,
-                        )
-
-                    # 4. Grounded file operation evidence must match that same binding
-                    if target_record.operations_span is None:
-                        return (
-                            False,
-                            f"No grounded file operations exist for "
-                            f"{target_record.internal_file_name} in {candidate_fact.program_id}",
-                            None,
-                        )
-
-                    op_file = target_record.operations_span.file_path.replace("\\", "/")
-                    cand_op_file = cand_op_span.file_path.replace("\\", "/")
-                    op_path_match = (
-                        op_file == cand_op_file
-                        or op_file.endswith("/" + cand_op_file)
-                        or cand_op_file.endswith("/" + op_file)
+            # Step 6: category-specific certificate checks
+            if (
+                isinstance(candidate_fact, BehavioralRiskFact)
+                and candidate_fact.risk_basis_kind == "MISSING_ERROR_STATUS"
+            ):
+                if self.file_status_certificate is None:
+                    raise RuntimeError(
+                        "Whole-scope FileStatusCertificate is required to evaluate "
+                        "MISSING_ERROR_STATUS behavioral risk."
                     )
-                    if (
-                        not op_path_match
-                        or cand_op_span.line_start != target_record.operations_span.line_start
-                        or cand_op_span.line_end != target_record.operations_span.line_end
-                    ):
-                        return (
-                            False,
-                            f"Operation evidence does not match operations on "
-                            f"{target_record.internal_file_name} in {candidate_fact.program_id}",
-                            None,
-                        )
 
+                cand_res_span = candidate_spans.get("affected_resource_evidence")
+                cand_op_span = candidate_spans.get("operation_evidence")
+                if cand_res_span is None or cand_op_span is None:
                     return (
-                        True,
-                        "Supported by exact role-bound ground-truth AST fact and host "
-                        "file status certificate",
-                        sf,
+                        False,
+                        "MISSING_ERROR_STATUS requires both affected_resource_evidence "
+                        "and operation_evidence",
+                        None,
                     )
-                return True, "Supported by exact role-bound ground-truth AST fact", sf
+
+                # 1. Structurally identify the file binding from affected_resource_evidence
+                target_record = None
+                for (
+                    p_id,
+                    _f_name,
+                ), rec in self.file_status_certificate.bindings.items():
+                    if p_id.upper() == candidate_fact.program_id.upper():
+                        res_file = rec.resource_span.file_path.replace("\\", "/")
+                        cand_res_file = cand_res_span.file_path.replace("\\", "/")
+                        path_match = (
+                            res_file == cand_res_file
+                            or res_file.endswith("/" + cand_res_file)
+                            or cand_res_file.endswith("/" + res_file)
+                        )
+                        if (
+                            path_match
+                            and cand_res_span.line_start == rec.resource_span.line_start
+                            and cand_res_span.line_end == rec.resource_span.line_end
+                        ):
+                            target_record = rec
+                            break
+
+                if target_record is None:
+                    return (
+                        False,
+                        "Affected resource evidence does not match any known file binding in "
+                        f"{candidate_fact.program_id}",
+                        None,
+                    )
+
+                # 1b. If candidate fact provides resource_name, it must match
+                # target_record.internal_file_name
+                if (
+                    candidate_fact.resource_name
+                    and candidate_fact.resource_name.upper()
+                    != target_record.internal_file_name.upper()
+                ):
+                    return (
+                        False,
+                        f"Resource name '{candidate_fact.resource_name}' does not match "
+                        f"identified file binding '{target_record.internal_file_name}'",
+                        None,
+                    )
+
+                # 2. Certificate must contain that exact binding
+                if not self.file_status_certificate.binding_exists(
+                    candidate_fact.program_id, target_record.internal_file_name
+                ):
+                    return (
+                        False,
+                        f"Binding {target_record.internal_file_name} in "
+                        f"{candidate_fact.program_id} missing from host certificate",
+                        None,
+                    )
+
+                # 3. Certificate must prove has_file_status == False
+                if target_record.has_file_status:
+                    return (
+                        False,
+                        "Whole-scope certificate proves FILE STATUS is declared for "
+                        f"{target_record.internal_file_name} in {candidate_fact.program_id}",
+                        None,
+                    )
+
+                # 4. Grounded file operation evidence must match that same binding
+                if target_record.operations_span is None:
+                    return (
+                        False,
+                        f"No grounded file operations exist for "
+                        f"{target_record.internal_file_name} in {candidate_fact.program_id}",
+                        None,
+                    )
+
+                op_file = target_record.operations_span.file_path.replace("\\", "/")
+                cand_op_file = cand_op_span.file_path.replace("\\", "/")
+                op_path_match = (
+                    op_file == cand_op_file
+                    or op_file.endswith("/" + cand_op_file)
+                    or cand_op_file.endswith("/" + op_file)
+                )
+                if (
+                    not op_path_match
+                    or cand_op_span.line_start != target_record.operations_span.line_start
+                    or cand_op_span.line_end != target_record.operations_span.line_end
+                ):
+                    return (
+                        False,
+                        f"Operation evidence does not match operations on "
+                        f"{target_record.internal_file_name} in {candidate_fact.program_id}",
+                        None,
+                    )
+
+                return (
+                    True,
+                    "Supported by exact role-bound ground-truth AST fact and host "
+                    "file status certificate",
+                    sf,
+                )
+            return True, "Supported by exact role-bound ground-truth AST fact", sf
+
+        if not structural_match_found:
+            return (
+                False,
+                f"Structural fact mismatch against ground truth for semantic key '{key}'",
+                None,
+            )
 
         return (
             False,

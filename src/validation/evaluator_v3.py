@@ -42,7 +42,7 @@ from src.cobol.system_atomic_facts import (
 )
 from src.cobol.system_support_index import SystemSupportIndex
 
-EVALUATOR_VERSION: str = "3.5.2"
+EVALUATOR_VERSION: str = "3.5.3"
 
 
 def _single_span(ev: Any) -> dict[str, EvidenceSpan]:
@@ -165,9 +165,12 @@ class SystemEvaluatorV3:
     ) -> tuple[EvaluationMetricSummary, list[EvaluatedPrediction]]:
         """Evaluate a model assessment against the support index and golden dataset."""
         if isinstance(assessment, dict):
-            assessment_obj = SystemAssessment.model_validate(assessment)
+            raw_payload = assessment
+        elif hasattr(assessment, "model_dump"):
+            raw_payload = assessment.model_dump(mode="python", round_trip=True)
         else:
-            assessment_obj = assessment
+            raise TypeError(f"Expected SystemAssessment or dict, got {type(assessment).__name__}")
+        assessment_obj = SystemAssessment.model_validate(raw_payload)
 
         candidate_items: list[tuple[SystemAtomicFact, dict[str, EvidenceSpan]]] = []
 
@@ -260,6 +263,8 @@ class SystemEvaluatorV3:
                     usage=fld.usage,
                     condition_values=tuple(fld.condition_values),
                 )
+                _assert_canonical(fld.field_kind, rf.field_kind, "field.field_kind")
+                _assert_canonical(fld.level, rf.level, "field.level")
                 _assert_canonical(fld.name, rf.name, "field.name")
                 if fld.picture is not None:
                     _assert_canonical(fld.picture, rf.picture, "field.picture")
@@ -569,7 +574,9 @@ class SystemEvaluatorV3:
                     )
 
             # Duplicate signature MUST be built from canonical span coordinates
-            span_sig = f"{key}|" + "|".join(
+            # and canonical structured identity
+            struct_id = fact.get_canonical_structured_identity()
+            span_sig = f"{struct_id}|" + "|".join(
                 f"{r}:{s.file_path}:{s.line_start}-{s.line_end}"
                 for r, s in sorted(canon_spans.items())
             )

@@ -41,6 +41,7 @@ from src.cobol.system_atomic_facts import (
     SupportedSystemFact,
     TerminationSiteFact,
     canonicalize_picture,
+    exact_syntactic_unquote,
 )
 
 
@@ -244,14 +245,95 @@ def tokenize_cobol_line(line: str) -> list[str]:
         elif char == "." and (i + 1 >= n or line[i + 1].isspace()):
             tokens.append(".")
             i += 1
+        elif char in (",", ";") and (i + 1 >= n or line[i + 1].isspace()):
+            tokens.append(char)
+            i += 1
         else:
             start = i
             while i < n and not line[i].isspace() and line[i] not in ("'", '"'):
-                if line[i] == "." and (i + 1 >= n or line[i + 1].isspace()):
+                if line[i] in (".", ",", ";") and (i + 1 >= n or line[i + 1].isspace()):
                     break
                 i += 1
             tokens.append(line[start:i])
     return tokens
+
+
+def is_cobol_structural_boundary(line: str) -> bool:
+    """Check if a line represents an obvious COBOL structural boundary.
+
+    Structural boundaries include:
+    - Another data declaration level: 01-49, 77, 88
+    - FD / SD / RD / CD declarations
+    - Division / Section headers: e.g. PROCEDURE DIVISION, WORKING-STORAGE SECTION, etc.
+    """
+    stripped = line.strip()
+    if not stripped:
+        return False
+    if stripped.startswith("*") or (len(line) >= 7 and line[6] == "*"):
+        return False
+    upper = stripped.upper()
+    tokens = upper.split()
+    if not tokens:
+        return False
+    first = tokens[0].rstrip(".")
+    if first.isdigit():
+        val = int(first)
+        if (1 <= val <= 49) or val in (77, 88):
+            return True
+    if first in ("FD", "SD", "RD", "CD"):
+        return True
+    if any(kw in upper for kw in ("DIVISION", "SECTION")):
+        return True
+    return False
+
+
+def has_procedural_barrier_between(
+    lines: list[str],
+    line_start_excl: int,
+    line_end_excl: int,
+) -> bool:
+    """Check if lines between line_start_excl and line_end_excl contain a control barrier.
+
+    Barriers include:
+    - Branching / conditionals: IF, ELSE, END-IF, EVALUATE, WHEN, END-EVALUATE
+    - Loops: PERFORM, END-PERFORM
+    - Control transfers / exits: GO, GOTO, STOP, GOBACK, EXIT
+    - Regional markers: SECTION headers, paragraph label lines
+    - I/O / side-effect statements: DISPLAY, ACCEPT
+    """
+    barrier_words = {
+        "IF",
+        "ELSE",
+        "END-IF",
+        "EVALUATE",
+        "WHEN",
+        "END-EVALUATE",
+        "PERFORM",
+        "END-PERFORM",
+        "DISPLAY",
+        "ACCEPT",
+        "GO",
+        "GOTO",
+        "STOP",
+        "GOBACK",
+        "EXIT",
+        "SECTION",
+    }
+    for l_num in range(line_start_excl + 1, line_end_excl):
+        if l_num > len(lines):
+            break
+        raw = lines[l_num - 1]
+        stripped = raw.strip()
+        if not stripped or stripped.startswith("*") or (len(raw) >= 7 and raw[6] == "*"):
+            continue
+        toks = tokenize_cobol_line(raw)
+        toks_upper = [t.upper() for t in toks if t != "."]
+        if any(w in toks_upper for w in barrier_words):
+            return True
+        # Paragraph label heuristic: single token on line ending with period
+        if stripped.endswith(".") and len(toks_upper) == 1:
+            return True
+    return False
 
 
 def parse_cobol_picture(pic: str | None) -> tuple[int, int]:
@@ -297,7 +379,7 @@ def classify_command_operation(cmd_text: str) -> tuple[str, str | None, str | No
     - MOVE: source is old location, target is new location
     - EXECUTE: fallback
     """
-    clean = cmd_text.strip().strip("'\"")
+    clean = cmd_text.strip()
     unwrapped = re.sub(
         r"^(?:cmd(?:\.exe)?\s+/c|/(?:usr/)?bin/(?:ba)?sh\s+-c|(?:ba)?sh\s+-c)\s+",
         "",
@@ -309,19 +391,26 @@ def classify_command_operation(cmd_text: str) -> tuple[str, str | None, str | No
     if not tokens:
         return ("EXECUTE", None, None)
 
+    def _unquote_shell_arg(arg: str) -> str:
+        if (arg.startswith('"') and arg.endswith('"') and len(arg) >= 2) or (
+            arg.startswith("'") and arg.endswith("'") and len(arg) >= 2
+        ):
+            return arg[1:-1]
+        return arg
+
     verb = tokens[0].lower()
     args = tokens[1:]
 
     if verb in ("del", "delete", "erase", "rm"):
-        target = args[0].strip("'\"") if args else None
+        target = _unquote_shell_arg(args[0]) if args else None
         return ("DELETE", None, target)
     elif verb in ("ren", "rename", "mv", "move"):
-        source = args[0].strip("'\"") if len(args) > 0 else None
-        target = args[1].strip("'\"") if len(args) > 1 else None
+        source = _unquote_shell_arg(args[0]) if len(args) > 0 else None
+        target = _unquote_shell_arg(args[1]) if len(args) > 1 else None
         return ("RENAME", source, target)
     elif verb in ("copy", "cp"):
-        source = args[0].strip("'\"") if len(args) > 0 else None
-        target = args[1].strip("'\"") if len(args) > 1 else None
+        source = _unquote_shell_arg(args[0]) if len(args) > 0 else None
+        target = _unquote_shell_arg(args[1]) if len(args) > 1 else None
         return ("COPY", source, target)
     else:
         return ("EXECUTE", None, None)
@@ -576,6 +665,24 @@ class SystemCobolParser:
 
                 end_l = i + 1
 
+                # Check for unsupported file organizations: INDEXED, RELATIVE
+                if re.search(
+                    r"\bORGANIZATION\s+(?:IS\s+)?(?:INDEXED|RELATIVE)\b", clause_text, re.I
+                ):
+                    self.statements.append(
+                        ClassifiedStatement(
+                            target_file.relative_path,
+                            start_l,
+                            end_l,
+                            "SELECT",
+                            clause_text,
+                            StatementClassification.UNSUPPORTED_RELEVANT,
+                            "Unsupported file organization (INDEXED/RELATIVE)",
+                        )
+                    )
+                    i += 1
+                    continue
+
                 # Parse assign target with generic quote-aware regex
                 m_assign = re.search(
                     r"ASSIGN\s+(?:TO\s+)?(?:'([^']*)'|\"([^\"]*)\"|([^\s.]+))",
@@ -583,9 +690,12 @@ class SystemCobolParser:
                     re.I,
                 )
                 if m_assign:
-                    assign_target = (
-                        m_assign.group(1) or m_assign.group(2) or m_assign.group(3) or ""
-                    ).strip()
+                    if m_assign.group(1) is not None:
+                        assign_target = m_assign.group(1)
+                    elif m_assign.group(2) is not None:
+                        assign_target = m_assign.group(2)
+                    elif m_assign.group(3) is not None:
+                        assign_target = m_assign.group(3)
 
                 if re.search(r"LINE\s+SEQUENTIAL", clause_text, re.I):
                     org_val = "LINE_SEQUENTIAL"
@@ -736,71 +846,112 @@ class SystemCobolParser:
                 continue
 
             if first == "88":
-                cond_name = tokens[1].rstrip(".") if len(tokens) > 1 else ""
-                val_tokens = [t.upper() for t in tokens]
-                start_idx = -1
-                for v_key in ("VALUE", "VALUES"):
-                    if v_key in val_tokens:
-                        start_idx = val_tokens.index(v_key) + 1
-                        if start_idx < len(tokens) and val_tokens[start_idx] in ("IS", "ARE"):
-                            start_idx += 1
+                start_l = line_num
+                combined_clause_lines = [raw_line]
+                curr_i = i
+
+                def _has_terminating_period(text: str) -> bool:
+                    toks = tokenize_cobol_line(text)
+                    return bool(toks and toks[-1] == ".")
+
+                is_safely_terminated = _has_terminating_period(raw_line)
+
+                while not is_safely_terminated and (curr_i + 1) < n:
+                    next_line = lines[curr_i + 1]
+                    # Check if next line is an obvious structural boundary
+                    if is_cobol_structural_boundary(next_line):
+                        break
+                    # Slurp continuation line
+                    curr_i += 1
+                    combined_clause_lines.append(next_line)
+                    combined_text = " ".join(combined_clause_lines)
+                    if _has_terminating_period(combined_text):
+                        is_safely_terminated = True
                         break
 
-                is_supported = True
+                end_l = curr_i + 1
+                clause_text = " ".join(combined_clause_lines)
+
+                is_supported = is_safely_terminated
                 cond_vals: list[str] = []
+                cond_name = ""
 
-                if not cond_name or start_idx == -1 or start_idx >= len(tokens):
-                    is_supported = False
-                else:
-                    # Check raw line in VALUE clause for doubled quote escaping or backslashes
-                    val_kw_idx = -1
-                    upper_raw = raw_line.upper()
-                    for kw in ("VALUES", "VALUE"):
-                        kpos = upper_raw.find(kw)
-                        if kpos != -1:
-                            val_kw_idx = kpos + len(kw)
+                if is_supported:
+                    c_tokens = tokenize_cobol_line(clause_text)
+                    no_dot_tokens = [t for t in c_tokens if t != "."]
+                    if len(no_dot_tokens) > 1 and no_dot_tokens[0] == "88":
+                        cond_name = no_dot_tokens[1]
+                    else:
+                        is_supported = False
+
+                    val_tokens_upper = [t.upper() for t in no_dot_tokens]
+                    start_idx = -1
+                    for v_key in ("VALUE", "VALUES"):
+                        if v_key in val_tokens_upper:
+                            start_idx = val_tokens_upper.index(v_key) + 1
+                            if start_idx < len(no_dot_tokens) and val_tokens_upper[start_idx] in (
+                                "IS",
+                                "ARE",
+                            ):
+                                start_idx += 1
                             break
-                    if val_kw_idx != -1:
-                        val_portion = raw_line[val_kw_idx:]
-                        if "''" in val_portion or '""' in val_portion or "\\" in val_portion:
-                            is_supported = False
 
-                    if is_supported:
-                        for t in tokens[start_idx:]:
-                            t_upper = t.rstrip(".,").upper()
-                            # Reject range keywords, logical connectors, and unsupported tokens
-                            if t_upper in ("THRU", "THROUGH", "OR", "AND", "TO", "WHEN", "ALSO"):
-                                is_supported = False
+                    if not cond_name or start_idx == -1 or start_idx >= len(no_dot_tokens):
+                        is_supported = False
+                    else:
+                        val_kw_idx = -1
+                        upper_clause = clause_text.upper()
+                        for kw in ("VALUES", "VALUE"):
+                            kpos = upper_clause.find(kw)
+                            if kpos != -1:
+                                val_kw_idx = kpos + len(kw)
                                 break
-                            if ".." in t:
+                        if val_kw_idx != -1:
+                            val_portion = clause_text[val_kw_idx:]
+                            if "''" in val_portion or '""' in val_portion or "\\" in val_portion:
                                 is_supported = False
-                                break
 
-                            t_clean = t.rstrip(".,")
-                            if not t_clean:
-                                continue
-
-                            # Check for string literal
-                            if t_clean.startswith("'") or t_clean.startswith('"'):
-                                quote_char = t_clean[0]
-                                if not t_clean.endswith(quote_char) or len(t_clean) < 2:
+                        if is_supported:
+                            for t in no_dot_tokens[start_idx:]:
+                                if t in (",", ";"):
+                                    continue
+                                t_upper = t.upper()
+                                if t_upper in (
+                                    "THRU",
+                                    "THROUGH",
+                                    "OR",
+                                    "AND",
+                                    "TO",
+                                    "WHEN",
+                                    "ALSO",
+                                ):
                                     is_supported = False
                                     break
-                                inner = t_clean[1:-1]
-                                if "'" in inner or '"' in inner:
+                                if ".." in t:
                                     is_supported = False
                                     break
-                                cond_vals.append(inner)
-                            else:
-                                # Check for simple numeric literal (integer or decimal)
-                                if re.match(r"^[+-]?\d+(?:\.\d+)?$", t_clean):
-                                    cond_vals.append(t_clean)
+
+                                if (t.startswith("'") and t.endswith("'") and len(t) >= 2) or (
+                                    t.startswith('"') and t.endswith('"') and len(t) >= 2
+                                ):
+                                    try:
+                                        inner = exact_syntactic_unquote(t)
+                                    except ValueError:
+                                        is_supported = False
+                                        break
+                                    if "'" in inner or '"' in inner:
+                                        is_supported = False
+                                        break
+                                    cond_vals.append(inner)
                                 else:
-                                    is_supported = False
-                                    break
+                                    if re.match(r"^[+-]?\d+(?:\.\d+)?$", t):
+                                        cond_vals.append(t)
+                                    else:
+                                        is_supported = False
+                                        break
 
-                        if not cond_vals:
-                            is_supported = False
+                            if not cond_vals:
+                                is_supported = False
 
                 if is_supported:
                     ast_cond = ASTDataField(
@@ -808,22 +959,22 @@ class SystemCobolParser:
                         name=cond_name,
                         picture=None,
                         usage="DISPLAY",
-                        line_start=line_num,
-                        line_end=line_num,
+                        line_start=start_l,
+                        line_end=end_l,
                         field_kind="CONDITION_NAME",
                         condition_values=cond_vals,
                     )
                     if current_record:
                         current_record.fields.append(ast_cond)
-                        current_record.line_end = line_num
+                        current_record.line_end = max(current_record.line_end, end_l)
 
                     self.statements.append(
                         ClassifiedStatement(
                             target_file.relative_path,
-                            line_num,
-                            line_num,
+                            start_l,
+                            end_l,
                             "CONDITION_88",
-                            raw_line,
+                            clause_text,
                             StatementClassification.PARSED_AND_SCORED,
                             "Condition level 88",
                         )
@@ -832,15 +983,15 @@ class SystemCobolParser:
                     self.statements.append(
                         ClassifiedStatement(
                             target_file.relative_path,
-                            line_num,
-                            line_num,
+                            start_l,
+                            end_l,
                             "CONDITION_88",
-                            raw_line,
+                            clause_text,
                             StatementClassification.UNSUPPORTED_RELEVANT,
                             "Unsupported condition level 88 syntax",
                         )
                     )
-                i += 1
+                i = curr_i + 1
                 continue
 
             # PROCEDURE DIVISION / PARAGRAPHS
@@ -881,8 +1032,16 @@ class SystemCobolParser:
 
             # PROCEDURAL VERBS
             if first == "CALL":
-                target_str = tokens[1].strip("'\"") if len(tokens) > 1 else ""
-                is_lit = tokens[1].startswith("'") or tokens[1].startswith('"')
+                raw_target = tokens[1] if len(tokens) > 1 else ""
+                is_lit = (
+                    raw_target.startswith("'") and raw_target.endswith("'") and len(raw_target) >= 2
+                ) or (
+                    raw_target.startswith('"') and raw_target.endswith('"') and len(raw_target) >= 2
+                )
+                if is_lit:
+                    target_str = exact_syntactic_unquote(raw_target)
+                else:
+                    target_str = raw_target
                 using_list: list[str] = []
                 if "USING" in [t.upper() for t in tokens]:
                     u_idx = [t.upper() for t in tokens].index("USING")
@@ -1394,7 +1553,9 @@ class SystemCobolParser:
         for unit in self.compilation_units:
             caller = unit.program_id or "UNKNOWN"
             n_stmts = len(unit.statements)
-            commands_in_unit: list[tuple[ASTMove, ASTCall, int, int]] = []
+            target_unit_file = self.bundle.get_file(unit.file_path)
+            unit_raw_lines = target_unit_file.get_lines()
+            commands_in_unit = []
 
             for idx in range(n_stmts - 1):
                 s1 = unit.statements[idx]
@@ -1406,7 +1567,20 @@ class SystemCobolParser:
                         and s2.using_args
                         and s1.target_operand in s2.using_args
                     ):
-                        cmd_clean = s1.source_operand.strip("'\"")
+                        # B-03: Strict procedural linearity and barrier check
+                        # between MOVE and CALL SYSTEM
+                        has_intervening_stmt = any(
+                            s.file_path == unit.file_path
+                            and s1.line_end < s.line_start < s2.line_start
+                            for s in self.statements
+                        )
+                        has_barrier = has_intervening_stmt or has_procedural_barrier_between(
+                            unit_raw_lines, s1.line_end, s2.line_start
+                        )
+                        if has_barrier:
+                            continue
+
+                        cmd_clean = exact_syntactic_unquote(s1.source_operand)
                         commands_in_unit.append((s1, s2, idx, idx + 1))
 
                         # Command invocation
@@ -1449,7 +1623,7 @@ class SystemCobolParser:
 
             # Validate external command operations: non-DELETE/RENAME fail closed in coverage
             for m_cmd, c_cmd, _, _ in commands_in_unit:
-                c_clean = m_cmd.source_operand.strip("'\"")
+                c_clean = exact_syntactic_unquote(m_cmd.source_operand)
                 op_k, _, _ = classify_command_operation(c_clean)
                 if op_k not in ("DELETE", "RENAME"):
                     for stmt_cand in (m_cmd, c_cmd):
@@ -1475,18 +1649,21 @@ class SystemCobolParser:
                     m2, c2, m2_idx, c2_idx = commands_in_unit[c_idx + 1]
 
                     # Sequences require adjacent command dispatches
-                    # (no intervening procedural statements)
+                    # (no intervening procedural statements or barriers)
                     if m2_idx != c1_idx + 1:
                         continue
                     has_intervening = any(
                         s.file_path == unit.file_path and c1.line_end < s.line_start < m2.line_start
                         for s in self.statements
                     )
-                    if has_intervening:
+                    has_seq_barrier = has_intervening or has_procedural_barrier_between(
+                        unit_raw_lines, c1.line_end, m2.line_start
+                    )
+                    if has_seq_barrier:
                         continue
 
-                    cmd1_clean = m1.source_operand.strip("'\"")
-                    cmd2_clean = m2.source_operand.strip("'\"")
+                    cmd1_clean = exact_syntactic_unquote(m1.source_operand)
+                    cmd2_clean = exact_syntactic_unquote(m2.source_operand)
 
                     op1_kind, op1_src, op1_tgt = classify_command_operation(cmd1_clean)
                     op2_kind, op2_src, op2_tgt = classify_command_operation(cmd2_clean)
@@ -1866,7 +2043,7 @@ class SystemCobolParser:
                 (
                     fb
                     for fb in unit.file_bindings
-                    if Path(fb.external_file_name.strip("'\"")).stem.upper() == dat_stem
+                    if Path(fb.external_file_name).stem.upper() == dat_stem
                 ),
                 None,
             )
@@ -1909,7 +2086,12 @@ class SystemCobolParser:
                 if isinstance(stmt, ASTMove):
                     t_name = stmt.target_operand.upper()
                     if t_name in field_offsets:
-                        staged_moves[t_name] = (stmt.source_operand.strip("'\""), stmt)
+                        source_val = (
+                            exact_syntactic_unquote(stmt.source_operand)
+                            if stmt.is_literal_source
+                            else stmt.source_operand
+                        )
+                        staged_moves[t_name] = (source_val, stmt)
                 elif isinstance(stmt, ASTFileOp) and stmt.verb == "WRITE":
                     if key_field_name in staged_moves:
                         staged_id, _ = staged_moves[key_field_name]

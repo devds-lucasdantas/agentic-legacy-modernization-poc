@@ -1,0 +1,50 @@
+{
+  "spec_version": "3.5.3",
+  "gate": 3,
+  "run_label": "baseline-v3",
+  "candidate_git_sha": "",
+  "reasoning_effort": "low",
+  "requested_model": "gpt-5-mini",
+  "foundry_project_fingerprint": "3f0c34d730680ad8baac11d2825e120045eb19be1d9ec1c0b2a2d337096ae33f",
+  "openai_client_max_retries": 0,
+  "application_model_retries": 0,
+  "maximum_model_attempts": 1,
+  "maximum_logical_invocation_count": 1,
+  "prompt_sha256": "4be25cfc25933d6f0e69cbeeae1efe12ccf2e1354857e04c90108d8534ea92e8",
+  "wire_schema_sha256": "1cd36bf69496c063bc93a15c9334398e2256be527b4de3ff2e9b897a09c94c3c",
+  "source_manifest_sha256": "daf28b3314199db8e31bfacdf2fb8441b54682caa7854ed288e1bc00866a1dd1",
+  "bundle_serialization_version": "1.0.0",
+  "bundle_sha256": "95bb386b51d653c0a1834e1950634a9887b7cb6826b8c317a07c4b6a4167d060",
+  "dependency_lock_sha256": "732cb9370e90af2d0972eeda7fc18fd5745f17cb301f359b268df228fe7f18be",
+  "schema_version": "3.5.3",
+  "prompt_version": "3.5.3",
+  "evaluator_version": "3.5.3",
+  "golden_dataset_version": "3.5.3",
+  "golden_dataset_sha256": "da5bdee9286dd5fbc79cb8331b70aabf73fca029fe4a3d3c5ede5ed2c984b82b",
+  "target_bundle": [
+    {
+      "path": "legacy/core-banking-system/ACCOUNTS.CPY",
+      "sha256": "8be563740b435cbe89775659a302dac70362e7aa9de227632326d0d85f3e36bf"
+    },
+    {
+      "path": "legacy/core-banking-system/ACCOUNTS.DAT",
+      "sha256": "f1d10d416848db31ef8d33b7735acab6d482ab6d83b28350e16a708fbc353d2d"
+    },
+    {
+      "path": "legacy/core-banking-system/BANK-MAIN.CBL",
+      "sha256": "b03adc9592f2853006263ef67fcc6dc716b99333b84bc0198bff7b7f0af1a028"
+    },
+    {
+      "path": "legacy/core-banking-system/INIT-DB.CBL",
+      "sha256": "4732bea13b5ec6ed5dc4b1d63f70d5e69fb76e8f65270da9f365fcc1ed88a4b1"
+    },
+    {
+      "path": "legacy/core-banking-system/REPORT-GEN.CBL",
+      "sha256": "568b514089efb24b9d3855e3562601c2da506213c72eb5f5464542acb14c0993"
+    },
+    {
+      "path": "legacy/core-banking-system/TRANS-PROC.CBL",
+      "sha256": "2dbb4fe4d0208271ffb1e2c26fe67dfde8b99163ed0046091bee96db8e3c1267"
+    }
+  ]
+}
