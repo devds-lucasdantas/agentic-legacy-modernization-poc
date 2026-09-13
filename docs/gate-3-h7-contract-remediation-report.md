@@ -301,11 +301,77 @@ The 59-fact golden dataset `evals/expected/system-understanding-v3.json` was dir
 
 ---
 
-## 10. Final Status (H7.4 Release)
+## 10. H7.4.1 Contract 3.5.3 Source-Literal Content Hotfix
 
-- **Functional Commit (H7.4-0):** `9def1a79cdf5fa45395b7922347ea408960e9cbf`
-- **Report Commit (H7.4):** Direct report-only child of `H7.4-0`
+Following comprehensive review of H7.4, H7.4.1 was approved with four mandatory corrections to enforce precise source-literal content semantics without heuristic truncation or artificial schema constraints.
+
+### 10.1 Four Required Adjustments
+
+1. **Generic Source-Literal Content Permits Valid Strings Verbatim (Including Empty):**
+   - In `agents/legacy_analyzer/schemas/system_assessment.py`, `validate_source_literal_content()` was updated to treat literal content strictly as semantic strings after exact syntactic unquoting (`exact_syntactic_unquote()`).
+   - The generic validator does not enforce universal non-emptiness. It permits `""`, `" "`, `"  A  "`, `"\"A\""`, `"'A'"`, and arbitrary punctuation/case verbatim. It does not strip, uppercase, collapse whitespace, infer syntactic quotes, or reject quote-looking boundary characters.
+   - Domain-specific non-emptiness is enforced at the individual field level (`external_file_name`, `command_template`, `command_literal`).
+   - Condition values (`condition_values`) and data state values (`dat_record_value`, `initializer_code_value`) permit empty strings `""` where supported by the source domain.
+
+2. **Parser Source Extraction Fails Closed on Unsupported Quoting:**
+   - In `src/cobol/system_cobol_parser.py`, all literal extraction paths were audited:
+     - `SELECT ... ASSIGN`: Identified complete literal tokens, verified exactly one matching outer quote pair, preserved all interior characters, and failed closed with `UNSUPPORTED_RELEVANT` (and zero `FileBindingFact`) on unclosed quotes, same-quote doubled escapes, backslashes, unseparated trailing garbage (e.g. `'accounts.dat'xyz`), and empty file names.
+     - `tokenize_cobol_line()`: Refined to capture contiguous unseparated tokens (such as `'A''B'` or `'accounts.dat'extra`) as full un-split tokens so the parser detects unseparated doubled quotes and malformed syntax rather than silently truncating them into separate tokens.
+     - Level-88 conditions: Validates each value token, allowing opposite-quote literal content (e.g. `VALUE '"A"'` -> `'"A"'`), empty literals `VALUE ''` -> `""`, while failing closed on same-quote escapes (`'A''B'`), unclosed quotes, or backslashes.
+     - Command literals (`MOVE ... TO WS-CMD` / `CALL 'SYSTEM'`): Fails closed on unclosed quotes, doubled quotes, backslashes, or empty command literals, while preserving exact boundary whitespace (`MOVE ' cmd /c ... '`).
+     - Initializer moves: Fails closed on unsupported quote syntax, preserving empty and whitespace-bearing literals.
+
+3. **Removed Character-Based Placeholder Heuristics from `command_literal`:**
+   - Removed speculative regex/character bans (`*`, `<`, `>`, `...`) from `PlatformDependency.command_literal`. Concrete shell syntax containing wildcards or redirections (e.g. `cmd /c del *.tmp`) can now be represented losslessly.
+   - Grounding is enforced via structured equality against host facts (`model command_literal == exact host command_literal`). A fabricated template placeholder (e.g. `cmd /c <...>`) fails support certification because it does not equal any grounded host fact, not via schema regex heuristics.
+
+4. **Aligned Model-Visible Field Descriptions on Wire Schema:**
+   - Updated descriptions across all affected literal fields in `SystemAssessment` (`condition_values`, `external_file_name`, `command_template`, `command_literal`, `dat_record_value`, `initializer_code_value`) to explicitly instruct the model:
+     *"Exact unquoted source literal CONTENT... Preserve case, punctuation, internal and boundary whitespace, and quote characters that are part of the content. Do not include the syntactic COBOL outer quote delimiters."*
+   - `FileBinding.organization`: Retained strictly as `"File organization: LINE_SEQUENTIAL or SEQUENTIAL"`.
+   - Updated `wire_schema_sha256` to reflect the updated field descriptions.
+
+### 10.2 Cryptographic Hashes (Contract 3.5.3 Post-H7.4.1)
+
+| Component | File / Accessor | SHA-256 Hash | Status |
+|---|---|---|---|
+| Production Prompt | `agents/legacy_analyzer/prompts/system_v3.md` | `4be25cfc25933d6f0e69cbeeae1efe12ccf2e1354857e04c90108d8534ea92e8` | Unchanged |
+| Wire Schema | `get_system_openai_wire_schema()` | `07655be0a119440e1f693cbd3242842ed87e82c43518bce61f741bc7dc4423dc` | Updated (descriptions) |
+| Golden Dataset | `evals/expected/system-understanding-v3.json` | `da5bdee9286dd5fbc79cb8331b70aabf73fca029fe4a3d3c5ede5ed2c984b82b` | Unchanged (A1 identical) |
+| Baseline-v3 Spec | `evals/baselines/gate-3-baseline-v3.json` | `d3629d68066d800dc37afa938ab9b53d706e5a6842ff4b62b8a79b80a589377e` | Updated (`wire_schema_sha256`) |
+| Baseline-v2 Reservation | `artifacts/gate-3/baseline-v2/reservation-state.json` | `108c51b222e476f32bd98c092c5dc814be9a25b4d1b93ae60f0f28ea2f5a631d` | Intact & Unmodified |
+| Canonical Bundle | `legacy/` (6 artifacts) | `95bb386b51d653c0a1834e1950634a9887b7cb6826b8c317a07c4b6a4167d060` | Unchanged |
+| Source Manifest | Source manifest | `daf28b3314199db8e31bfacdf2fb8441b54682caa7854ed288e1bc00866a1dd1` | Unchanged |
+| Dependency Lock | `requirements-lock.txt` | `732cb9370e90af2d0972eeda7fc18fd5745f17cb301f359b268df228fe7f18be` | Unchanged |
+| Baseline-v3 Candidate SHA | `candidate_git_sha` | `""` | Strictly Unexecuted |
+
+### 10.3 Structural Collision Matrix & Regression Traversal
+
+The H7.4.1 test suite in `evals/tests/test_h7_contract_regressions.py` verifies full end-to-end traversal across:
+`SOURCE OVERLAY -> PARSER -> HOST FACTS / CERTIFICATE -> MODEL SCHEMA -> EVALUATOR -> SUPPORT INDEX`.
+
+- **Positive Exact Content Cases:**
+  - `FileBinding`: exact spaces (`' accounts.dat '`), opposite quotes (`'"accounts.dat"'`) pass parser and evaluator. Single-property mutations (trimming, casing, quote-stripping) verified strictly rejected by evaluator.
+  - Level-88: boundary spaces (`' A '`), opposite quotes (`'"A"'`), empty string (`''`) certified; single-property mutations rejected by evaluator.
+  - Commands: boundary spaces (`' cmd /c ... '`), wildcard shell syntax (`cmd /c del *.tmp`) pass parser and evaluator; fabricated placeholders rejected by evaluator against host facts.
+  - DataStateComparison: boundary spaces (`  100.50,PENDING  `) and empty string (`""`) certified; trimmed mutations rejected by evaluator.
+- **Fail-Closed Unsupported Quoting Probes:**
+  - SELECT/ASSIGN doubled quote (`'accounts''dat'`), unclosed quote (`'accounts.dat`), trailing unseparated characters (`'accounts.dat'xyz`), stray quote (`'accounts.dat' 'extra'`) -> `unsupported_relevant_count >= 1`, 0 `FileBindingFact`.
+  - Level-88 doubled quote (`'A''B'`) -> `unsupported_relevant_count >= 1`, 0 condition facts.
+  - Command literal doubled quote (`'cmd /c del ''test.dat'''`) -> `unsupported_relevant_count >= 1`, 0 `CommandInvocationFact`, 0 `PlatformDependencyFact`.
+- **H7.4 Structural Collision Matrix Re-run:**
+  - 11/11 structural tests passed cleanly.
+- **Full Pytest Suite:**
+  - 313/313 passed (0 regressions across the entire repository).
+
+---
+
+## 11. Final Status (H7.4.1 Release)
+
+- **Functional Commit (H7.4.1-0):** `548bb08817cd6faea731c85cdf2c884b9bfa029e`
+- **Report Commit (H7.4.1):** Direct report-only child of `H7.4.1-0`
 - **Remote Branch:** `feat/gate-3-system-analysis`
-- **Baseline-v3 Spec:** `evals/baselines/gate-3-baseline-v3.json` with `candidate_git_sha = ""`
-- **Execution Status:** Offline structural verifier and logical parsing remediation complete. Zero provider calls, zero baseline executions.
+- **Baseline-v3 Spec:** `evals/baselines/gate-3-baseline-v3.json` (`candidate_git_sha = ""`)
+- **Execution Status:** Strictly offline. Zero provider calls, zero baseline runs, no baseline-v3 reservation, baseline-v2 reservation byte-for-byte preserved.
+
 
