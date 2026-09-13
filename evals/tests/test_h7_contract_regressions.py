@@ -32,6 +32,7 @@ from agents.legacy_analyzer.schemas.system_assessment import (
     CallEdge,
     CallerContinuationConstraint,
     CallOccurrence,
+    CommandInvocation,
     DataStateComparison,
     DataTransferRelation,
     FileBinding,
@@ -49,13 +50,16 @@ from agents.legacy_analyzer.schemas.system_assessment import (
     SystemAssessment,
     TerminationSite,
 )
+from agents.legacy_analyzer.schemas.system_export import get_system_openai_wire_schema
 from src.cobol.multi_source_reader import MultiSourceBundle, TargetFile, read_system_bundle
 from src.cobol.system_atomic_facts import (
     BehavioralRiskFact,
     CommandInvocationFact,
+    DataStateComparisonFact,
     EvidenceSpan,
     FileBindingFact,
     OperationSequenceFact,
+    PlatformDependencyFact,
     RecordFieldFact,
     RecordLayoutFact,
     RecordLayoutRelationFact,
@@ -364,28 +368,29 @@ def test_h7_unsupported_transfer_scope_rejection():
 
 
 def test_h7_concrete_platform_command_cardinality():
-    """Test L: PlatformDependency rejects template placeholders (<...>, *) and requires
+    """Test L: PlatformDependency validates discrete commands without placeholder heuristics.
 
-    discrete assertions per concrete command literal.
+    Fabricated placeholders fail certification against grounded host facts.
     """
     ev = SourceEvidence(file_path="dummy.cbl", line_start=1, line_end=5)
 
-    # Template placeholder must be rejected
-    with pytest.raises(ValidationError, match="must be an exact discrete command literal"):
+    # Empty command literal must be rejected by field validator
+    with pytest.raises(ValidationError, match="must not be empty"):
         PlatformDependency(
             program_id="TRANS-PROC",
             platform_family="WINDOWS",
-            command_literal="cmd /c <...>",
+            command_literal="",
             evidence=ev,
         )
 
-    with pytest.raises(ValidationError, match="must be an exact discrete command literal"):
-        PlatformDependency(
-            program_id="TRANS-PROC",
-            platform_family="WINDOWS",
-            command_literal="cmd /c del *",
-            evidence=ev,
-        )
+    # Wildcards and shell syntax are valid discrete command literals
+    dep_wild = PlatformDependency(
+        program_id="TRANS-PROC",
+        platform_family="WINDOWS",
+        command_literal="cmd /c del *.tmp",
+        evidence=ev,
+    )
+    assert dep_wild.command_literal == "cmd /c del *.tmp"
 
     # Concrete command literals validate successfully
     dep1 = PlatformDependency(
@@ -402,6 +407,37 @@ def test_h7_concrete_platform_command_cardinality():
     )
     assert dep1.command_literal == "del ACCOUNTS.DAT"
     assert dep2.command_literal == "ren ACCOUNTS.TMP ACCOUNTS.DAT"
+
+    # Fabricated template placeholders pass schema as literal content,
+    # but fail evaluator certification
+    dep_placeholder = PlatformDependency(
+        program_id="TRANS-PROC",
+        platform_family="WINDOWS",
+        command_literal="cmd /c <...>",
+        evidence=ev,
+    )
+    idx = SystemSupportIndex(
+        [
+            SupportedSystemFact(
+                fact=PlatformDependencyFact(
+                    program_id="TRANS-PROC",
+                    platform_family="WINDOWS",
+                    command_literal="del ACCOUNTS.DAT",
+                ),
+                proposition_id="prop.plat.1",
+                evidence_spans={"evidence": EvidenceSpan("dummy.cbl", 1, 5)},
+            )
+        ],
+        _make_synth_bundle(
+            "       IDENTIFICATION DIVISION.\n       PROGRAM-ID. DUMMY.\n", "dummy.cbl"
+        ),
+    )
+    ev_test = SystemEvaluatorV3(idx)
+    ass_place = SystemAssessment(system_name="Test")
+    ass_place.platform_dependencies.append(dep_placeholder)
+    m, preds = ev_test.evaluate_assessment(ass_place)
+    assert m.unsupported_predicted_count == 1
+    assert preds[0].is_supported is False
 
 
 # ======================================================================
@@ -653,32 +689,51 @@ def test_h7_anti_repair_all_normalization_families():
             usage="DISPLAY",
         )
 
-    with pytest.raises(ValidationError):
+    # Empty literal validation fails at field boundary
+    with pytest.raises(ValidationError, match="must not be empty"):
         FileBinding(
             program_id="INIT-DB",
             internal_file_name="ACCOUNT-FILE",
-            external_file_name=" ACCOUNTS.DAT ",
+            external_file_name="",
             organization="LINE_SEQUENTIAL",
             evidence=ev,
         )
 
-    # 4. Quote stripping on literals
-    with pytest.raises(ValidationError):
-        FileBinding(
-            program_id="INIT-DB",
-            internal_file_name="ACCOUNT-FILE",
-            external_file_name='"ACCOUNTS.DAT"',
-            organization="LINE_SEQUENTIAL",
-            evidence=ev,
-        )
-
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match="must not be empty"):
         PlatformDependency(
             program_id="TRANS-PROC",
             platform_family="WINDOWS",
-            command_literal='"del ACCOUNTS.DAT"',
+            command_literal="",
             evidence=ev,
         )
+
+    # Literal content whitespace and quote mutations: preserved verbatim by schema
+    # (no silent strip/repair), but strictly rejected at the evaluator boundary
+    fb_space = FileBinding(
+        program_id="INIT-DB",
+        internal_file_name="ACCOUNT-FILE",
+        external_file_name=" ACCOUNTS.DAT ",
+        organization="LINE_SEQUENTIAL",
+        evidence=ev,
+    )
+    assert fb_space.external_file_name == " ACCOUNTS.DAT "
+
+    fb_quote = FileBinding(
+        program_id="INIT-DB",
+        internal_file_name="ACCOUNT-FILE",
+        external_file_name='"ACCOUNTS.DAT"',
+        organization="LINE_SEQUENTIAL",
+        evidence=ev,
+    )
+    assert fb_quote.external_file_name == '"ACCOUNTS.DAT"'
+
+    dep_quote = PlatformDependency(
+        program_id="TRANS-PROC",
+        platform_family="WINDOWS",
+        command_literal='"del ACCOUNTS.DAT"',
+        evidence=ev,
+    )
+    assert dep_quote.command_literal == '"del ACCOUNTS.DAT"'
 
     # 5. Explicit aliases (reject non-canonical model variants)
     with pytest.raises(ValidationError):
@@ -1069,16 +1124,17 @@ def test_h7_3_real_assessment_mutation_regressions():
             ),
         )
 
-    # 3. Source literal content: quotes rejected by schema
-    with pytest.raises(ValidationError):
-        PlatformDependency(
-            program_id="TRANS-PROC",
-            platform_family="WINDOWS",
-            command_literal="'cmd /c del ACCOUNTS.DAT'",  # must be unquoted content
-            evidence=SourceEvidence(
-                file_path="legacy/core-banking-system/TRANS-PROC.CBL", line_start=86, line_end=86
-            ),
-        )
+    # 3. Source literal content: quotes preserved verbatim by schema,
+    # rejected by evaluator against unquoted host fact
+    dep_quoted = PlatformDependency(
+        program_id="TRANS-PROC",
+        platform_family="WINDOWS",
+        command_literal="'cmd /c del ACCOUNTS.DAT'",  # preserved verbatim
+        evidence=SourceEvidence(
+            file_path="legacy/core-banking-system/TRANS-PROC.CBL", line_start=86, line_end=86
+        ),
+    )
+    assert dep_quoted.command_literal == "'cmd /c del ACCOUNTS.DAT'"
 
     # 4. FileBinding external_file_name literal preservation (no casing repair in fact constructor)
     fb_lower = FileBindingFact(
@@ -2330,3 +2386,784 @@ def test_h7_4_golden_direct_structural_comparison_vs_a1():
     # baseline-v3 artifacts MUST NOT EXIST
     v3_art_dir = REPO_ROOT / "artifacts/gate-3/baseline-v3"
     assert not v3_art_dir.exists(), "artifacts/gate-3/baseline-v3 must not exist"
+
+
+# ======================================================================
+# TEST SECTION 15: H7.4.1 SOURCE-LITERAL CONTENT SYMMETRY REGRESSIONS
+# ======================================================================
+
+
+def test_h7_4_1_file_binding_source_literal_symmetry() -> None:
+    """H7.4.1 Test A: FileBinding exact literal preservation and unsupported quote fail-closed.
+
+    Traverses: source overlay -> parser -> host facts -> model schema -> evaluator -> index.
+    """
+    # 1. Exact whitespace positive case: ASSIGN TO ' accounts.dat '
+    src_space = """       IDENTIFICATION DIVISION.
+       PROGRAM-ID. TSPACE.
+       ENVIRONMENT DIVISION.
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+           SELECT ACC-FILE ASSIGN TO ' accounts.dat '
+               ORGANIZATION IS LINE SEQUENTIAL.
+       DATA DIVISION.
+       FILE SECTION.
+       FD ACC-FILE.
+       01 ACC-REC PIC X(10).
+       PROCEDURE DIVISION.
+           STOP RUN.
+"""
+    p_space = SystemCobolParser(_make_synth_bundle(src_space, "TSPACE.CBL"))
+    cert_space = p_space.parse_system()
+    assert cert_space.unsupported_relevant_count == 0
+    assert not cert_space.is_evaluation_blocked
+    fb_facts = [
+        f.fact for f in p_space.get_supported_facts() if isinstance(f.fact, FileBindingFact)
+    ]
+    assert len(fb_facts) == 1
+    assert fb_facts[0].external_file_name == " accounts.dat "
+
+    idx_space = SystemSupportIndex(
+        p_space.get_supported_facts(),
+        _make_synth_bundle(src_space, "TSPACE.CBL"),
+        file_status_certificate=p_space.file_status_certificate,
+    )
+    ev_space = SystemEvaluatorV3(idx_space)
+
+    # Positive exact model assertion -> certified
+    exact_model = SystemAssessment(system_name="Test")
+    exact_model.file_bindings.append(
+        FileBinding(
+            program_id="TSPACE",
+            internal_file_name="ACC-FILE",
+            external_file_name=" accounts.dat ",
+            organization="LINE_SEQUENTIAL",
+            evidence=SourceEvidence(
+                file_path="TSPACE.CBL",
+                line_start=6,
+                line_end=7,
+            ),
+        )
+    )
+    m_exact, preds_exact = ev_space.evaluate_assessment(exact_model)
+    assert m_exact.unsupported_predicted_count == 0
+    assert len(preds_exact) == 1
+    assert preds_exact[0].is_supported is True
+
+    # Mutated whitespace (trimmed) -> schema accepts, evaluator rejects
+    trimmed_model = SystemAssessment(system_name="Test")
+    trimmed_model.file_bindings.append(
+        FileBinding(
+            program_id="TSPACE",
+            internal_file_name="ACC-FILE",
+            external_file_name="accounts.dat",
+            organization="LINE_SEQUENTIAL",
+            evidence=SourceEvidence(
+                file_path="TSPACE.CBL",
+                line_start=6,
+                line_end=7,
+            ),
+        )
+    )
+    m_trim, _ = ev_space.evaluate_assessment(trimmed_model)
+    assert m_trim.unsupported_predicted_count == 1
+
+    # Mutated casing -> evaluator rejects
+    case_model = SystemAssessment(system_name="Test")
+    case_model.file_bindings.append(
+        FileBinding(
+            program_id="TSPACE",
+            internal_file_name="ACC-FILE",
+            external_file_name=" ACCOUNTS.DAT ",
+            organization="LINE_SEQUENTIAL",
+            evidence=SourceEvidence(
+                file_path="TSPACE.CBL",
+                line_start=6,
+                line_end=7,
+            ),
+        )
+    )
+    m_case, _ = ev_space.evaluate_assessment(case_model)
+    assert m_case.unsupported_predicted_count == 1
+
+    # Mutated punctuation -> evaluator rejects
+    punct_model = SystemAssessment(system_name="Test")
+    punct_model.file_bindings.append(
+        FileBinding(
+            program_id="TSPACE",
+            internal_file_name="ACC-FILE",
+            external_file_name=" accounts_dat ",
+            organization="LINE_SEQUENTIAL",
+            evidence=SourceEvidence(
+                file_path="TSPACE.CBL",
+                line_start=6,
+                line_end=7,
+            ),
+        )
+    )
+    m_punct, _ = ev_space.evaluate_assessment(punct_model)
+    assert m_punct.unsupported_predicted_count == 1
+
+    # 2. Opposite quote characters in content: ASSIGN TO '"accounts.dat"'
+    src_quotes = """       IDENTIFICATION DIVISION.
+       PROGRAM-ID. TQUOTE.
+       ENVIRONMENT DIVISION.
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+           SELECT ACC-FILE ASSIGN TO '"accounts.dat"'
+               ORGANIZATION IS LINE SEQUENTIAL.
+       DATA DIVISION.
+       FILE SECTION.
+       FD ACC-FILE.
+       01 ACC-REC PIC X(10).
+       PROCEDURE DIVISION.
+           STOP RUN.
+"""
+    p_quotes = SystemCobolParser(_make_synth_bundle(src_quotes, "TQUOTE.CBL"))
+    cert_quotes = p_quotes.parse_system()
+    assert cert_quotes.unsupported_relevant_count == 0
+    fb_q_facts = [
+        f.fact for f in p_quotes.get_supported_facts() if isinstance(f.fact, FileBindingFact)
+    ]
+    assert len(fb_q_facts) == 1
+    assert fb_q_facts[0].external_file_name == '"accounts.dat"'
+
+    idx_quotes = SystemSupportIndex(
+        p_quotes.get_supported_facts(),
+        _make_synth_bundle(src_quotes, "TQUOTE.CBL"),
+        file_status_certificate=p_quotes.file_status_certificate,
+    )
+    ev_quotes = SystemEvaluatorV3(idx_quotes)
+
+    # Positive exact model assertion -> certified
+    exact_q_model = SystemAssessment(system_name="Test")
+    exact_q_model.file_bindings.append(
+        FileBinding(
+            program_id="TQUOTE",
+            internal_file_name="ACC-FILE",
+            external_file_name='"accounts.dat"',
+            organization="LINE_SEQUENTIAL",
+            evidence=SourceEvidence(
+                file_path="TQUOTE.CBL",
+                line_start=6,
+                line_end=7,
+            ),
+        )
+    )
+    m_q_exact, preds_q = ev_quotes.evaluate_assessment(exact_q_model)
+    assert m_q_exact.unsupported_predicted_count == 0
+    assert preds_q[0].is_supported is True
+
+    # Mutated (stripping quotes) -> evaluator rejects
+    mut_q_model = SystemAssessment(system_name="Test")
+    mut_q_model.file_bindings.append(
+        FileBinding(
+            program_id="TQUOTE",
+            internal_file_name="ACC-FILE",
+            external_file_name="accounts.dat",
+            organization="LINE_SEQUENTIAL",
+            evidence=SourceEvidence(
+                file_path="TQUOTE.CBL",
+                line_start=6,
+                line_end=7,
+            ),
+        )
+    )
+    m_q_mut, _ = ev_quotes.evaluate_assessment(mut_q_model)
+    assert m_q_mut.unsupported_predicted_count == 1
+
+    # 3. Adversarial probes: unsupported quoting fails closed with zero facts
+    # Probe A: doubled quotes (same-quote escape)
+    src_doubled = """       IDENTIFICATION DIVISION.
+       PROGRAM-ID. TDOUBLED.
+       ENVIRONMENT DIVISION.
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+           SELECT ACC-FILE ASSIGN TO 'acc''ounts.dat'
+               ORGANIZATION IS LINE SEQUENTIAL.
+       DATA DIVISION.
+       FILE SECTION.
+       FD ACC-FILE.
+       01 ACC-REC PIC X(10).
+       PROCEDURE DIVISION.
+           STOP RUN.
+"""
+    p_doubled = SystemCobolParser(_make_synth_bundle(src_doubled, "TDOUBLED.CBL"))
+    cert_doubled = p_doubled.parse_system()
+    assert cert_doubled.unsupported_relevant_count >= 1
+    assert cert_doubled.is_evaluation_blocked is True
+    assert not any(isinstance(f.fact, FileBindingFact) for f in p_doubled.get_supported_facts())
+
+    # Probe B: unclosed literal
+    src_unclosed = """       IDENTIFICATION DIVISION.
+       PROGRAM-ID. TUNCLOSED.
+       ENVIRONMENT DIVISION.
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+           SELECT ACC-FILE ASSIGN TO 'accounts.dat
+               ORGANIZATION IS LINE SEQUENTIAL.
+       DATA DIVISION.
+       FILE SECTION.
+       FD ACC-FILE.
+       01 ACC-REC PIC X(10).
+       PROCEDURE DIVISION.
+           STOP RUN.
+"""
+    p_unclosed = SystemCobolParser(_make_synth_bundle(src_unclosed, "TUNCLOSED.CBL"))
+    cert_unclosed = p_unclosed.parse_system()
+    assert cert_unclosed.unsupported_relevant_count >= 1
+    assert cert_unclosed.is_evaluation_blocked is True
+    assert not any(isinstance(f.fact, FileBindingFact) for f in p_unclosed.get_supported_facts())
+
+    # Probe C: empty literal
+    src_empty = """       IDENTIFICATION DIVISION.
+       PROGRAM-ID. TEMPTY.
+       ENVIRONMENT DIVISION.
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+           SELECT ACC-FILE ASSIGN TO ''
+               ORGANIZATION IS LINE SEQUENTIAL.
+       DATA DIVISION.
+       FILE SECTION.
+       FD ACC-FILE.
+       01 ACC-REC PIC X(10).
+       PROCEDURE DIVISION.
+           STOP RUN.
+"""
+    p_empty = SystemCobolParser(_make_synth_bundle(src_empty, "TEMPTY.CBL"))
+    cert_empty = p_empty.parse_system()
+    assert cert_empty.unsupported_relevant_count >= 1
+    assert cert_empty.is_evaluation_blocked is True
+    assert not any(isinstance(f.fact, FileBindingFact) for f in p_empty.get_supported_facts())
+
+    # Probe D: malformed trailing characters
+    src_malformed = """       IDENTIFICATION DIVISION.
+       PROGRAM-ID. TMALFORMED.
+       ENVIRONMENT DIVISION.
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+           SELECT ACC-FILE ASSIGN TO 'accounts.dat'extra
+               ORGANIZATION IS LINE SEQUENTIAL.
+       DATA DIVISION.
+       FILE SECTION.
+       FD ACC-FILE.
+       01 ACC-REC PIC X(10).
+       PROCEDURE DIVISION.
+           STOP RUN.
+"""
+    p_malformed = SystemCobolParser(_make_synth_bundle(src_malformed, "TMALFORMED.CBL"))
+    cert_malformed = p_malformed.parse_system()
+    assert cert_malformed.unsupported_relevant_count >= 1
+    assert cert_malformed.is_evaluation_blocked is True
+    assert not any(isinstance(f.fact, FileBindingFact) for f in p_malformed.get_supported_facts())
+
+
+def test_h7_4_1_level_88_source_literal_symmetry() -> None:
+    """H7.4.1 Test B: Level-88 exact literal preservation, opposite quotes, fail-closed."""
+    # 1. Exact whitespace preservation: 88 STATUS VALUE ' A '.
+    src_88_space = """       IDENTIFICATION DIVISION.
+       PROGRAM-ID. T88SPACE.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 WS-REC.
+          05 WS-STATUS PIC X(3).
+             88 STATUS-ACTIVE VALUE ' A '.
+       PROCEDURE DIVISION.
+           STOP RUN.
+"""
+    p_88_space = SystemCobolParser(_make_synth_bundle(src_88_space, "T88SPACE.CBL"))
+    cert_88_space = p_88_space.parse_system()
+    assert cert_88_space.unsupported_relevant_count == 0
+    rl_facts = [
+        f.fact for f in p_88_space.get_supported_facts() if isinstance(f.fact, RecordLayoutFact)
+    ]
+    assert len(rl_facts) == 1
+    flds = rl_facts[0].fields
+    cond_fld = next(f for f in flds if f.name == "STATUS-ACTIVE")
+    assert cond_fld.condition_values == (" A ",)
+
+    idx_88_space = SystemSupportIndex(
+        p_88_space.get_supported_facts(),
+        _make_synth_bundle(src_88_space, "T88SPACE.CBL"),
+        file_status_certificate=p_88_space.file_status_certificate,
+    )
+    ev_88_space = SystemEvaluatorV3(idx_88_space)
+
+    # Positive exact model assertion -> certified
+    exact_model = SystemAssessment(system_name="Test")
+    exact_model.record_layouts.append(
+        RecordLayout(
+            program_id="T88SPACE",
+            record_name="WS-REC",
+            fields=[
+                RecordField(
+                    field_kind="DATA_FIELD",
+                    level=5,
+                    name="WS-STATUS",
+                    picture="X(3)",
+                    usage="DISPLAY",
+                    condition_values=[],
+                ),
+                RecordField(
+                    field_kind="CONDITION_NAME",
+                    level=88,
+                    name="STATUS-ACTIVE",
+                    picture=None,
+                    usage=None,
+                    condition_values=[" A "],
+                ),
+            ],
+            evidence=SourceEvidence(
+                file_path="T88SPACE.CBL",
+                line_start=5,
+                line_end=7,
+            ),
+        )
+    )
+    m_exact, preds_exact = ev_88_space.evaluate_assessment(exact_model)
+    assert m_exact.unsupported_predicted_count == 0
+    assert len(preds_exact) == 1
+    assert preds_exact[0].is_supported is True
+
+    # Mutated trimmed condition value -> evaluator rejects
+    trimmed_model = SystemAssessment(system_name="Test")
+    trimmed_model.record_layouts.append(
+        RecordLayout(
+            program_id="T88SPACE",
+            record_name="WS-REC",
+            fields=[
+                RecordField(
+                    field_kind="DATA_FIELD",
+                    level=5,
+                    name="WS-STATUS",
+                    picture="X(3)",
+                    usage="DISPLAY",
+                    condition_values=[],
+                ),
+                RecordField(
+                    field_kind="CONDITION_NAME",
+                    level=88,
+                    name="STATUS-ACTIVE",
+                    picture=None,
+                    usage=None,
+                    condition_values=["A"],
+                ),
+            ],
+            evidence=SourceEvidence(
+                file_path="T88SPACE.CBL",
+                line_start=5,
+                line_end=7,
+            ),
+        )
+    )
+    m_trim, _ = ev_88_space.evaluate_assessment(trimmed_model)
+    assert m_trim.unsupported_predicted_count == 1
+
+    # 2. Opposite quote characters in condition content: 88 STATUS VALUE '"A"'.
+    src_88_quote = """       IDENTIFICATION DIVISION.
+       PROGRAM-ID. T88QUOTE.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 WS-REC.
+          05 WS-STATUS PIC X(3).
+             88 STATUS-A VALUE '"A"'.
+       PROCEDURE DIVISION.
+           STOP RUN.
+"""
+    p_88_quote = SystemCobolParser(_make_synth_bundle(src_88_quote, "T88QUOTE.CBL"))
+    cert_88_quote = p_88_quote.parse_system()
+    assert cert_88_quote.unsupported_relevant_count == 0
+    rl_q = [
+        f.fact for f in p_88_quote.get_supported_facts() if isinstance(f.fact, RecordLayoutFact)
+    ][0]
+    cond_q = next(f for f in rl_q.fields if f.name == "STATUS-A")
+    assert cond_q.condition_values == ('"A"',)
+
+    idx_88_quote = SystemSupportIndex(
+        p_88_quote.get_supported_facts(),
+        _make_synth_bundle(src_88_quote, "T88QUOTE.CBL"),
+        file_status_certificate=p_88_quote.file_status_certificate,
+    )
+    ev_88_quote = SystemEvaluatorV3(idx_88_quote)
+
+    exact_q_model = SystemAssessment(system_name="Test")
+    exact_q_model.record_layouts.append(
+        RecordLayout(
+            program_id="T88QUOTE",
+            record_name="WS-REC",
+            fields=[
+                RecordField(
+                    field_kind="DATA_FIELD",
+                    level=5,
+                    name="WS-STATUS",
+                    picture="X(3)",
+                    usage="DISPLAY",
+                    condition_values=[],
+                ),
+                RecordField(
+                    field_kind="CONDITION_NAME",
+                    level=88,
+                    name="STATUS-A",
+                    picture=None,
+                    usage=None,
+                    condition_values=['"A"'],
+                ),
+            ],
+            evidence=SourceEvidence(
+                file_path="T88QUOTE.CBL",
+                line_start=5,
+                line_end=7,
+            ),
+        )
+    )
+    m_q_exact, preds_q = ev_88_quote.evaluate_assessment(exact_q_model)
+    assert m_q_exact.unsupported_predicted_count == 0
+    assert preds_q[0].is_supported is True
+
+    # Mutated condition value (removed double quotes) -> evaluator rejects
+    mut_q_model = SystemAssessment(system_name="Test")
+    mut_q_model.record_layouts.append(
+        RecordLayout(
+            program_id="T88QUOTE",
+            record_name="WS-REC",
+            fields=[
+                RecordField(
+                    field_kind="DATA_FIELD",
+                    level=5,
+                    name="WS-STATUS",
+                    picture="X(3)",
+                    usage="DISPLAY",
+                    condition_values=[],
+                ),
+                RecordField(
+                    field_kind="CONDITION_NAME",
+                    level=88,
+                    name="STATUS-A",
+                    picture=None,
+                    usage=None,
+                    condition_values=["A"],
+                ),
+            ],
+            evidence=SourceEvidence(
+                file_path="T88QUOTE.CBL",
+                line_start=5,
+                line_end=7,
+            ),
+        )
+    )
+    m_q_mut, _ = ev_88_quote.evaluate_assessment(mut_q_model)
+    assert m_q_mut.unsupported_predicted_count == 1
+
+    # 3. Empty condition value support: 88 STATUS-EMPTY VALUE ''.
+    src_88_empty = """       IDENTIFICATION DIVISION.
+       PROGRAM-ID. T88EMPTY.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 WS-REC.
+          05 WS-STATUS PIC X(3).
+             88 STATUS-EMPTY VALUE ''.
+       PROCEDURE DIVISION.
+           STOP RUN.
+"""
+    p_88_empty = SystemCobolParser(_make_synth_bundle(src_88_empty, "T88EMPTY.CBL"))
+    cert_88_empty = p_88_empty.parse_system()
+    assert cert_88_empty.unsupported_relevant_count == 0
+    rl_empty = [
+        f.fact for f in p_88_empty.get_supported_facts() if isinstance(f.fact, RecordLayoutFact)
+    ][0]
+    cond_empty = next(f for f in rl_empty.fields if f.name == "STATUS-EMPTY")
+    assert cond_empty.condition_values == ("",)
+
+    idx_88_empty = SystemSupportIndex(
+        p_88_empty.get_supported_facts(),
+        _make_synth_bundle(src_88_empty, "T88EMPTY.CBL"),
+        file_status_certificate=p_88_empty.file_status_certificate,
+    )
+    ev_88_empty = SystemEvaluatorV3(idx_88_empty)
+
+    empty_model = SystemAssessment(system_name="Test")
+    empty_model.record_layouts.append(
+        RecordLayout(
+            program_id="T88EMPTY",
+            record_name="WS-REC",
+            fields=[
+                RecordField(
+                    field_kind="DATA_FIELD",
+                    level=5,
+                    name="WS-STATUS",
+                    picture="X(3)",
+                    usage="DISPLAY",
+                    condition_values=[],
+                ),
+                RecordField(
+                    field_kind="CONDITION_NAME",
+                    level=88,
+                    name="STATUS-EMPTY",
+                    picture=None,
+                    usage=None,
+                    condition_values=[""],
+                ),
+            ],
+            evidence=SourceEvidence(
+                file_path="T88EMPTY.CBL",
+                line_start=5,
+                line_end=7,
+            ),
+        )
+    )
+    m_empty, preds_empty = ev_88_empty.evaluate_assessment(empty_model)
+    assert m_empty.unsupported_predicted_count == 0
+    assert preds_empty[0].is_supported is True
+
+    # 4. Unsupported quoting in level-88 fails closed
+    src_88_bad = """       IDENTIFICATION DIVISION.
+       PROGRAM-ID. T88BAD.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 WS-REC.
+          05 WS-STATUS PIC X(3).
+             88 STATUS-BAD VALUE 'A''B'.
+       PROCEDURE DIVISION.
+           STOP RUN.
+"""
+    p_88_bad = SystemCobolParser(_make_synth_bundle(src_88_bad, "T88BAD.CBL"))
+    cert_88_bad = p_88_bad.parse_system()
+    assert cert_88_bad.unsupported_relevant_count >= 1
+    assert cert_88_bad.is_evaluation_blocked is True
+    assert not any(
+        isinstance(f.fact, RecordLayoutFact)
+        and any(fld.name == "STATUS-BAD" for fld in f.fact.fields)
+        for f in p_88_bad.get_supported_facts()
+    )
+
+
+def test_h7_4_1_command_literal_source_symmetry() -> None:
+    """H7.4.1 Test C: Command literal preservation, shell syntax acceptance, fail-closed."""
+    # 1. Exact whitespace preservation: MOVE ' cmd /c echo test ' TO WS-CMD
+    src_cmd_space = """       IDENTIFICATION DIVISION.
+       PROGRAM-ID. TCMDSPACE.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 WS-CMD PIC X(30).
+       PROCEDURE DIVISION.
+           MOVE ' cmd /c del "accounts.dat" ' TO WS-CMD.
+           CALL 'SYSTEM' USING WS-CMD.
+           STOP RUN.
+"""
+    p_cmd = SystemCobolParser(_make_synth_bundle(src_cmd_space, "TCMDSPACE.CBL"))
+    cert_cmd = p_cmd.parse_system()
+    assert cert_cmd.unsupported_relevant_count == 0
+    cmd_facts = [
+        f.fact for f in p_cmd.get_supported_facts() if isinstance(f.fact, CommandInvocationFact)
+    ]
+    plat_facts = [
+        f.fact for f in p_cmd.get_supported_facts() if isinstance(f.fact, PlatformDependencyFact)
+    ]
+    assert len(cmd_facts) == 1
+    assert len(plat_facts) == 1
+    assert cmd_facts[0].command_template == ' cmd /c del "accounts.dat" '
+    assert plat_facts[0].command_literal == ' cmd /c del "accounts.dat" '
+
+    idx_cmd = SystemSupportIndex(
+        p_cmd.get_supported_facts(),
+        _make_synth_bundle(src_cmd_space, "TCMDSPACE.CBL"),
+        file_status_certificate=p_cmd.file_status_certificate,
+    )
+    ev_cmd = SystemEvaluatorV3(idx_cmd)
+
+    # Positive exact model assertion -> certified
+    exact_model = SystemAssessment(system_name="Test")
+    exact_model.command_invocations.append(
+        CommandInvocation(
+            program_id="TCMDSPACE",
+            command_template=' cmd /c del "accounts.dat" ',
+            target_operand="WS-CMD",
+            assignment_evidence=SourceEvidence(file_path="TCMDSPACE.CBL", line_start=7, line_end=7),
+            call_evidence=SourceEvidence(file_path="TCMDSPACE.CBL", line_start=8, line_end=8),
+        )
+    )
+    exact_model.platform_dependencies.append(
+        PlatformDependency(
+            program_id="TCMDSPACE",
+            platform_family="WINDOWS",
+            command_literal=' cmd /c del "accounts.dat" ',
+            evidence=SourceEvidence(file_path="TCMDSPACE.CBL", line_start=7, line_end=7),
+        )
+    )
+    m_exact, preds_exact = ev_cmd.evaluate_assessment(exact_model)
+    assert m_exact.unsupported_predicted_count == 0
+    assert len(preds_exact) == 2
+
+    # Mutated command_template (trimmed) -> evaluator rejects
+    trim_cmd_model = SystemAssessment(system_name="Test")
+    trim_cmd_model.command_invocations.append(
+        CommandInvocation(
+            program_id="TCMDSPACE",
+            command_template='cmd /c del "accounts.dat"',
+            target_operand="WS-CMD",
+            assignment_evidence=SourceEvidence(file_path="TCMDSPACE.CBL", line_start=7, line_end=7),
+            call_evidence=SourceEvidence(file_path="TCMDSPACE.CBL", line_start=8, line_end=8),
+        )
+    )
+    m_trim, _ = ev_cmd.evaluate_assessment(trim_cmd_model)
+    assert m_trim.unsupported_predicted_count == 1
+
+    # 2. Shell wildcard syntax (*) in command literal accepted by schema and certified
+    src_wildcard = """       IDENTIFICATION DIVISION.
+       PROGRAM-ID. TWILD.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 WS-CMD PIC X(30).
+       PROCEDURE DIVISION.
+           MOVE ' cmd /c del *.tmp ' TO WS-CMD.
+           CALL 'SYSTEM' USING WS-CMD.
+           STOP RUN.
+"""
+    p_wild = SystemCobolParser(_make_synth_bundle(src_wildcard, "TWILD.CBL"))
+    cert_wild = p_wild.parse_system()
+    assert cert_wild.unsupported_relevant_count == 0
+    plat_wild = [
+        f.fact for f in p_wild.get_supported_facts() if isinstance(f.fact, PlatformDependencyFact)
+    ][0]
+    assert plat_wild.command_literal == " cmd /c del *.tmp "
+
+    idx_wild = SystemSupportIndex(
+        p_wild.get_supported_facts(),
+        _make_synth_bundle(src_wildcard, "TWILD.CBL"),
+        file_status_certificate=p_wild.file_status_certificate,
+    )
+    ev_wild = SystemEvaluatorV3(idx_wild)
+
+    # Schema must accept command containing wildcard *
+    wild_model = SystemAssessment(system_name="Test")
+    wild_model.platform_dependencies.append(
+        PlatformDependency(
+            program_id="TWILD",
+            platform_family="WINDOWS",
+            command_literal=" cmd /c del *.tmp ",
+            evidence=SourceEvidence(file_path="TWILD.CBL", line_start=7, line_end=7),
+        )
+    )
+    m_wild, preds_wild = ev_wild.evaluate_assessment(wild_model)
+    assert m_wild.unsupported_predicted_count == 0
+    assert preds_wild[0].is_supported is True
+
+    # 3. Unsupported quoting in command fails closed with zero facts
+    src_bad_cmd = """       IDENTIFICATION DIVISION.
+       PROGRAM-ID. TBADCMD.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 WS-CMD PIC X(30).
+       PROCEDURE DIVISION.
+           MOVE 'cmd /c del ''test.dat''' TO WS-CMD.
+           CALL 'SYSTEM' USING WS-CMD.
+           STOP RUN.
+"""
+    p_bad = SystemCobolParser(_make_synth_bundle(src_bad_cmd, "TBADCMD.CBL"))
+    cert_bad = p_bad.parse_system()
+    assert cert_bad.unsupported_relevant_count >= 1
+    assert cert_bad.is_evaluation_blocked is True
+    assert not any(isinstance(f.fact, CommandInvocationFact) for f in p_bad.get_supported_facts())
+    assert not any(isinstance(f.fact, PlatformDependencyFact) for f in p_bad.get_supported_facts())
+
+
+def test_h7_4_1_data_state_comparison_literal_symmetry() -> None:
+    """H7.4.1 Test D: DataStateComparison literal content preservation and empty content support."""
+    # Boundary whitespace and punctuation in DataStateComparison
+    dsc = DataStateComparison(
+        entity_id="ACC-001",
+        dat_record_value="  100.50,PENDING  ",
+        initializer_code_value="  100.50,SETTLED  ",
+        causal_provenance="UNKNOWN",
+        dat_evidence=SourceEvidence(file_path="ACCOUNTS.DAT", line_start=1, line_end=1),
+        initializer_evidence=SourceEvidence(file_path="INIT-DB.CBL", line_start=10, line_end=10),
+    )
+    assert dsc.dat_record_value == "  100.50,PENDING  "
+    assert dsc.initializer_code_value == "  100.50,SETTLED  "
+
+    # Empty content permitted by generic validator on DataStateComparison
+    dsc_empty = DataStateComparison(
+        entity_id="ACC-002",
+        dat_record_value="",
+        initializer_code_value="0.00",
+        causal_provenance="UNKNOWN",
+        dat_evidence=SourceEvidence(file_path="ACCOUNTS.DAT", line_start=2, line_end=2),
+        initializer_evidence=SourceEvidence(file_path="INIT-DB.CBL", line_start=12, line_end=12),
+    )
+    assert dsc_empty.dat_record_value == ""
+
+    # Evaluator certification: exact match succeeds, trimmed fails
+    fact = DataStateComparisonFact(
+        entity_id="ACC-001",
+        dat_record_value="  100.50,PENDING  ",
+        initializer_code_value="  100.50,SETTLED  ",
+        causal_provenance="UNKNOWN",
+    )
+    supp_fact = SupportedSystemFact(
+        fact=fact,
+        proposition_id="prop.state.test",
+        evidence_spans={
+            "dat_evidence": EvidenceSpan("ACCOUNTS.DAT", 1, 1),
+            "initializer_evidence": EvidenceSpan("INIT-DB.CBL", 10, 10),
+        },
+    )
+    tf_dat = TargetFile(
+        relative_path="ACCOUNTS.DAT",
+        file_type="DATA",
+        raw_content="  100.50,PENDING  \n",
+        numbered_content="000001   100.50,PENDING  \n",
+        sha256="dummy_dat",
+        line_count=2,
+    )
+    tf_cbl = TargetFile(
+        relative_path="INIT-DB.CBL",
+        file_type="COBOL",
+        raw_content="       MOVE '  100.50,SETTLED  ' TO WS-VAL.\n" * 15,
+        numbered_content="000010        MOVE '  100.50,SETTLED  ' TO WS-VAL.\n",
+        sha256="dummy_cbl",
+        line_count=20,
+    )
+    bundle = MultiSourceBundle(
+        files={"ACCOUNTS.DAT": tf_dat, "INIT-DB.CBL": tf_cbl},
+        total_physical_lines=22,
+        bundle_sha256="synth",
+        formatted_prompt_payload="synth",
+    )
+    idx = SystemSupportIndex([supp_fact], bundle)
+    ev = SystemEvaluatorV3(idx)
+
+    # Positive exact model
+    model_exact = SystemAssessment(system_name="Test")
+    model_exact.data_state_comparisons.append(dsc)
+    m_exact, preds_exact = ev.evaluate_assessment(model_exact)
+    assert m_exact.unsupported_predicted_count == 0
+    assert len(preds_exact) == 1
+    assert preds_exact[0].is_supported is True
+
+    # Mutated trimmed model -> evaluator rejects
+    dsc_trimmed = DataStateComparison(
+        entity_id="ACC-001",
+        dat_record_value="100.50,PENDING",
+        initializer_code_value="100.50,SETTLED",
+        causal_provenance="UNKNOWN",
+        dat_evidence=SourceEvidence(file_path="ACCOUNTS.DAT", line_start=1, line_end=1),
+        initializer_evidence=SourceEvidence(file_path="INIT-DB.CBL", line_start=10, line_end=10),
+    )
+    model_trim = SystemAssessment(system_name="Test")
+    model_trim.data_state_comparisons.append(dsc_trimmed)
+    m_trim, _ = ev.evaluate_assessment(model_trim)
+    assert m_trim.unsupported_predicted_count == 1
+
+
+def test_h7_4_1_file_organization_field_description() -> None:
+    """H7.4.1 Section 5: FileBinding.organization description has LINE_SEQUENTIAL or SEQUENTIAL."""
+    wire = get_system_openai_wire_schema()
+    defs = wire.get("schema", {}).get("$defs", {})
+    fb_def = defs.get("FileBinding", {})
+    props = fb_def.get("properties", {})
+    org_prop = props.get("organization", {})
+    org_desc = org_prop.get("description", "")
+
+    assert "LINE_SEQUENTIAL or SEQUENTIAL" in org_desc
+    assert "INDEXED" not in org_desc
+    assert "RELATIVE" not in org_desc

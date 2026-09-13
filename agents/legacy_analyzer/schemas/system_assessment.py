@@ -31,37 +31,23 @@ def validate_canonical_identifier(name: str, value: str) -> str:
 
 
 def validate_source_literal_content(name: str, value: str) -> str:
-    """Validate that source literal content is in unquoted representation.
+    """Validate that source literal content is preserved verbatim.
 
     Exact literal content preservation:
-    - Does NOT strip leading/trailing whitespace (boundary whitespace inside quotes is preserved).
-    - Does NOT uppercase or collapse whitespace.
-    - Rejects syntactic outer COBOL quote delimiters (starts/ends with matching ' or ").
+    - Preserves value exactly without stripping, uppercasing, or collapsing whitespace.
+    - Does NOT infer syntactic quoting from first/last characters.
+    - Permits empty content (""), boundary whitespace ("   ", "  A  "), quotes ('"A"', "'A'"),
+      and arbitrary punctuation/case.
+    - Never silently transforms or repairs content.
     """
-    if not value:
-        raise ValueError(f"{name} must not be empty")
-    if (value.startswith("'") and value.endswith("'") and len(value) >= 2) or (
-        value.startswith('"') and value.endswith('"') and len(value) >= 2
-    ):
-        raise ValueError(
-            f"{name} must be canonical unquoted literal content, "
-            f"not enclosed in quotes, got '{value}'"
-        )
+    if not isinstance(value, str):
+        raise ValueError(f"{name} must be a string, got {type(value).__name__}")
     return value
 
 
 def validate_canonical_literal_text(name: str, value: str) -> str:
-    """Validate that source/literal text is in canonical unquoted form without whitespace repair."""
-    if not value or value != value.strip():
-        raise ValueError(f"{name} must not have leading or trailing whitespace, got '{value}'")
-    if (value.startswith("'") and value.endswith("'") and len(value) >= 2) or (
-        value.startswith('"') and value.endswith('"') and len(value) >= 2
-    ):
-        raise ValueError(
-            f"{name} must be canonical unquoted literal content, "
-            f"not enclosed in quotes, got '{value}'"
-        )
-    return value
+    """Deprecated alias: defers directly to validate_source_literal_content."""
+    return validate_source_literal_content(name, value)
 
 
 # ---------------------------------------------------------------------------
@@ -262,7 +248,12 @@ class RecordField(BaseModel):
     )
     condition_values: list[str] = Field(
         default_factory=list,
-        description="Declared literal values for CONDITION_NAME (level-88)",
+        description=(
+            "Exact unquoted source literal CONTENT declared for CONDITION_NAME (level-88). "
+            "Preserve case, punctuation, internal and boundary whitespace, and quote characters "
+            "that are part of the content. "
+            "Do not include the syntactic COBOL outer quote delimiters."
+        ),
     )
 
     @field_validator("name")
@@ -292,7 +283,7 @@ class RecordField(BaseModel):
     @classmethod
     def validate_condition_values(cls, v: list[str]) -> list[str]:
         for item in v:
-            validate_canonical_literal_text("condition_values item", item)
+            validate_source_literal_content("condition_values item", item)
         return v
 
     @model_validator(mode="after")
@@ -417,9 +408,16 @@ class FileBinding(BaseModel):
 
     program_id: str = Field(description="Program declaring the file binding")
     internal_file_name: str = Field(description="COBOL FD / SELECT file identifier")
-    external_file_name: str = Field(description="Target dataset literal assigned")
+    external_file_name: str = Field(
+        description=(
+            "Exact unquoted source literal CONTENT of target dataset assigned. "
+            "Preserve case, punctuation, internal and boundary whitespace, and quote characters "
+            "that are part of the content. "
+            "Do not include the syntactic COBOL outer quote delimiters."
+        )
+    )
     organization: FileOrganization = Field(
-        description="File organization: LINE_SEQUENTIAL, SEQUENTIAL, INDEXED, or RELATIVE"
+        description="File organization: LINE_SEQUENTIAL or SEQUENTIAL"
     )
     evidence: SourceEvidence = Field(
         description="Exact physical line span occupied by the SELECT ... ASSIGN statement only"
@@ -438,7 +436,10 @@ class FileBinding(BaseModel):
     @field_validator("external_file_name")
     @classmethod
     def check_external_file_name(cls, v: str) -> str:
-        return validate_canonical_literal_text("external_file_name", v)
+        val = validate_source_literal_content("external_file_name", v)
+        if not val:
+            raise ValueError("external_file_name must not be empty")
+        return val
 
 
 class FileOperation(BaseModel):
@@ -521,7 +522,14 @@ class CommandInvocation(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     program_id: str = Field(description="Program executing the command")
-    command_template: str = Field(description="Command string literal or assembled template")
+    command_template: str = Field(
+        description=(
+            "Exact unquoted source literal CONTENT of command string executed. "
+            "Preserve case, punctuation, internal and boundary whitespace, and quote characters "
+            "that are part of the content. "
+            "Do not include the syntactic COBOL outer quote delimiters."
+        )
+    )
     target_operand: str = Field(description="Buffer variable passed to runtime system interface")
     assignment_evidence: SourceEvidence = Field(
         description="Exact physical line span of MOVE literal TO buffer"
@@ -543,7 +551,10 @@ class CommandInvocation(BaseModel):
     @field_validator("command_template")
     @classmethod
     def check_command_template(cls, v: str) -> str:
-        return validate_canonical_literal_text("command_template", v)
+        val = validate_source_literal_content("command_template", v)
+        if not val:
+            raise ValueError("command_template must not be empty")
+        return val
 
 
 class DataTransferRelation(BaseModel):
@@ -688,8 +699,10 @@ class PlatformDependency(BaseModel):
     platform_family: PlatformFamily = Field(description="Platform family identifier (WINDOWS)")
     command_literal: str = Field(
         description=(
-            "Exact concrete platform-specific command syntax literal invoked "
-            "(no templates or placeholders)"
+            "Exact unquoted source literal CONTENT of concrete platform-specific command "
+            "syntax invoked. Preserve case, punctuation, internal and boundary whitespace, "
+            "and quote characters that are part of the content. "
+            "Do not include the syntactic COBOL outer quote delimiters."
         )
     )
     evidence: SourceEvidence = Field(
@@ -703,13 +716,10 @@ class PlatformDependency(BaseModel):
 
     @field_validator("command_literal")
     @classmethod
-    def validate_command_literal(cls, v: str) -> str:
-        val = validate_canonical_literal_text("command_literal", v)
-        if "<" in val or ">" in val or "..." in val or "*" in val:
-            raise ValueError(
-                f"command_literal must be an exact discrete command literal, "
-                f"not a regex or template: '{v}'"
-            )
+    def check_command_literal(cls, v: str) -> str:
+        val = validate_source_literal_content("command_literal", v)
+        if not val:
+            raise ValueError("command_literal must not be empty")
         return val
 
 
@@ -771,8 +781,22 @@ class DataStateComparison(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     entity_id: str = Field(description="Target entity/account identifier compared")
-    dat_record_value: str = Field(description="Value observed in persistent DAT record")
-    initializer_code_value: str = Field(description="Value written by initialization program")
+    dat_record_value: str = Field(
+        description=(
+            "Exact unquoted source literal CONTENT observed in persistent DAT record. "
+            "Preserve case, punctuation, internal and boundary whitespace, and quote characters "
+            "that are part of the content. "
+            "Do not include the syntactic COBOL outer quote delimiters."
+        )
+    )
+    initializer_code_value: str = Field(
+        description=(
+            "Exact unquoted source literal CONTENT written by initialization program. "
+            "Preserve case, punctuation, internal and boundary whitespace, and quote characters "
+            "that are part of the content. "
+            "Do not include the syntactic COBOL outer quote delimiters."
+        )
+    )
     causal_provenance: CausalProvenance = Field(
         description="Causal provenance classification: UNKNOWN"
     )
@@ -787,12 +811,12 @@ class DataStateComparison(BaseModel):
     @field_validator("dat_record_value")
     @classmethod
     def check_dat_record_value(cls, v: str) -> str:
-        return validate_canonical_literal_text("dat_record_value", v)
+        return validate_source_literal_content("dat_record_value", v)
 
     @field_validator("initializer_code_value")
     @classmethod
     def check_initializer_code_value(cls, v: str) -> str:
-        return validate_canonical_literal_text("initializer_code_value", v)
+        return validate_source_literal_content("initializer_code_value", v)
 
 
 class SystemAssessment(BaseModel):

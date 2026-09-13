@@ -241,6 +241,13 @@ def tokenize_cobol_line(line: str) -> list[str]:
                 i += 1
             if i < n:
                 i += 1
+            while (
+                i < n
+                and not line[i].isspace()
+                and line[i] not in (",", ";")
+                and not (line[i] == "." and (i + 1 >= n or line[i + 1].isspace()))
+            ):
+                i += 1
             tokens.append(line[start:i])
         elif char == "." and (i + 1 >= n or line[i + 1].isspace()):
             tokens.append(".")
@@ -683,19 +690,76 @@ class SystemCobolParser:
                     i += 1
                     continue
 
-                # Parse assign target with generic quote-aware regex
-                m_assign = re.search(
-                    r"ASSIGN\s+(?:TO\s+)?(?:'([^']*)'|\"([^\"]*)\"|([^\s.]+))",
-                    clause_text,
-                    re.I,
-                )
-                if m_assign:
-                    if m_assign.group(1) is not None:
-                        assign_target = m_assign.group(1)
-                    elif m_assign.group(2) is not None:
-                        assign_target = m_assign.group(2)
-                    elif m_assign.group(3) is not None:
-                        assign_target = m_assign.group(3)
+                # Robust quote-aware parsing of ASSIGN target with fail-closed semantics
+                # on unsupported quoting
+                m_kw = re.search(r"\bASSIGN(?:\s+TO)?\b", clause_text, re.I)
+                assign_target = ""
+                assign_valid = False
+                if m_kw:
+                    rem = clause_text[m_kw.end() :].lstrip()
+                    if rem:
+                        if rem[0] in ("'", '"'):
+                            q_char = rem[0]
+                            # Check for unsupported doubled-quote escapes or backslashes
+                            if (q_char * 2) in rem or "\\" in rem:
+                                assign_valid = False
+                            else:
+                                close_idx = rem.find(q_char, 1)
+                                if close_idx == -1:
+                                    # Unclosed quote
+                                    assign_valid = False
+                                else:
+                                    raw_target = rem[: close_idx + 1]
+                                    char_after = (
+                                        rem[close_idx + 1] if close_idx + 1 < len(rem) else ""
+                                    )
+                                    after_target = rem[close_idx + 1 :].strip()
+                                    if char_after and not (
+                                        char_after.isspace() or char_after == "."
+                                    ):
+                                        # e.g. 'accounts.dat'xyz
+                                        assign_valid = False
+                                    elif "'" in after_target or '"' in after_target:
+                                        # Stray unconsumed quotes in remaining clause
+                                        assign_valid = False
+                                    else:
+                                        try:
+                                            unquoted = exact_syntactic_unquote(raw_target)
+                                            if q_char in unquoted:
+                                                assign_valid = False
+                                            elif not unquoted:
+                                                # Empty file name is domain-invalid
+                                                assign_valid = False
+                                            else:
+                                                assign_target = unquoted
+                                                assign_valid = True
+                                        except ValueError:
+                                            assign_valid = False
+                        else:
+                            # Unquoted identifier
+                            toks = rem.split()
+                            first_tok = toks[0].rstrip(".")
+                            if "'" in first_tok or '"' in first_tok or not first_tok:
+                                assign_valid = False
+                            else:
+                                assign_target = first_tok
+                                assign_valid = True
+
+                if not assign_valid or not assign_target:
+                    self.statements.append(
+                        ClassifiedStatement(
+                            target_file.relative_path,
+                            start_l,
+                            end_l,
+                            "SELECT",
+                            clause_text,
+                            StatementClassification.UNSUPPORTED_RELEVANT,
+                            f"Unsupported or malformed file assignment syntax in SELECT: "
+                            f"{clause_text}",
+                        )
+                    )
+                    i += 1
+                    continue
 
                 if re.search(r"LINE\s+SEQUENTIAL", clause_text, re.I):
                     org_val = "LINE_SEQUENTIAL"
@@ -899,59 +963,49 @@ class SystemCobolParser:
                     if not cond_name or start_idx == -1 or start_idx >= len(no_dot_tokens):
                         is_supported = False
                     else:
-                        val_kw_idx = -1
-                        upper_clause = clause_text.upper()
-                        for kw in ("VALUES", "VALUE"):
-                            kpos = upper_clause.find(kw)
-                            if kpos != -1:
-                                val_kw_idx = kpos + len(kw)
+                        for t in no_dot_tokens[start_idx:]:
+                            if t in (",", ";"):
+                                continue
+                            t_upper = t.upper()
+                            if t_upper in (
+                                "THRU",
+                                "THROUGH",
+                                "OR",
+                                "AND",
+                                "TO",
+                                "WHEN",
+                                "ALSO",
+                            ):
+                                is_supported = False
                                 break
-                        if val_kw_idx != -1:
-                            val_portion = clause_text[val_kw_idx:]
-                            if "''" in val_portion or '""' in val_portion or "\\" in val_portion:
+                            if ".." in t:
                                 is_supported = False
+                                break
+                            if "\\" in t:
+                                is_supported = False
+                                break
 
-                        if is_supported:
-                            for t in no_dot_tokens[start_idx:]:
-                                if t in (",", ";"):
-                                    continue
-                                t_upper = t.upper()
-                                if t_upper in (
-                                    "THRU",
-                                    "THROUGH",
-                                    "OR",
-                                    "AND",
-                                    "TO",
-                                    "WHEN",
-                                    "ALSO",
-                                ):
+                            if (t.startswith("'") and t.endswith("'") and len(t) >= 2) or (
+                                t.startswith('"') and t.endswith('"') and len(t) >= 2
+                            ):
+                                try:
+                                    inner = exact_syntactic_unquote(t)
+                                except ValueError:
                                     is_supported = False
                                     break
-                                if ".." in t:
+                                if t[0] in inner:
                                     is_supported = False
                                     break
-
-                                if (t.startswith("'") and t.endswith("'") and len(t) >= 2) or (
-                                    t.startswith('"') and t.endswith('"') and len(t) >= 2
-                                ):
-                                    try:
-                                        inner = exact_syntactic_unquote(t)
-                                    except ValueError:
-                                        is_supported = False
-                                        break
-                                    if "'" in inner or '"' in inner:
-                                        is_supported = False
-                                        break
-                                    cond_vals.append(inner)
+                                cond_vals.append(inner)
+                            else:
+                                if re.match(r"^[+-]?\d+(?:\.\d+)?$", t):
+                                    cond_vals.append(t)
                                 else:
-                                    if re.match(r"^[+-]?\d+(?:\.\d+)?$", t):
-                                        cond_vals.append(t)
-                                    else:
-                                        is_supported = False
-                                        break
+                                    is_supported = False
+                                    break
 
-                            if not cond_vals:
-                                is_supported = False
+                        if not cond_vals:
+                            is_supported = False
 
                 if is_supported:
                     ast_cond = ASTDataField(
@@ -1580,7 +1634,29 @@ class SystemCobolParser:
                         if has_barrier:
                             continue
 
-                        cmd_clean = exact_syntactic_unquote(s1.source_operand)
+                        try:
+                            if "\\" in s1.source_operand:
+                                raise ValueError("Unsupported quoting in command source operand")
+                            cmd_clean = exact_syntactic_unquote(s1.source_operand)
+                            if s1.source_operand[0] in cmd_clean or not cmd_clean:
+                                raise ValueError("Unconsumed quote or empty command literal")
+                        except ValueError:
+                            for idx_s, s in enumerate(self.statements):
+                                if s.file_path == unit.file_path and s.line_start in (
+                                    s1.line_start,
+                                    s2.line_start,
+                                ):
+                                    self.statements[idx_s] = ClassifiedStatement(
+                                        s.file_path,
+                                        s.line_start,
+                                        s.line_end,
+                                        s.verb,
+                                        s.raw_text,
+                                        StatementClassification.UNSUPPORTED_RELEVANT,
+                                        "Unsupported quoting or empty literal in command statement",
+                                    )
+                            continue
+
                         commands_in_unit.append((s1, s2, idx, idx + 1))
 
                         # Command invocation
@@ -1604,7 +1680,7 @@ class SystemCobolParser:
                         )
 
                         # Platform dependency
-                        if cmd_clean.lower().startswith("cmd /c"):
+                        if cmd_clean.strip().lower().startswith("cmd /c"):
                             self.supported_facts.append(
                                 SupportedSystemFact(
                                     fact=PlatformDependencyFact(
@@ -2086,11 +2162,35 @@ class SystemCobolParser:
                 if isinstance(stmt, ASTMove):
                     t_name = stmt.target_operand.upper()
                     if t_name in field_offsets:
-                        source_val = (
-                            exact_syntactic_unquote(stmt.source_operand)
-                            if stmt.is_literal_source
-                            else stmt.source_operand
-                        )
+                        if stmt.is_literal_source:
+                            try:
+                                if "\\" in stmt.source_operand:
+                                    raise ValueError(
+                                        "Unsupported quoting in initializer move literal"
+                                    )
+                                source_val = exact_syntactic_unquote(stmt.source_operand)
+                                if stmt.source_operand[0] in source_val:
+                                    raise ValueError(
+                                        "Unconsumed delimiter quote in initializer move literal"
+                                    )
+                            except ValueError:
+                                for idx_s, s in enumerate(self.statements):
+                                    if (
+                                        s.file_path == unit.file_path
+                                        and s.line_start == stmt.line_start
+                                    ):
+                                        self.statements[idx_s] = ClassifiedStatement(
+                                            s.file_path,
+                                            s.line_start,
+                                            s.line_end,
+                                            s.verb,
+                                            s.raw_text,
+                                            StatementClassification.UNSUPPORTED_RELEVANT,
+                                            "Unsupported quoting in initializer move literal",
+                                        )
+                                continue
+                        else:
+                            source_val = stmt.source_operand
                         staged_moves[t_name] = (source_val, stmt)
                 elif isinstance(stmt, ASTFileOp) and stmt.verb == "WRITE":
                     if key_field_name in staged_moves:

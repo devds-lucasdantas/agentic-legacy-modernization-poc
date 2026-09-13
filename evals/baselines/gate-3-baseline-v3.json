@@ -11,7 +11,7 @@
   "maximum_model_attempts": 1,
   "maximum_logical_invocation_count": 1,
   "prompt_sha256": "4be25cfc25933d6f0e69cbeeae1efe12ccf2e1354857e04c90108d8534ea92e8",
-  "wire_schema_sha256": "1cd36bf69496c063bc93a15c9334398e2256be527b4de3ff2e9b897a09c94c3c",
+  "wire_schema_sha256": "07655be0a119440e1f693cbd3242842ed87e82c43518bce61f741bc7dc4423dc",
   "source_manifest_sha256": "daf28b3314199db8e31bfacdf2fb8441b54682caa7854ed288e1bc00866a1dd1",
   "bundle_serialization_version": "1.0.0",
   "bundle_sha256": "95bb386b51d653c0a1834e1950634a9887b7cb6826b8c317a07c4b6a4167d060",
