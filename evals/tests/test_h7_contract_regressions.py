@@ -4409,11 +4409,11 @@ def test_h7_4_4_b04_posix_command_wrappers_fail_closed() -> None:
         assert len(cmd_facts) == 1
         assert cmd_facts[0].command_template == posix_cmd
 
+        # ZERO PlatformDependencyFact because POSIX is not a model-visible token in Contract 3.5.3
         plat_facts = [
             f.fact for f in p_p.get_supported_facts() if isinstance(f.fact, PlatformDependencyFact)
         ]
-        assert len(plat_facts) == 1
-        assert plat_facts[0].platform_family == "POSIX"
+        assert len(plat_facts) == 0, "POSIX mutation command must emit zero PlatformDependencyFact"
 
         # Mutation sequence and risk are NOT derived
         seq_facts = [
@@ -4424,6 +4424,79 @@ def test_h7_4_4_b04_posix_command_wrappers_fail_closed() -> None:
             f.fact for f in p_p.get_supported_facts() if isinstance(f.fact, BehavioralRiskFact)
         ]
         assert len(risk_facts) == 0
+
+
+def test_h7_4_4_1_posix_non_mutation_clean_coverage_zero_platform_fact() -> None:
+    """POSIX non-mutation commands have clean coverage and zero platform dependency fact."""
+    for posix_nonmut in (
+        "/bin/sh -c 'echo test'",
+        "sh -c 'echo test'",
+        "bash -c 'echo test'",
+        "/usr/bin/bash -c 'echo test'",
+    ):
+        src_posix = f"""       IDENTIFICATION DIVISION.
+       PROGRAM-ID. TPOSIXECHO.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 BUFFER PIC X(100).
+       PROCEDURE DIVISION.
+           MOVE "{posix_nonmut}" TO BUFFER
+           CALL 'SYSTEM' USING BUFFER
+           STOP RUN.
+"""
+        p_p = SystemCobolParser(_make_synth_bundle(src_posix))
+        cert_p = p_p.parse_system()
+        # Coverage is clean because non-mutation command does not fail closed
+        assert cert_p.unsupported_relevant_count == 0, "POSIX non-mutation must have clean coverage"
+        assert cert_p.is_evaluation_blocked is False
+
+        # Exact opaque command fact is grounded
+        cmd_facts = [
+            f.fact for f in p_p.get_supported_facts() if isinstance(f.fact, CommandInvocationFact)
+        ]
+        assert len(cmd_facts) == 1
+        assert cmd_facts[0].command_template == posix_nonmut
+
+        # ZERO PlatformDependencyFact because POSIX is not in frozen wire domain
+        plat_facts = [
+            f.fact for f in p_p.get_supported_facts() if isinstance(f.fact, PlatformDependencyFact)
+        ]
+        assert len(plat_facts) == 0, "POSIX non-mutation must emit zero PlatformDependencyFact"
+
+        # Zero sequence and risk
+        seq_facts = [
+            f.fact for f in p_p.get_supported_facts() if isinstance(f.fact, OperationSequenceFact)
+        ]
+        assert len(seq_facts) == 0
+        risk_facts = [
+            f.fact for f in p_p.get_supported_facts() if isinstance(f.fact, BehavioralRiskFact)
+        ]
+        assert len(risk_facts) == 0
+
+
+def test_h7_4_4_1_platform_dependency_domain_closure() -> None:
+    """Explicit domain-closure test: host parser can only emit
+    PlatformDependency tokens representable in frozen schema.
+    """
+    wire = get_system_openai_wire_schema()
+    defs = wire.get("schema", {}).get("$defs", {})
+    pd_def = defs.get("PlatformDependency", {})
+    pf_prop = pd_def.get("properties", {}).get("platform_family", {})
+    allowed_families = set(pf_prop.get("enum", []))
+    if "const" in pf_prop:
+        allowed_families.add(pf_prop["const"])
+    assert allowed_families == {"WINDOWS"}, (
+        f"Wire schema must expose ONLY WINDOWS, got {allowed_families}"
+    )
+
+    # Verify every supported fact across legacy system respects domain closure
+    bundle_legacy = read_system_bundle(REPO_ROOT)
+    p_legacy = SystemCobolParser(bundle_legacy)
+    p_legacy.parse_system()
+    for sf in p_legacy.get_supported_facts():
+        if isinstance(sf.fact, PlatformDependencyFact):
+            assert sf.fact.platform_family in allowed_families
+            assert sf.fact.platform_family != "POSIX"
 
 
 def test_h7_4_4_b06_mixed_open_modes_fail_closed() -> None:

@@ -2861,7 +2861,7 @@ class SystemCobolParser:
                             )
                         )
 
-                        # Platform dependency
+                        # Platform dependency (Contract 3.5.3 wire schema permits only WINDOWS)
                         dialect, _ = classify_command_dialect(cmd_clean)
                         if dialect == CommandDialect.WINDOWS_CMD:
                             self.supported_facts.append(
@@ -2869,22 +2869,6 @@ class SystemCobolParser:
                                     fact=PlatformDependencyFact(
                                         program_id=caller,
                                         platform_family="WINDOWS",
-                                        command_literal=cmd_clean,
-                                    ),
-                                    proposition_id=f"prop.platform.{caller.lower()}_{cmd_idx}",
-                                    evidence_spans={
-                                        "evidence": EvidenceSpan(
-                                            unit.file_path, s1.line_start, s1.line_end
-                                        )
-                                    },
-                                )
-                            )
-                        elif dialect == CommandDialect.POSIX_SHELL:
-                            self.supported_facts.append(
-                                SupportedSystemFact(
-                                    fact=PlatformDependencyFact(
-                                        program_id=caller,
-                                        platform_family="POSIX",
                                         command_literal=cmd_clean,
                                     ),
                                     proposition_id=f"prop.platform.{caller.lower()}_{cmd_idx}",
