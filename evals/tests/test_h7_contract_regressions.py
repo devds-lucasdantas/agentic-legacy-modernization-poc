@@ -84,7 +84,14 @@ from src.cobol.system_atomic_facts import (
     TerminationSiteFact,
     canonicalize_picture,
 )
-from src.cobol.system_cobol_parser import ExecutionEffect, SystemCobolParser
+from src.cobol.system_cobol_parser import (
+    ExecutionEffect,
+    StatementClassification,
+    SystemCobolParser,
+    consume_declaration_period,
+    is_valid_supported_picture,
+    tokenize_cobol_line,
+)
 from src.cobol.system_support_index import SystemSupportIndex
 from src.validation.evaluator_v3 import (
     CanonicalExhaustiveObligation,
@@ -6699,3 +6706,194 @@ def test_h7_6_d_h08_post_claim_reservation_write_failure_envelope(
         reentry_exit = mod.execute_internal_child(args)
         assert reentry_exit == 1
         assert mock_agent.invoke_raw.call_count == 0
+
+
+# ======================================================================
+# TEST H7.7-A: LOSSLESS GRAMMAR & RECORD ATOMICITY
+# ======================================================================
+
+
+def test_h7_7_a_lossless_grammar_and_record_atomicity():
+    """H7.7-A Regression: Lossless sentence/declaration grammar, exact picture validation.
+
+    Verifies AUD-02, AUD-04, AUD-06:
+    - AUD-04: Standalone sentence period '.' produces sentence boundary and terminates scopes.
+    - AUD-04: Terminated READ F. followed by GOBACK. does not slurp GOBACK into READ clauses.
+    - AUD-02: WHEN OTHER-FLAG is not treated as exhaustive WHEN OTHER.
+    - AUD-06: 01 OCCURS / REDEFINES / invalid picture fail closed as UNSUPPORTED_RELEVANT,
+      mark record unsupported, and suppress RecordLayoutRelationFact and DataStateComparisonFact.
+    - AUD-06: BOGUS. in Data Division is not recognized as a paragraph header.
+    """
+    # 1. Picture validation
+    assert is_valid_supported_picture("X(10)")
+    assert is_valid_supported_picture("9(5)V99")
+    assert is_valid_supported_picture("$ZZ,ZZZ,ZZZ,ZZ9.99")
+    assert is_valid_supported_picture("-(10)9")
+    assert not is_valid_supported_picture("GARBAGE")
+    assert not is_valid_supported_picture("X(10)GARBAGE")
+    assert not is_valid_supported_picture("9(5)V99.")
+
+    # 2. consume_declaration_period
+    ok, toks, term = consume_declaration_period(["01", "WS-REC", "PIC", "X(10)."])
+    assert ok is True
+    assert toks == ["01", "WS-REC", "PIC", "X(10)"]
+    assert term is True
+
+    ok_bad, _, _ = consume_declaration_period(["05", "F.", "PIC", "X."])
+    assert ok_bad is False  # interior dot rejected
+
+    ok_prog, toks_prog, term_prog = consume_declaration_period(["PROGRAM-ID.", "BANK-MAIN."])
+    assert ok_prog is True
+    assert toks_prog == ["PROGRAM-ID.", "BANK-MAIN"]
+    assert term_prog is True
+
+    # 3. Standalone period terminating IF without END-IF
+    cobol_src = """       IDENTIFICATION DIVISION.
+       PROGRAM-ID. TEST-IF.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 WS-A PIC X(1) VALUE 'A'.
+       PROCEDURE DIVISION.
+       0000-MAIN.
+           IF WS-A = 'A'
+               MOVE 'X' TO WS-A
+           .
+           GOBACK.
+"""
+    bundle = _make_synth_bundle(cobol_src, filename="TEST-IF.CBL")
+    parser = SystemCobolParser(bundle)
+    parser.parse_system()
+    proc_verbs = ("IF", "MOVE", "SENTENCE_BOUNDARY", "GOBACK")
+    proc_stmts = [s for s in parser.statements if s.verb in proc_verbs]
+    cf_nodes = parser._parse_procedural_cf_block(proc_stmts, 0)[0]
+    verbs = [n[1].verb if isinstance(n, tuple) and n[0] == "STMT" else n[0] for n in cf_nodes]
+    assert "IF" in verbs
+    assert "GOBACK" in verbs
+    if_node = next(n for n in cf_nodes if isinstance(n, tuple) and n[0] == "IF")
+    then_nodes = if_node[2]
+    then_verbs = [
+        n[1].verb if isinstance(n, tuple) and n[0] == "STMT" else n[0]
+        for n in then_nodes
+    ]
+    assert "MOVE" in then_verbs
+    assert "GOBACK" not in then_verbs
+
+    # 4. Terminated READ F. followed by GOBACK.
+    cobol_read = """       IDENTIFICATION DIVISION.
+       PROGRAM-ID. TEST-READ.
+       ENVIRONMENT DIVISION.
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+           SELECT IN-FILE ASSIGN TO 'IN.DAT'
+           FILE STATUS IS WS-STAT.
+       DATA DIVISION.
+       FILE SECTION.
+       FD IN-FILE.
+       01 IN-REC PIC X(10).
+       WORKING-STORAGE SECTION.
+       01 WS-STAT PIC X(2).
+       PROCEDURE DIVISION.
+       0000-MAIN.
+           READ IN-FILE.
+           GOBACK.
+"""
+    bundle_r = _make_synth_bundle(cobol_read, filename="TEST-READ.CBL")
+    parser_r = SystemCobolParser(bundle_r)
+    parser_r.parse_system()
+    proc_stmts_r = [s for s in parser_r.statements if s.verb in ("READ", "GOBACK")]
+    cf_nodes_r = parser_r._parse_procedural_cf_block(proc_stmts_r, 0)[0]
+    verbs_r = [n[1].verb if isinstance(n, tuple) and n[0] == "STMT" else n[0] for n in cf_nodes_r]
+    assert verbs_r == ["READ", "GOBACK"]
+
+    # 5. WHEN OTHER-FLAG is not WHEN OTHER
+    cobol_eval = """       IDENTIFICATION DIVISION.
+       PROGRAM-ID. TEST-EVAL.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 WS-CMD PIC X(1).
+       01 OTHER-FLAG PIC X(1) VALUE 'Y'.
+       PROCEDURE DIVISION.
+       0000-MAIN.
+           EVALUATE WS-CMD
+               WHEN 'A'
+                   MOVE '1' TO WS-CMD
+               WHEN OTHER-FLAG
+                   MOVE '2' TO WS-CMD
+           END-EVALUATE
+           GOBACK.
+"""
+    bundle_e = _make_synth_bundle(cobol_eval, filename="TEST-EVAL.CBL")
+    parser_e = SystemCobolParser(bundle_e)
+    parser_e.parse_system()
+    eval_verbs = ("EVALUATE", "WHEN", "MOVE", "END-EVALUATE", "GOBACK")
+    proc_stmts_e = [s for s in parser_e.statements if s.verb in eval_verbs]
+    cf_nodes_e = parser_e._parse_procedural_cf_block(proc_stmts_e, 0)[0]
+    eval_node = next(n for n in cf_nodes_e if isinstance(n, tuple) and n[0] == "EVALUATE")
+    when_blocks = eval_node[2]
+    has_when_other = any(
+        [t.upper().rstrip(".") for t in tokenize_cobol_line(w_stmt.raw_text)] == ["WHEN", "OTHER"]
+        for w_stmt, _ in when_blocks
+    )
+    assert has_when_other is False
+
+    # 6. 01 OCCURS fails closed
+    cobol_occurs = """       IDENTIFICATION DIVISION.
+       PROGRAM-ID. TEST-OCC.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 TBL OCCURS 5.
+          05 ITEM-VAL PIC X(10).
+       PROCEDURE DIVISION.
+       0000-MAIN.
+           GOBACK.
+"""
+    bundle_o = _make_synth_bundle(cobol_occurs, filename="TEST-OCC.CBL")
+    parser_o = SystemCobolParser(bundle_o)
+    parser_o.parse_system()
+    unsupp = [
+        s for s in parser_o.statements
+        if s.classification == StatementClassification.UNSUPPORTED_RELEVANT
+    ]
+    assert len(unsupp) > 0
+    assert any("OCCURS" in s.description for s in unsupp)
+    assert any(r.is_unsupported for r in parser_o.compilation_units[0].record_declarations)
+
+    # 7. 01 REDEFINES fails closed
+    cobol_redef = """       IDENTIFICATION DIVISION.
+       PROGRAM-ID. TEST-RED.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 BASE-REC PIC X(10).
+       01 REDEF-REC REDEFINES BASE-REC.
+          05 REDEF-VAL PIC X(10).
+       PROCEDURE DIVISION.
+       0000-MAIN.
+           GOBACK.
+"""
+    bundle_red = _make_synth_bundle(cobol_redef, filename="TEST-RED.CBL")
+    parser_red = SystemCobolParser(bundle_red)
+    parser_red.parse_system()
+    unsupp_red = [
+        s for s in parser_red.statements
+        if s.classification == StatementClassification.UNSUPPORTED_RELEVANT
+    ]
+    assert len(unsupp_red) > 0
+    assert any("REDEFINES" in s.description for s in unsupp_red)
+
+    # 8. BOGUS. in Data Division does NOT create a paragraph
+    cobol_bogus = """       IDENTIFICATION DIVISION.
+       PROGRAM-ID. TEST-BOG.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       BOGUS.
+       01 REC-A PIC X(10).
+       PROCEDURE DIVISION.
+       0000-MAIN.
+           GOBACK.
+"""
+    bundle_bog = _make_synth_bundle(cobol_bogus, filename="TEST-BOG.CBL")
+    parser_bog = SystemCobolParser(bundle_bog)
+    parser_bog.parse_system()
+    para_stmts = [s for s in parser_bog.statements if s.verb == "PARAGRAPH_HEADER"]
+    assert not any("BOGUS" in s.raw_text for s in para_stmts)
+

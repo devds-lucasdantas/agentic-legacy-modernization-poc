@@ -274,6 +274,11 @@ class ASTTermination(ASTStatement):
 
 
 @dataclass
+class ASTSentenceBoundary(ASTStatement):
+    pass
+
+
+@dataclass
 class ASTArithmetic(ASTStatement):
     operand: str
     target: str
@@ -477,6 +482,75 @@ def consume_optional_terminal_period(tokens: list[str]) -> tuple[bool, list[str]
                 return False, tokens, False
 
     return True, clean, terminated
+
+
+SUPPORTED_PICTURE_PATTERN: re.Pattern[str] = re.compile(
+    r"^(?:"
+    r"[AX](?:\([1-9][0-9]*\))?|"
+    r"S?9+(?:\([1-9][0-9]*\))?(?:V9+(?:\([1-9][0-9]*\))?)?|"
+    r"V9+(?:\([1-9][0-9]*\))?|"
+    r"[+-]+(?:\([1-9][0-9]*\))?9*(?:\([1-9][0-9]*\))?(?:V9+(?:\([1-9][0-9]*\))?)?|"
+    r"\$?[Z9*]+(?:,[Z9*]+)*(?:\.[0-9Z*]+)?"
+    r")$",
+    re.IGNORECASE,
+)
+
+
+def is_valid_supported_picture(pic: str | None) -> bool:
+    """Validate picture clause against Contract 3.5.3 frozen supported picture grammar."""
+    if not pic:
+        return False
+    p = pic.strip()
+    return bool(SUPPORTED_PICTURE_PATTERN.match(p))
+
+
+def consume_declaration_period(tokens: list[str]) -> tuple[bool, list[str], bool]:
+    """Consume single terminal period from data division declaration tokens.
+
+    Returns (True, clean_tokens, terminated) if valid: exactly 0 or 1 terminal period, and zero
+    interior period tokens.
+    Returns (False, tokens, False) if period occurs at an interior position (e.g. '05 F. PIC X.').
+    Numeric literals and supported picture strings containing periods are preserved.
+    """
+    if not tokens:
+        return True, [], False
+
+    clean = list(tokens)
+    terminated = False
+    if clean and clean[-1] == ".":
+        clean.pop()
+        terminated = True
+    elif (
+        clean
+        and clean[-1].endswith(".")
+        and not (
+            (clean[-1].startswith("'") and clean[-1].endswith("'"))
+            or (clean[-1].startswith('"') and clean[-1].endswith('"'))
+        )
+    ):
+        val = clean[-1]
+        if not re.match(r"^[+-]?[0-9]+\.[0-9]+$", val) and not is_valid_supported_picture(val):
+            clean[-1] = val[:-1]
+            terminated = True
+
+    # Check for interior period tokens or period-affixed tokens
+    for idx_t, t in enumerate(clean):
+        if idx_t == 0 and t.upper().rstrip(".") == "PROGRAM-ID":
+            continue
+        if idx_t == 1 and t == "." and clean[0].upper().rstrip(".") == "PROGRAM-ID":
+            continue
+        if t == ".":
+            return False, tokens, False
+        if not ((t.startswith("'") and t.endswith("'")) or (t.startswith('"') and t.endswith('"'))):
+            if (
+                "." in t
+                and not re.match(r"^[+-]?[0-9]+\.[0-9]+$", t)
+                and not is_valid_supported_picture(t)
+            ):
+                return False, tokens, False
+
+    return True, clean, terminated
+
 
 
 def has_procedural_barrier_between(
@@ -1095,12 +1169,33 @@ class SystemCobolParser:
                 continue
 
             if not in_procedure_division:
-                tokens = [t for t in tokenize_cobol_line(raw_line) if t != "."]
-                if not tokens:
+                raw_decl_tokens = tokenize_cobol_line(raw_line)
+                valid_decl, decl_tokens, decl_terminated = consume_declaration_period(
+                    raw_decl_tokens
+                )
+                if not valid_decl:
+                    self.statements.append(
+                        ClassifiedStatement(
+                            target_file.relative_path,
+                            line_num,
+                            line_num,
+                            raw_decl_tokens[0] if raw_decl_tokens else "UNKNOWN",
+                            raw_line,
+                            StatementClassification.UNSUPPORTED_RELEVANT,
+                            "Invalid period placement or interior period in declaration line",
+                        )
+                    )
+                    if current_record:
+                        current_record.is_unsupported = True
+                        current_record.line_end = max(current_record.line_end, line_num)
                     i += 1
                     continue
+                if not decl_tokens:
+                    i += 1
+                    continue
+                tokens = decl_tokens
                 first = tokens[0].upper()
-                line_is_terminated = False
+                line_is_terminated = decl_terminated
             else:
                 raw_tokens = tokenize_cobol_line(raw_line)
                 valid_period, procedural_tokens, line_is_terminated = (
@@ -1121,6 +1216,25 @@ class SystemCobolParser:
                     i += 1
                     continue
                 if not procedural_tokens:
+                    if line_is_terminated:
+                        stmt = ASTSentenceBoundary(
+                            verb="SENTENCE_BOUNDARY",
+                            line_start=line_num,
+                            line_end=line_num,
+                        )
+                        unit.statements.append(stmt)
+                        self.statements.append(
+                            ClassifiedStatement(
+                                target_file.relative_path,
+                                line_num,
+                                line_num,
+                                "SENTENCE_BOUNDARY",
+                                raw_line,
+                                StatementClassification.RECOGNIZED_BUT_UNSCORED,
+                                "Standalone sentence terminator",
+                                has_terminal_period=True,
+                            )
+                        )
                     i += 1
                     continue
                 tokens = procedural_tokens
@@ -1148,7 +1262,8 @@ class SystemCobolParser:
 
             # PROGRAM-ID
             if first.startswith("PROGRAM-ID"):
-                prog_name = tokens[1].rstrip(".") if len(tokens) > 1 else ""
+                id_tokens = [t for t in tokens[1:] if t != "."]
+                prog_name = id_tokens[0].rstrip(".") if id_tokens else ""
                 if not is_canonical_cobol_identifier(prog_name):
                     self.statements.append(
                         ClassifiedStatement(
@@ -1437,8 +1552,103 @@ class SystemCobolParser:
 
             # Record and Field Declarations (01, 05, 88)
             if first == "01":
+                rec_valid = True
+                rec_err = ""
                 rec_name = tokens[1].rstrip(".") if len(tokens) > 1 else ""
                 if not is_canonical_cobol_identifier(rec_name):
+                    rec_valid = False
+                    rec_err = f"Invalid 01 record identifier: {rec_name}"
+
+                consumed_indices = {0, 1}
+                init_val = None
+                toks_upper = [t.upper() for t in tokens]
+
+                # 1. Look for PIC / PICTURE
+                pic_val = None
+                for p_kw in ("PIC", "PICTURE"):
+                    if p_kw in toks_upper:
+                        idx_p = toks_upper.index(p_kw)
+                        consumed_indices.add(idx_p)
+                        next_p = idx_p + 1
+                        if next_p < len(tokens) and toks_upper[next_p] == "IS":
+                            consumed_indices.add(next_p)
+                            next_p += 1
+                        if next_p < len(tokens):
+                            pic_raw = tokens[next_p].rstrip(".")
+                            if is_valid_supported_picture(pic_raw):
+                                pic_val = canonicalize_picture(pic_raw)
+                            else:
+                                rec_valid = False
+                                rec_err = f"Invalid PICTURE clause in 01 declaration: {pic_raw}"
+                            consumed_indices.add(next_p)
+                        else:
+                            rec_valid = False
+                            rec_err = "Missing PICTURE string after PIC in 01 declaration"
+                        break
+
+                # 2. Look for USAGE
+                if "USAGE" in toks_upper:
+                    idx_u = toks_upper.index("USAGE")
+                    consumed_indices.add(idx_u)
+                    next_u = idx_u + 1
+                    if next_u < len(tokens) and toks_upper[next_u] == "IS":
+                        consumed_indices.add(next_u)
+                        next_u += 1
+                    if next_u < len(tokens):
+                        consumed_indices.add(next_u)
+                    else:
+                        rec_valid = False
+                        rec_err = "Missing USAGE value in 01 declaration"
+                else:
+                    for idx_tok, tok_u in enumerate(toks_upper):
+                        if idx_tok in consumed_indices:
+                            continue
+                        clean_tok = tok_u.rstrip(".")
+                        if clean_tok in ("PACKED-DECIMAL", "COMP-3", "COMP", "BINARY", "DISPLAY"):
+                            consumed_indices.add(idx_tok)
+                            break
+
+                # 3. Look for VALUE
+                if "VALUE" in toks_upper:
+                    v_idx = toks_upper.index("VALUE")
+                    consumed_indices.add(v_idx)
+                    next_v = v_idx + 1
+                    if next_v < len(tokens) and toks_upper[next_v] == "IS":
+                        consumed_indices.add(next_v)
+                        next_v += 1
+                    if next_v < len(tokens) and toks_upper[next_v] == "ALL":
+                        consumed_indices.add(next_v)
+                        next_v += 1
+                    if next_v < len(tokens):
+                        init_val = _safe_unquote(tokens[next_v].rstrip("."))
+                        consumed_indices.add(next_v)
+                    else:
+                        rec_valid = False
+                        rec_err = "Missing VALUE literal in 01 declaration"
+
+                # 4. Complete consumption check
+                # (rejects OCCURS, REDEFINES, unsupported clauses/tails)
+                unconsumed = [
+                    tokens[j]
+                    for j in range(len(tokens))
+                    if j not in consumed_indices and tokens[j] != "."
+                ]
+                if rec_valid and unconsumed:
+                    rec_valid = False
+                    uncons_str = " ".join(unconsumed)
+                    rec_err = (
+                        f"Unsupported clauses or unconsumed tokens in 01 declaration: {uncons_str}"
+                    )
+
+                if not rec_valid:
+                    current_record = ASTRecordDeclaration(
+                        container_name=rec_name or "INVALID",
+                        line_start=line_num,
+                        line_end=line_num,
+                        owning_fd=current_fd,
+                        is_unsupported=True,
+                    )
+                    unit.record_declarations.append(current_record)
                     self.statements.append(
                         ClassifiedStatement(
                             target_file.relative_path,
@@ -1447,17 +1657,12 @@ class SystemCobolParser:
                             "RECORD_01",
                             raw_line,
                             StatementClassification.UNSUPPORTED_RELEVANT,
-                            f"Invalid 01 record identifier: {rec_name}",
+                            rec_err or f"Invalid 01 record declaration: {rec_name}",
                         )
                     )
                     i += 1
                     continue
-                init_val = None
-                toks_upper = [t.upper() for t in tokens]
-                if "VALUE" in toks_upper:
-                    v_idx = toks_upper.index("VALUE")
-                    if v_idx + 1 < len(tokens):
-                        init_val = _safe_unquote(tokens[v_idx + 1].rstrip("."))
+
                 current_record = ASTRecordDeclaration(
                     container_name=rec_name,
                     line_start=line_num,
@@ -1518,8 +1723,9 @@ class SystemCobolParser:
                             next_i += 1
                         if next_i < len(tokens):
                             pic_raw = tokens[next_i].rstrip(".")
-                            pic_val = canonicalize_picture(pic_raw)
-                            if pic_val is None:
+                            if is_valid_supported_picture(pic_raw):
+                                pic_val = canonicalize_picture(pic_raw)
+                            else:
                                 field_valid = False
                                 field_err = f"Invalid PICTURE clause: {pic_raw}"
                             consumed_indices.add(next_i)
@@ -1812,7 +2018,7 @@ class SystemCobolParser:
                 i += 1
                 continue
 
-            if stripped.endswith(".") and len(tokens) == 1:
+            if in_procedure_division and stripped.endswith(".") and len(tokens) == 1:
                 if (
                     first not in PROCEDURAL_KEYWORD_VOCABULARY
                     and first not in PROCEDURAL_STATEMENT_STARTERS
@@ -2900,7 +3106,20 @@ class SystemCobolParser:
                 if (p_term or end_perf_term) and stop_on_period:
                     return nodes, i, True
 
+            elif s.verb == "SENTENCE_BOUNDARY":
+                i += 1
+                if stop_on_period:
+                    return nodes, i, True
+                continue
+
             elif s.verb == "READ":
+                if s.has_terminal_period:
+                    nodes.append(("READ", s, [], []))
+                    i += 1
+                    if stop_on_period:
+                        return nodes, i, True
+                    continue
+
                 at_end_nodes: list[Any] = []
                 not_at_end_nodes: list[Any] = []
                 cur_mode: str | None = None
@@ -2923,6 +3142,9 @@ class SystemCobolParser:
                         cur_mode = "NOT_AT_END"
                         next_i += 1
                         continue
+                    if cur_mode is None:
+                        # Non-clause statement after unterminated READ: stop clause parsing!
+                        break
                     sub_nodes, next_i, p_sub = self._parse_procedural_cf_block(
                         stmts, next_i, {"AT", "NOT", "END-READ"}, stop_on_period=True
                     )
@@ -3445,7 +3667,8 @@ class SystemCobolParser:
                         self._analyze_cf_nodes(wb, callee_unit, call_stack) for _, wb in when_blocks
                     ]
                     has_when_other = any(
-                        w_stmt.raw_text.upper().strip().startswith("WHEN OTHER")
+                        [t.upper().rstrip(".") for t in tokenize_cobol_line(w_stmt.raw_text)]
+                        == ["WHEN", "OTHER"]
                         for w_stmt, _ in when_blocks
                     )
                     if not has_when_other:
@@ -4358,8 +4581,17 @@ class SystemCobolParser:
         all_records: list[tuple[ASTCompilationUnit, ASTRecordDeclaration]] = []
         for unit in self.compilation_units:
             for rec in unit.record_declarations:
-                if rec.fields:
-                    all_records.append((unit, rec))
+                if not rec.fields:
+                    continue
+                has_unsupported_stmt = any(
+                    s.file_path == unit.file_path
+                    and s.classification == StatementClassification.UNSUPPORTED_RELEVANT
+                    and rec.line_start <= s.line_start <= rec.line_end
+                    for s in self.statements
+                )
+                if rec.is_unsupported or has_unsupported_stmt:
+                    continue
+                all_records.append((unit, rec))
 
         seen_pairs: set[tuple[str, str]] = set()
         for idx_a in range(len(all_records)):
@@ -4446,7 +4678,13 @@ class SystemCobolParser:
             if not unit.record_declarations:
                 continue
             rec_decl = unit.record_declarations[0]
-            if not rec_decl.fields:
+            has_unsupported_stmt = any(
+                s.file_path == unit.file_path
+                and s.classification == StatementClassification.UNSUPPORTED_RELEVANT
+                and rec_decl.line_start <= s.line_start <= rec_decl.line_end
+                for s in self.statements
+            )
+            if not rec_decl.fields or rec_decl.is_unsupported or has_unsupported_stmt:
                 continue
 
             # Dynamically derive field character offsets and decimal places from layout
