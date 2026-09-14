@@ -1,11 +1,12 @@
-# Gate 3 H7.4 Contract 3.5.3 Remediation Report
+# Gate 3 H7.5 Contract 3.5.3 Remediation Report
 
 **Date:** 2026-09-13  
 **Contract Version:** 3.5.3  
-**Functional Commit (H7.4.4.2-0):** `ad115a2b48ffcc7db998fa09a663ca680cf8a404`  
-**Prior Functional Commit (H7.4.4.1-0):** `dd8563b10fa3fb5f7db2a3cb9d91f2bac6e87100`  
-**Prior Report Commit (H7.4.4.1):** `750c9bca9da922f6493ba6f6a31cf30392f02051`  
-**Classification:** `STRUCTURAL_VERIFIER_AND_LOGICAL_PARSING_REMEDIATION`  
+**Functional Commit (H7.5-C):** `d786c3fcd4e0bbc51d0f9e7b96e1d922dd1fccac`  
+**Functional Commit (H7.5-B):** `b3dbbc9d537ec246b6153d799042170f74d39ea7`  
+**Functional Commit (H7.5-A):** `984920f2a8e9a5f253952576649a9d2ddd38cff2`  
+**Prior Functional Commit (H7.4.4.2-0):** `ad115a2b48ffcc7db998fa09a663ca680cf8a404`  
+**Classification:** `STRUCTURAL_VERIFIER_LOGICAL_PARSING_AND_EXHAUSTIVE_COMPLETENESS_REMEDIATION`  
 **Mode:** STRICTLY OFFLINE  
 **Live Provider Calls:** 0  
 **Baseline-v2 State:** Byte-for-byte preserved (`108c51b222e476f32bd98c092c5dc814be9a25b4d1b93ae60f0f28ea2f5a631d`)  
@@ -800,6 +801,109 @@ The enforced closure invariant guarantees:
 - **Remote Branch:** `feat/gate-3-system-analysis`
 - **Baseline-v3 Spec:** `evals/baselines/gate-3-baseline-v3.json` (`candidate_git_sha = ""`)
 - **Execution Status:** Strictly offline. Zero provider calls, zero baseline runs, no baseline-v3 reservation, baseline-v2 reservation byte-for-byte preserved.
+
+---
+
+## 22. H7.5 / Contract 3.5.3 Source-to-Host Soundness & Exhaustive Completeness Remediation (Astra Review Findings F-01 through F-11)
+
+Following the Astra XHigh External Technical Audit on Contract 3.5.3, this remediation cycle comprehensively and soundly addresses all eleven audit findings (F-01 through F-11) across a strict 4-commit sequence, without regressions to reference evaluation metrics, schema invariants, or frozen baselines.
+
+### 22.1 Audit Findings & Architectural Remediations Summary
+
+#### F-01: Pure Host Fact Oracle Replacement in `evaluate_assessment`
+- **Issue:** Evaluator previously compared candidate model predictions against `expected_propositions` directly, creating potential circularity and bypassing host extraction during mutation evaluations.
+- **Remediation:** Refactored `evaluate_assessment` to use pure host-extracted atomic facts (`parser.extract_atomic_facts()`) as the sole authoritative evaluation oracle across all 11 categories. Dual-evaluation parity check verified on frozen reference codebase: host extraction produces exact equivalence with frozen golden dataset (`da5bdee...`).
+
+#### F-02: Conservative Control-Flow Effect Proof in Procedural Continuation
+- **Issue:** Caller continuation constraints relied on linear `last_stmt_verb` heuristics, vulnerable to dead-code, loops, and branching ambiguity.
+- **Remediation:** Replaced line-order heuristics with hierarchical CFG block parsing (`_parse_procedural_cf_block`), finite loop termination verification (`_verify_finite_loop_progress`), and effect tracing (`_analyze_cf_nodes`) with cycle detection and interprocedural effect composition. If continuation outcome is indeterminate (`UNKNOWN`), the parser fails closed as `UNSUPPORTED_RELEVANT`.
+
+#### F-03: Elimination of Partial AST Fact Emission
+- **Issue:** Partial statements or failed validations could emit incomplete AST nodes or partial facts.
+- **Remediation:** Ensured zero partial or placeholder AST nodes or facts are emitted upon validation failure. Malformed statements fail closed as `UNSUPPORTED_RELEVANT`.
+
+#### F-04: Fail-Closed Classification of Unparseable Procedural Statements
+- **Issue:** Unrecognized procedural statements were silently skipped instead of failing closed.
+- **Remediation:** All non-allowlisted, invalid, or malformed procedural statements are strictly classified as `UNSUPPORTED_RELEVANT`, marking `is_evaluation_blocked = True` on `ParserCoverageCertificate`.
+
+#### F-05: Strict Token Delimiter Handling in Free-Format COBOL Lexer
+- **Issue:** Substring and punctuation parsing risked bleeding between adjacent tokens or misinterpreting numeric/quoted literals.
+- **Remediation:** Lexer eliminates raw substring searching, enforcing exact word boundaries, respecting quoted string literals, handling period tokens soundly, and isolating single terminal sentence periods.
+
+#### F-06: Sound OperationSequence Dispatches
+- **Issue:** Non-standard external mutation sequences in the same linear block (such as `RENAME` followed by `DELETE`) were not properly classified.
+- **Remediation:** Within a linear segment, any multi-dispatch pair outside the frozen wire schema domain (`DELETE` -> `RENAME`) is strictly classified as `UNSUPPORTED_RELEVANT`, failing coverage closed without fabricating uncertifiable facts.
+
+#### F-07: Mandatory Organization on File Descriptors
+- **Issue:** Missing or quoted file organization clauses could be ambiguously classified.
+- **Remediation:** `SELECT` file control clauses with absent organization or organization in quoted literals strictly fail closed as `UNSUPPORTED_RELEVANT`.
+
+#### F-08: Deterministic Total Record Comparator
+- **Issue:** Pairwise record comparisons required strict symmetry, completeness, and tie-breaking.
+- **Remediation:** Verified total record layout comparator across all $N(N-1)/2$ combinations, ensuring strict symmetry, deterministic orientation, and tie-breaking.
+
+#### F-09: Evidence Span Alignment with Wire Schemas
+- **Issue:** Evidence spans could encompass excessive whitespace or bleed into neighboring statements.
+- **Remediation:** Aligned evidence spans to exact physical line bounds of constituent statements for all 11 fact categories, eliminating synthetic padding.
+
+#### F-10: Source-Derived Exhaustive Completeness
+- **Issue:** Exhaustive category verification lacked explicit representation independent of golden propositions.
+- **Remediation:** Added `CanonicalExhaustiveObligation` (hashable, frozen dataclass with canonical tuple coordinates). Extracted host exhaustive obligations directly from host-parsed facts and candidates. Added exhaustive metrics (`host_exhaustive_fact_count`, `matched_host_exhaustive_fact_count`, `missing_host_exhaustive_fact_count`) to `EvaluationMetricSummary`. Enforced `missing_host_exhaustive_fact_count == 0` for `gate_3_pass`. Implemented runner preflight parity check in `scripts/run-gate-3.py` verifying 45/45 host-derived obligations match golden prior to attempt claims or model invocations.
+
+#### F-11: Raw Invocation Terminal Failure Evidence Sealing
+- **Issue:** Exceptions during `agent.invoke_raw(...)` bypassed evidence preservation and manifest sealing.
+- **Remediation:** Attempt claim is irrevocably acquired before invocation. Exceptions during raw invocation route directly through `finalize_post_model_failure(...)`: persists `run-metadata.json`, writes `terminal-result.json` (`status="FAILED"`, `error_phase="MODEL_INVOCATION"`), seals `manifest.json`, produces zero fake response files, transitions `reservation-state.json` to `FAILED`, and exits 1 with zero retries.
+
+---
+
+### 22.2 Quality Gates & Verification (H7.5 Release)
+
+1. **Targeted H7.5 Contract Regression Suite (`evals/tests/test_h7_contract_regressions.py`):**
+   - 82 passed in 13.75s (including Sections 18 and 19 covering F-01 through F-10).
+2. **Runner & Authorization Contract Suite (`evals/tests/test_gate_3_runner.py`):**
+   - 13 passed in 33.62s (including `test_f11_raw_invocation_terminal_failure_sealing`).
+3. **Adversarial Regression Suite (`evals/tests/test_adversarial_regressions_gate3.py`):**
+   - 24 passed in 3.37s (including updated CF10 fail-closed semantics for RENAME -> DELETE ordering).
+4. **Full Workspace Pytest Suite:**
+   - 352 passed, 0 failures in 302.92s.
+5. **Static Type Checking (`mypy src agents evals scripts`):**
+   - Success: no issues found in 52 source files.
+6. **Linter & Formatter (`ruff check .`, `ruff format --check .`):**
+   - All checks passed, all files formatted cleanly.
+7. **Dependency Hygiene (`pip check`):**
+   - No broken requirements found.
+
+---
+
+### 22.3 Complete Scientific Immutability Invariants (CLI-Grounded)
+
+| Asset | Target / File | Hash / Value | Verification Status |
+|---|---|---|---|
+| Baseline-v1 Spec | `evals/baselines/gate-3-baseline-v1.json` | `b37e8815e2605f279ecc417b8e037f0b235f5e1dcfa64d79b10708e852509695` | Byte-for-byte verified |
+| Baseline-v1 Artifacts | `artifacts/gate-3/baseline-v1/manifest.json` | 13 artifacts matching manifest SHAs | All 13 verified identical |
+| Baseline-v2 Reservation | `artifacts/gate-3/baseline-v2/reservation-state.json` | `108c51b222e476f32bd98c092c5dc814be9a25b4d1b93ae60f0f28ea2f5a631d` | Byte-for-byte verified |
+| Production Prompt | `agents/legacy_analyzer/prompts/system_v3.md` | `4be25cfc25933d6f0e69cbeeae1efe12ccf2e1354857e04c90108d8534ea92e8` | Byte-for-byte verified |
+| Generated Wire Schema | `get_system_openai_wire_schema()` | `07655be0a119440e1f693cbd3242842ed87e82c43518bce61f741bc7dc4423dc` | Byte-for-byte verified |
+| Golden Dataset | `evals/expected/system-understanding-v3.json` | `da5bdee9286dd5fbc79cb8331b70aabf73fca029fe4a3d3c5ede5ed2c984b82b` | Byte-for-byte verified |
+| Dependency Lock | `requirements-lock.txt` | `732cb9370e90af2d0972eeda7fc18fd5745f17cb301f359b268df228fe7f18be` | Byte-for-byte verified |
+| Source Manifest | `evals/baselines/gate-3-baseline-v3.json` (`target_bundle`) | `daf28b3314199db8e31bfacdf2fb8441b54682caa7854ed288e1bc00866a1dd1` | Byte-for-byte verified |
+| Canonical Bundle | `legacy/` (6 artifacts) | `95bb386b51d653c0a1834e1950634a9887b7cb6826b8c317a07c4b6a4167d060` | Byte-for-byte verified |
+| Baseline-v3 Spec | `evals/baselines/gate-3-baseline-v3.json` | `candidate_git_sha = ""` | Verified empty |
+| Baseline-v3 Artifacts | `artifacts/gate-3/baseline-v3` | Does NOT exist | Verified absent |
+| Golden Semantic Digest | Proposition & Policy canonical JSON digest | `1160261957bddfe11ca13131da3cb2471d1dd1f5f208bf8cb4ce2e8dc9c77a92` | Byte-for-byte verified |
+| Reference Evaluation | Golden vs Host Evaluator on `legacy/` | 59/59, Precision=1.0, Recall=1.0, Exhaustive=45/45 | Full Pass |
+
+---
+
+## 23. Final Status (H7.5 Release)
+
+- **Functional Commit H7.5-A:** `984920f2a8e9a5f253952576649a9d2ddd38cff2` (Host oracle & parser soundness F-01, F-03..F-09)
+- **Functional Commit H7.5-B:** `b3dbbc9d537ec246b6153d799042170f74d39ea7` (Continuation effect proof F-02 & Exhaustive completeness F-10)
+- **Functional Commit H7.5-C:** `d786c3fcd4e0bbc51d0f9e7b96e1d922dd1fccac` (Raw invocation terminal failure evidence sealing F-11)
+- **Report Commit H7.5:** Direct report-only child of `H7.5-C` (modifying strictly `docs/gate-3-h7-contract-remediation-report.md`)
+- **Remote Branch:** `feat/gate-3-system-analysis`
+- **Execution Mode:** Strictly OFFLINE. 0 provider calls, 0 baseline-v3 reservations, baseline-v2 reservation byte-for-byte preserved.
+
 
 
 
