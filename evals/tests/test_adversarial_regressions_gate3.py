@@ -680,10 +680,10 @@ def test_cf10_changed_delete_rename_ordering(tmp_path: Path):
     )
     parser = SystemCobolParser(bundle)
     cert = parser.parse_system()
-    # Under H7.4.2 decoupled semantics, RENAME -> DELETE has clean coverage,
-    # but produces no sequence or risk
-    assert cert.unsupported_relevant_count == 0
-    assert cert.is_evaluation_blocked is False
+    # Under H7.5 / F-06 sound linear segment semantics, unrepresentable RENAME -> DELETE
+    # fails closed as UNSUPPORTED_RELEVANT and blocks evaluation, emitting no sequence or risk.
+    assert cert.unsupported_relevant_count == 4
+    assert cert.is_evaluation_blocked is True
     facts = parser.get_supported_facts()
     op_seqs = [f.fact for f in facts if f.fact.fact_category == "OPERATION_SEQUENCE"]
     assert len(op_seqs) == 0

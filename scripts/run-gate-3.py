@@ -1201,6 +1201,8 @@ def finalize_post_model_failure(
     raw_response_content: Any | None = None,
     evaluation_result: Any | None = None,
     evaluated_predictions: Any | None = None,
+    spec_sha: str | None = None,
+    runtime_manifest_sha: str | None = None,
 ) -> None:
     """Centralized post-invocation failure finalizer.
 
@@ -1218,6 +1220,19 @@ def finalize_post_model_failure(
     error_message = str(error)
     response_id = getattr(metadata, "response_id", None) if metadata else None
     response_model_id = getattr(metadata, "response_model_id", None) if metadata else None
+
+    if spec_sha is None and spec is not None:
+        try:
+            spec_sha = hashlib.sha256(json.dumps(spec, sort_keys=True).encode("utf-8")).hexdigest()
+        except Exception:
+            pass
+    if runtime_manifest_sha is None and runtime_manifest is not None:
+        try:
+            runtime_manifest_sha = hashlib.sha256(
+                json.dumps(runtime_manifest, sort_keys=True).encode("utf-8")
+            ).hexdigest()
+        except Exception:
+            pass
 
     failures: list[dict[str, str]] = []
 
@@ -1239,15 +1254,48 @@ def finalize_post_model_failure(
 
     # 2. run-metadata.json
     run_meta_path = artifact_dir / "run-metadata.json"
-    if not run_meta_path.exists() and metadata is not None:
-        try:
-            meta_dict = metadata.to_dict() if hasattr(metadata, "to_dict") else dict(metadata)
-            meta_dict["candidate_git_sha"] = candidate_sha
-            meta_dict["authorization_commit_sha"] = authorization_commit_sha
-            meta_dict["git_commit_sha"] = authorized_sha
-            safe_preserve_artifact(run_meta_path, meta_dict, is_json=True, failures=failures)
-        except Exception as e:
-            failures.append({"file": "run-metadata.json", "error": str(e)})
+    if not run_meta_path.exists():
+        if metadata is not None:
+            try:
+                meta_dict = metadata.to_dict() if hasattr(metadata, "to_dict") else dict(metadata)
+                meta_dict["candidate_git_sha"] = candidate_sha
+                meta_dict["authorization_commit_sha"] = authorization_commit_sha
+                meta_dict["git_commit_sha"] = authorized_sha
+                if spec_sha:
+                    meta_dict.setdefault("auth_spec_sha256", spec_sha)
+                if spec and "bundle_sha256" in spec:
+                    meta_dict.setdefault("bundle_sha256", spec["bundle_sha256"])
+                if runtime_manifest_sha:
+                    meta_dict.setdefault("runtime_manifest_sha256", runtime_manifest_sha)
+                safe_preserve_artifact(run_meta_path, meta_dict, is_json=True, failures=failures)
+            except Exception as e:
+                failures.append({"file": "run-metadata.json", "error": str(e)})
+        else:
+            try:
+                meta_dict = {
+                    "run_label": run_label,
+                    "gate": 3,
+                    "timestamp": datetime.now(UTC).isoformat(),
+                    "status": "FAILED",
+                    "error_phase": error_phase,
+                    "error_type": error_type,
+                    "error_message": error_message,
+                    "candidate_git_sha": candidate_sha,
+                    "authorization_commit_sha": authorization_commit_sha,
+                    "git_commit_sha": authorized_sha,
+                }
+                if spec is not None:
+                    meta_dict["requested_model"] = spec.get("requested_model")
+                    meta_dict["bundle_sha256"] = spec.get("bundle_sha256")
+                    meta_dict["evaluator_version"] = spec.get("evaluator_version")
+                    meta_dict["prompt_version"] = spec.get("prompt_version")
+                if spec_sha:
+                    meta_dict["auth_spec_sha256"] = spec_sha
+                if runtime_manifest_sha:
+                    meta_dict["runtime_manifest_sha256"] = runtime_manifest_sha
+                safe_preserve_artifact(run_meta_path, meta_dict, is_json=True, failures=failures)
+            except Exception as e:
+                failures.append({"file": "run-metadata.json", "error": str(e)})
 
     # 3. model-assessment.json (if parsing succeeded)
     if assessment is not None and not (artifact_dir / "model-assessment.json").exists():
@@ -1717,7 +1765,7 @@ def execute_internal_child(args: argparse.Namespace) -> int:
 
     golden_file = (
         Path(args.golden_path).resolve()
-        if args.golden_path
+        if getattr(args, "golden_path", None)
         else (snapshot_dir / DEFAULT_GOLDEN_PATH)
     )
     if not golden_file.is_file():
@@ -2059,17 +2107,24 @@ def execute_internal_child(args: argparse.Namespace) -> int:
             )
         except Exception as e:
             print(f"ERROR: Raw model invocation failed: {e}", file=sys.stderr)
-            atomic_write_json(
-                reservation_file,
-                {
-                    "status": "FAILED",
-                    "error_phase": "MODEL_INVOCATION",
-                    "error_message": str(e),
-                    "timestamp": datetime.now(UTC).isoformat(),
-                    "candidate_git_sha": candidate_sha,
-                    "authorization_commit_sha": authorization_commit_sha,
-                    "git_commit_sha": authorized_sha,
-                },
+            finalize_post_model_failure(
+                artifact_dir=artifact_dir,
+                reservation_file=reservation_file,
+                error_phase="MODEL_INVOCATION",
+                error=e,
+                spec=spec,
+                candidate_sha=candidate_sha,
+                authorization_commit_sha=authorization_commit_sha,
+                authorized_sha=authorized_sha,
+                run_label=run_label,
+                bundle=bundle,
+                parser=parser,
+                runtime_manifest=runtime_manifest,
+                metadata=None,
+                assessment=None,
+                raw_response_content=None,
+                spec_sha=spec_sha,
+                runtime_manifest_sha=runtime_manifest_sha,
             )
             return 1
 

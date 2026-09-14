@@ -416,3 +416,136 @@ def test_f2_authorization_diff_bound_to_selected_spec():
                 allow_dirty=False,
                 is_live=False,
             )
+
+
+def test_f11_raw_invocation_terminal_failure_sealing(tmp_path: Path):
+    """Verify F-11: Raw model invocation failures irrevocably claim an attempt,
+
+    route directly through finalize_post_model_failure, persist run-metadata.json,
+    write terminal-result.json, seal manifest.json, produce NO fake response files,
+    transition reservation-state.json to FAILED (error_phase=MODEL_INVOCATION),
+    and exit 1 with zero retries.
+    """
+    import argparse
+
+    mod = get_run_gate_3_module()
+    spec_path = REPO_ROOT / mod.DEFAULT_AUTH_SPEC_PATH
+    spec, spec_sha = mod.load_authorization_spec(spec_path)
+
+    test_artifact_dir = tmp_path / "artifacts" / "gate-3" / "f11-test"
+    test_artifact_dir.mkdir(parents=True, exist_ok=True)
+
+    child_args = argparse.Namespace(
+        provenance_repo=str(REPO_ROOT),
+        snapshot_dir=str(REPO_ROOT),
+        artifact_dir=str(test_artifact_dir),
+        auth_spec=str(spec_path),
+        run_label="f11-test",
+        authorized_git_sha="test_candidate_sha_12345",
+        authorization_commit_sha="test_auth_commit_sha_12345",
+        allow_dirty=True,
+        synthetic=False,
+        dry_run=False,
+        golden_path=None,
+    )
+
+    mock_cfg = MagicMock()
+    mock_cfg.foundry_model = spec["requested_model"]
+    mock_cfg.foundry_project_endpoint = "https://mock.foundry.endpoint"
+
+    mock_agent = MagicMock()
+    mock_agent.invoke_raw.side_effect = RuntimeError("Simulated provider endpoint timeout")
+
+    with (
+        patch.object(mod, "is_isolated_python", return_value=True),
+        patch.object(mod, "is_bytecode_writing_disabled", return_value=True),
+        patch.object(mod, "validate_authorization_contract"),
+        patch("agents.legacy_analyzer.config.load_config", return_value=mock_cfg),
+        patch(
+            "agents.legacy_analyzer.config.compute_foundry_project_fingerprint",
+            return_value=spec["foundry_project_fingerprint"],
+        ),
+        patch(
+            "agents.legacy_analyzer.system_agent.SystemAnalyzerAgent",
+            return_value=mock_agent,
+        ),
+    ):
+        exit_code = mod.execute_internal_child(child_args)
+
+    assert exit_code == 1
+
+    # Exactly 1 model attempt was made, zero retries
+    mock_agent.invoke_raw.assert_called_once()
+
+    # 1. Attempt claim file was irrevocably written
+    claim_file = test_artifact_dir / mod.ATTEMPT_CLAIM_FILE
+    assert claim_file.is_file()
+    claim_data = json.loads(claim_file.read_text(encoding="utf-8"))
+    assert claim_data["gate"] == 3
+    assert claim_data["run_label"] == "f11-test"
+    assert claim_data["candidate_git_sha"] == "test_candidate_sha_12345"
+
+    # 2. reservation-state.json transitioned to FAILED with error_phase=MODEL_INVOCATION
+    res_file = test_artifact_dir / mod.RESERVATION_STATE_FILE
+    assert res_file.is_file()
+    res_data = json.loads(res_file.read_text(encoding="utf-8"))
+    assert res_data["status"] == "FAILED"
+    assert res_data["error_phase"] == "MODEL_INVOCATION"
+    assert res_data["error_type"] == "RuntimeError"
+    assert "Simulated provider endpoint timeout" in res_data["error_message"]
+    assert res_data["candidate_git_sha"] == "test_candidate_sha_12345"
+
+    # 3. terminal-result.json is valid terminal failure record
+    term_file = test_artifact_dir / mod.TERMINAL_RESULT_FILE
+    assert term_file.is_file()
+    term_data = json.loads(term_file.read_text(encoding="utf-8"))
+    assert term_data["status"] == "FAILED"
+    assert term_data["gate"] == 3
+    assert term_data["error_phase"] == "MODEL_INVOCATION"
+    assert term_data["error_type"] == "RuntimeError"
+    assert "Simulated provider endpoint timeout" in term_data["error_message"]
+    assert term_data["candidate_git_sha"] == "test_candidate_sha_12345"
+
+    # 4. run-metadata.json documents failure
+    meta_file = test_artifact_dir / "run-metadata.json"
+    assert meta_file.is_file()
+    meta_data = json.loads(meta_file.read_text(encoding="utf-8"))
+    assert meta_data["status"] == "FAILED"
+    assert meta_data["error_phase"] == "MODEL_INVOCATION"
+    assert meta_data["candidate_git_sha"] == "test_candidate_sha_12345"
+
+    # 5. ZERO fake response files created
+    assert not (test_artifact_dir / "raw-response.json").exists()
+    assert not (test_artifact_dir / "model-assessment.json").exists()
+    assert not (test_artifact_dir / "enriched-assessment.json").exists()
+    assert not (test_artifact_dir / "evaluation.json").exists()
+
+    # 6. manifest.json is sealed over all preserved artifacts
+    manifest_file = test_artifact_dir / "manifest.json"
+    assert manifest_file.is_file()
+    man_data = json.loads(manifest_file.read_text(encoding="utf-8"))
+    assert man_data["status"] == "FAILED"
+    assert man_data["gate_3_pass"] is False
+    assert "terminal-result.json" in man_data["artifacts"]
+    assert "run-metadata.json" in man_data["artifacts"]
+    assert "authorization-spec.json" in man_data["artifacts"]
+    assert "production-prompt.md" in man_data["artifacts"]
+    assert "wire-schema.json" in man_data["artifacts"]
+    assert "source-manifest.json" in man_data["artifacts"]
+    assert "parser-coverage-certificate.json" in man_data["artifacts"]
+
+    # Verify SHA256 in manifest matches actual bytes of all preserved artifacts
+    for art_name, expected_sha in man_data["artifacts"].items():
+        art_path = test_artifact_dir / art_name
+        assert art_path.is_file()
+        assert hashlib.sha256(art_path.read_bytes()).hexdigest() == expected_sha
+
+    # 7. Re-entry refusal: attempting to run again refuses re-entry and does NOT invoke model
+    with (
+        patch.object(mod, "is_isolated_python", return_value=True),
+        patch.object(mod, "is_bytecode_writing_disabled", return_value=True),
+    ):
+        reentry_exit = mod.execute_internal_child(child_args)
+        assert reentry_exit == 1
+        # Call count remains 1, proving no retry occurred
+        assert mock_agent.invoke_raw.call_count == 1
