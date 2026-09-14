@@ -5153,9 +5153,11 @@ def test_h7_5_b_f02_real_fixture_continuation_proofs() -> None:
 
 
 def test_h7_5_b_f02_counterexample_a_callee_terminates_caller_dead_code() -> None:
-    """F-02 Counterexample A: Callee executes CALL 'HALT' (which terminates) then dead GOBACK.
+    """F-02 Counterexample A / H-02: Callee executes CALL 'HALT' then dead GOBACK.
 
-    Verifier must prove MUST_PROCESS_TERMINATE, never MUST_RETURN_TO_CALLER.
+    Flow engine proves MUST_PROCESS_TERMINATE internally, but because the termination
+    witness belongs to HALT.CBL (not CALLEE.CBL), no direct-callee CallerContinuationConstraintFact
+    can be emitted. Fails closed as UNSUPPORTED_RELEVANT and blocks coverage.
     """
     files = {
         "CALLER.CBL": """       IDENTIFICATION DIVISION.
@@ -5178,24 +5180,26 @@ def test_h7_5_b_f02_counterexample_a_callee_terminates_caller_dead_code() -> Non
     }
     parser = SystemCobolParser(_make_multi_file_bundle(files))
     cert = parser.parse_system()
-    assert cert.unsupported_relevant_count == 0
+    assert cert.unsupported_relevant_count == 1
+    assert cert.is_evaluation_blocked is True
 
     units = {u.program_id: u for u in parser.compilation_units}
     eff, term = parser._prove_callee_continuation(units["CALLEE"])
     assert eff == ExecutionEffect.MUST_PROCESS_TERMINATE
     assert term is not None
     assert term.verb == "STOP_RUN"
+    assert term.program_id == "HALT"
+    assert term.file_path.endswith("HALT.CBL")
 
+    # Direct evidence contract prevents emitting CALLER -> CALLEE continuation fact
     ccc_facts = [
         f.fact
         for f in parser.supported_facts
         if isinstance(f.fact, CallerContinuationConstraintFact)
+        and f.fact.caller_program == "CALLER"
+        and f.fact.callee_program == "CALLEE"
     ]
-    assert len(ccc_facts) >= 1
-    callee_fact = next(
-        f for f in ccc_facts if f.caller_program == "CALLER" and f.callee_program == "CALLEE"
-    )
-    assert callee_fact.constraint_type == "PROCESS_TERMINATION_ON_CALL"
+    assert len(ccc_facts) == 0
 
 
 def test_h7_5_b_f02_counterexample_b_infinite_loop_fails_closed() -> None:
@@ -5650,3 +5654,259 @@ def test_h7_6_a_m01_organization_is_sequential_certification(tmp_path: Path) -> 
     assert len(fb_facts) == 1
     assert fb_facts[0].organization == "SEQUENTIAL"
     assert fb_facts[0].external_file_name == "SEQDATA.DAT"
+
+
+# ===========================================================================
+# H7.6-B Regressions (B-01, H-01, H-02, H-03, H-05)
+# ===========================================================================
+
+
+def test_h7_6_b_b01_finite_loop_adversarial_matrix() -> None:
+    """B-01: Finite-loop structural proof rejects adversarial counterexamples with AST operands."""
+    base_src = """       IDENTIFICATION DIVISION.
+       PROGRAM-ID. LOOPPROG.
+       ENVIRONMENT DIVISION.
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+           SELECT ACCT-FILE ASSIGN TO 'ACCT.DAT'
+               ORGANIZATION IS LINE SEQUENTIAL.
+       DATA DIVISION.
+       FILE SECTION.
+       FD ACCT-FILE.
+       01 ACCT-REC PIC X(10).
+       WORKING-STORAGE SECTION.
+       01 WS-EOF-FLAG PIC X VALUE 'N'.
+       01 WS-EOF-FLAG-OTHER PIC X VALUE 'N'.
+       PROCEDURE DIVISION.
+           OPEN INPUT ACCT-FILE
+           MOVE 'N' TO WS-EOF-FLAG
+{loop_construct}
+           CLOSE ACCT-FILE
+           STOP RUN.
+"""
+
+    # Probe 1: AT END assigns to WS-EOF-FLAG-OTHER instead of WS-EOF-FLAG
+    p1_loop = """           PERFORM UNTIL WS-EOF-FLAG = 'Y'
+               READ ACCT-FILE
+                   AT END
+                       MOVE 'Y' TO WS-EOF-FLAG-OTHER
+                   NOT AT END
+                       DISPLAY 'OK'
+           END-PERFORM"""
+    files1 = {
+        "CALLER.CBL": """       IDENTIFICATION DIVISION.
+       PROGRAM-ID. CALLER.
+       PROCEDURE DIVISION.
+           CALL 'LOOPPROG'
+           STOP RUN.
+""",
+        "LOOPPROG.CBL": base_src.format(loop_construct=p1_loop),
+    }
+    parser1 = SystemCobolParser(_make_multi_file_bundle(files1))
+    cert1 = parser1.parse_system()
+    assert cert1.unsupported_relevant_count >= 1
+    assert cert1.is_evaluation_blocked is True
+
+    # Probe 2: NOT AT END resets WS-EOF-FLAG to 'N'
+    p2_loop = """           PERFORM UNTIL WS-EOF-FLAG = 'Y'
+               READ ACCT-FILE
+                   AT END
+                       MOVE 'Y' TO WS-EOF-FLAG
+                   NOT AT END
+                       MOVE 'N' TO WS-EOF-FLAG
+           END-PERFORM"""
+    files2 = {
+        "CALLER.CBL": files1["CALLER.CBL"],
+        "LOOPPROG.CBL": base_src.format(loop_construct=p2_loop),
+    }
+    parser2 = SystemCobolParser(_make_multi_file_bundle(files2))
+    cert2 = parser2.parse_system()
+    assert cert2.unsupported_relevant_count >= 1
+
+    # Probe 3: Loop body contains nested PERFORM UNTIL
+    p3_loop = """           PERFORM UNTIL WS-EOF-FLAG = 'Y'
+               READ ACCT-FILE
+                   AT END
+                       MOVE 'Y' TO WS-EOF-FLAG
+                   NOT AT END
+                       PERFORM UNTIL WS-EOF-FLAG-OTHER = 'Y'
+                           DISPLAY 'NESTED'
+                       END-PERFORM
+           END-PERFORM"""
+    files3 = {
+        "CALLER.CBL": files1["CALLER.CBL"],
+        "LOOPPROG.CBL": base_src.format(loop_construct=p3_loop),
+    }
+    parser3 = SystemCobolParser(_make_multi_file_bundle(files3))
+    cert3 = parser3.parse_system()
+    assert cert3.unsupported_relevant_count >= 1
+
+    # Probe 4: CLOSE and reopen inside loop body
+    p4_loop = """           PERFORM UNTIL WS-EOF-FLAG = 'Y'
+               READ ACCT-FILE
+                   AT END
+                       MOVE 'Y' TO WS-EOF-FLAG
+                   NOT AT END
+                       CLOSE ACCT-FILE
+                       OPEN INPUT ACCT-FILE
+           END-PERFORM"""
+    files4 = {
+        "CALLER.CBL": files1["CALLER.CBL"],
+        "LOOPPROG.CBL": base_src.format(loop_construct=p4_loop),
+    }
+    parser4 = SystemCobolParser(_make_multi_file_bundle(files4))
+    cert4 = parser4.parse_system()
+    assert cert4.unsupported_relevant_count >= 1
+
+
+def test_h7_6_b_h01_control_flow_outcome_algebra() -> None:
+    """H-01: Control-flow analysis must not conflate fall-through with termination."""
+    # Case 1: IF 1 = 1 GOBACK END-IF STOP RUN.
+    # Outcome has two branches (one GOBACK, one STOP RUN) -> cannot prove universal termination
+    files1 = {
+        "CALLER.CBL": """       IDENTIFICATION DIVISION.
+       PROGRAM-ID. CALLER.
+       PROCEDURE DIVISION.
+           CALL 'CALLEE'
+           STOP RUN.
+""",
+        "CALLEE.CBL": """       IDENTIFICATION DIVISION.
+       PROGRAM-ID. CALLEE.
+       PROCEDURE DIVISION.
+           IF 1 = 1
+               GOBACK
+           END-IF
+           STOP RUN.
+""",
+    }
+    parser1 = SystemCobolParser(_make_multi_file_bundle(files1))
+    cert1 = parser1.parse_system()
+    assert cert1.unsupported_relevant_count == 0
+    units1 = {u.program_id: u for u in parser1.compilation_units}
+    flow1 = parser1._prove_callee_continuation(units1["CALLEE"])
+    assert flow1.is_definite_process_terminate is False
+    assert flow1.is_definite_return is False
+    ccc1 = [
+        f.fact
+        for f in parser1.supported_facts
+        if isinstance(f.fact, CallerContinuationConstraintFact)
+    ]
+    assert len(ccc1) == 0
+
+    # Case 2: EVALUATE FLAG WHEN 'Y' STOP RUN END-EVALUATE GOBACK.
+    # Fallthrough possible on unmatched selector -> reaches GOBACK -> not universal termination
+    files2 = {
+        "CALLER.CBL": files1["CALLER.CBL"],
+        "CALLEE.CBL": """       IDENTIFICATION DIVISION.
+       PROGRAM-ID. CALLEE.
+       WORKING-STORAGE SECTION.
+       01 WS-FLAG PIC X VALUE 'N'.
+       PROCEDURE DIVISION.
+           EVALUATE WS-FLAG
+               WHEN 'Y'
+                   STOP RUN
+           END-EVALUATE
+           GOBACK.
+""",
+    }
+    parser2 = SystemCobolParser(_make_multi_file_bundle(files2))
+    cert2 = parser2.parse_system()
+    assert cert2.unsupported_relevant_count == 0
+    units2 = {u.program_id: u for u in parser2.compilation_units}
+    flow2 = parser2._prove_callee_continuation(units2["CALLEE"])
+    assert flow2.is_definite_process_terminate is False
+
+    # Case 3: Two branch-local STOP RUN statements (Section 3 clarification)
+    # Both branches terminate, but multiple distinct witnesses -> 0 constraints emitted
+    files3 = {
+        "CALLER.CBL": files1["CALLER.CBL"],
+        "CALLEE.CBL": """       IDENTIFICATION DIVISION.
+       PROGRAM-ID. CALLEE.
+       WORKING-STORAGE SECTION.
+       01 WS-FLAG PIC X VALUE 'A'.
+       PROCEDURE DIVISION.
+           IF WS-FLAG = 'A'
+               STOP RUN
+           ELSE
+               STOP RUN
+           END-IF.
+""",
+    }
+    parser3 = SystemCobolParser(_make_multi_file_bundle(files3))
+    cert3 = parser3.parse_system()
+    units3 = {u.program_id: u for u in parser3.compilation_units}
+    flow3 = parser3._prove_callee_continuation(units3["CALLEE"])
+    assert len(flow3.process_termination_witnesses) == 2
+    ccc3 = [
+        f.fact
+        for f in parser3.supported_facts
+        if isinstance(f.fact, CallerContinuationConstraintFact)
+    ]
+    assert len(ccc3) == 0
+    assert cert3.unsupported_relevant_count >= 1
+
+
+def test_h7_6_b_h03_call_system_effect_summaries() -> None:
+    """H-03: CALL 'SYSTEM' requires grounded command effect; ungrounded commands fail closed."""
+    files1 = {
+        "CALLER.CBL": """       IDENTIFICATION DIVISION.
+       PROGRAM-ID. CALLER.
+       PROCEDURE DIVISION.
+           CALL 'CALLEE'
+           STOP RUN.
+""",
+        "CALLEE.CBL": """       IDENTIFICATION DIVISION.
+       PROGRAM-ID. CALLEE.
+       WORKING-STORAGE SECTION.
+       01 CMD PIC X(50).
+       PROCEDURE DIVISION.
+           CALL 'SYSTEM' USING CMD
+           STOP RUN.
+""",
+    }
+    parser1 = SystemCobolParser(_make_multi_file_bundle(files1))
+    cert1 = parser1.parse_system()
+    units1 = {u.program_id: u for u in parser1.compilation_units}
+    flow1 = parser1._prove_callee_continuation(units1["CALLEE"])
+    assert flow1.unknown is True or not flow1.is_definite_process_terminate
+    ccc1 = [
+        f.fact
+        for f in parser1.supported_facts
+        if isinstance(f.fact, CallerContinuationConstraintFact)
+    ]
+    assert len(ccc1) == 0
+    assert cert1.unsupported_relevant_count >= 1
+
+
+def test_h7_6_b_h05_sentence_period_control_boundary() -> None:
+    """H-05: COBOL period acts as control-flow boundary implicitly closing IF blocks."""
+    files = {
+        "CALLER.CBL": """       IDENTIFICATION DIVISION.
+       PROGRAM-ID. CALLER.
+       PROCEDURE DIVISION.
+           CALL 'CALLEE'
+           STOP RUN.
+""",
+        "CALLEE.CBL": """       IDENTIFICATION DIVISION.
+       PROGRAM-ID. CALLEE.
+       WORKING-STORAGE SECTION.
+       01 WS-FLAG PIC X VALUE 'Y'.
+       PROCEDURE DIVISION.
+           IF WS-FLAG = 'Y'
+               GOBACK.
+           STOP RUN.
+""",
+    }
+    parser = SystemCobolParser(_make_multi_file_bundle(files))
+    cert = parser.parse_system()
+    units = {u.program_id: u for u in parser.compilation_units}
+    flow = parser._prove_callee_continuation(units["CALLEE"])
+    assert flow.is_definite_process_terminate is False
+    assert flow.is_definite_return is False
+    ccc = [
+        f.fact
+        for f in parser.supported_facts
+        if isinstance(f.fact, CallerContinuationConstraintFact)
+    ]
+    assert len(ccc) == 0
+    assert cert.unsupported_relevant_count >= 1

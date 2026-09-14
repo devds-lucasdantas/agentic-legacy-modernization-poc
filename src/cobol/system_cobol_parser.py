@@ -67,6 +67,66 @@ class ExecutionEffect(StrEnum):
 
 
 @dataclass(frozen=True)
+class TerminationWitness:
+    """Exact provenance of a terminal statement in source code."""
+
+    program_id: str
+    file_path: str
+    line_start: int
+    line_end: int
+    termination_kind: str  # "STOP_RUN", "GOBACK", "EXIT_PROGRAM"
+
+    @property
+    def verb(self) -> str:
+        return self.termination_kind
+
+
+@dataclass(frozen=True)
+class FlowResult:
+    """Control-flow outcome algebra with outcome-bound termination provenance."""
+
+    fallthrough_possible: bool
+    process_termination_witnesses: tuple[TerminationWitness, ...] = ()
+    return_witnesses: tuple[TerminationWitness, ...] = ()
+    unknown: bool = False
+
+    @property
+    def is_definite_process_terminate(self) -> bool:
+        return (
+            not self.fallthrough_possible
+            and not self.unknown
+            and len(self.return_witnesses) == 0
+            and len(self.process_termination_witnesses) > 0
+        )
+
+    @property
+    def is_definite_return(self) -> bool:
+        return (
+            not self.fallthrough_possible
+            and not self.unknown
+            and len(self.process_termination_witnesses) == 0
+            and len(self.return_witnesses) > 0
+        )
+
+    @property
+    def effect(self) -> ExecutionEffect:
+        if self.is_definite_process_terminate:
+            return ExecutionEffect.MUST_PROCESS_TERMINATE
+        if self.is_definite_return:
+            return ExecutionEffect.MUST_RETURN_TO_CALLER
+        return ExecutionEffect.UNKNOWN
+
+    def __iter__(self):
+        primary_w = (
+            self.process_termination_witnesses[0]
+            if self.process_termination_witnesses
+            else (self.return_witnesses[0] if self.return_witnesses else None)
+        )
+        yield self.effect
+        yield primary_w
+
+
+@dataclass(frozen=True)
 class ClassifiedStatement:
     """Represents a classified logical COBOL statement or structural header."""
 
@@ -77,6 +137,7 @@ class ClassifiedStatement:
     raw_text: str
     classification: StatementClassification
     description: str
+    has_terminal_period: bool = False
 
 
 @dataclass(frozen=True)
@@ -163,6 +224,7 @@ class ASTRecordDeclaration:
     fields: list[ASTDataField] = field(default_factory=list)
     owning_fd: str | None = None
     is_unsupported: bool = False
+    initial_value: str | None = None
 
 
 @dataclass
@@ -218,6 +280,13 @@ class ASTArithmetic(ASTStatement):
 
 
 @dataclass
+class ASTPerformUntil(ASTStatement):
+    condition_identifier: str
+    comparison_operator: str
+    exit_literal: str
+
+
+@dataclass
 class ASTCompilationUnit:
     """Parsed COBOL compilation unit (Program or Copybook)."""
 
@@ -232,8 +301,12 @@ class ASTCompilationUnit:
 
 
 # ---------------------------------------------------------------------------
-# Generic Quote-Aware Tokenizer
-# ---------------------------------------------------------------------------
+def _safe_unquote(token: str) -> str:
+    """Unquote token if syntactically quoted; otherwise return token unchanged."""
+    t = token.strip()
+    if len(t) >= 2 and ((t[0] == "'" and t[-1] == "'") or (t[0] == '"' and t[-1] == '"')):
+        return exact_syntactic_unquote(t)
+    return t
 
 
 def tokenize_cobol_line(line: str) -> list[str]:
@@ -1324,11 +1397,18 @@ class SystemCobolParser:
                     )
                     i += 1
                     continue
+                init_val = None
+                toks_upper = [t.upper() for t in tokens]
+                if "VALUE" in toks_upper:
+                    v_idx = toks_upper.index("VALUE")
+                    if v_idx + 1 < len(tokens):
+                        init_val = _safe_unquote(tokens[v_idx + 1].rstrip("."))
                 current_record = ASTRecordDeclaration(
                     container_name=rec_name,
                     line_start=line_num,
                     line_end=line_num,
                     owning_fd=current_fd,
+                    initial_value=init_val,
                 )
                 unit.record_declarations.append(current_record)
                 self.statements.append(
@@ -1655,6 +1735,7 @@ class SystemCobolParser:
                         raw_line,
                         StatementClassification.RECOGNIZED_BUT_UNSCORED,
                         "Procedure division header",
+                        has_terminal_period=line_is_terminated,
                     )
                 )
                 i += 1
@@ -1670,6 +1751,7 @@ class SystemCobolParser:
                         raw_line,
                         StatementClassification.RECOGNIZED_BUT_UNSCORED,
                         "Section header",
+                        has_terminal_period=line_is_terminated,
                     )
                 )
                 i += 1
@@ -1690,6 +1772,7 @@ class SystemCobolParser:
                                 raw_line,
                                 StatementClassification.RECOGNIZED_BUT_UNSCORED,
                                 "Paragraph header",
+                                has_terminal_period=line_is_terminated,
                             )
                         )
                         i += 1
@@ -1704,6 +1787,7 @@ class SystemCobolParser:
                                 raw_line,
                                 StatementClassification.UNSUPPORTED_RELEVANT,
                                 f"Invalid paragraph header identifier: {first}",
+                                has_terminal_period=line_is_terminated,
                             )
                         )
                         i += 1
@@ -1773,6 +1857,7 @@ class SystemCobolParser:
                             raw_line,
                             StatementClassification.UNSUPPORTED_RELEVANT,
                             "Unsupported CALL target, operands, or unconsumed tokens",
+                            has_terminal_period=line_is_terminated,
                         )
                     )
                     i += 1
@@ -1796,6 +1881,7 @@ class SystemCobolParser:
                         raw_line,
                         StatementClassification.PARSED_AND_SCORED,
                         "Procedural CALL statement",
+                        has_terminal_period=line_is_terminated,
                     )
                 )
                 i += 1
@@ -1881,6 +1967,7 @@ class SystemCobolParser:
                             raw_line,
                             StatementClassification.UNSUPPORTED_RELEVANT,
                             "Unsupported MOVE syntax, literal, operands, or unconsumed tokens",
+                            has_terminal_period=line_is_terminated,
                         )
                     )
                     i += 1
@@ -1904,6 +1991,7 @@ class SystemCobolParser:
                         raw_line,
                         StatementClassification.PARSED_AND_SCORED,
                         "Data MOVE statement",
+                        has_terminal_period=line_is_terminated,
                     )
                 )
                 i += 1
@@ -1937,6 +2025,7 @@ class SystemCobolParser:
                             raw_line,
                             StatementClassification.UNSUPPORTED_RELEVANT,
                             "Unsupported OPEN syntax or unconsumed tokens",
+                            has_terminal_period=line_is_terminated,
                         )
                     )
                     i += 1
@@ -1959,6 +2048,7 @@ class SystemCobolParser:
                         raw_line,
                         StatementClassification.PARSED_AND_SCORED,
                         "File OPEN statement",
+                        has_terminal_period=line_is_terminated,
                     )
                 )
                 i += 1
@@ -1986,6 +2076,7 @@ class SystemCobolParser:
                             raw_line,
                             StatementClassification.UNSUPPORTED_RELEVANT,
                             f"Unsupported {first} syntax or unconsumed tokens",
+                            has_terminal_period=line_is_terminated,
                         )
                     )
                     i += 1
@@ -2008,6 +2099,7 @@ class SystemCobolParser:
                         raw_line,
                         StatementClassification.PARSED_AND_SCORED,
                         f"File {first} statement",
+                        has_terminal_period=line_is_terminated,
                     )
                 )
                 i += 1
@@ -2068,6 +2160,7 @@ class SystemCobolParser:
                             full_text,
                             StatementClassification.UNSUPPORTED_RELEVANT,
                             f"Unsupported {first} arithmetic syntax or unconsumed tokens",
+                            has_terminal_period=has_sentence_ended,
                         )
                     )
                     i += 1
@@ -2090,6 +2183,7 @@ class SystemCobolParser:
                         full_text,
                         StatementClassification.PARSED_AND_SCORED,
                         f"Arithmetic {first} statement",
+                        has_terminal_period=has_sentence_ended,
                     )
                 )
                 i += 1
@@ -2131,6 +2225,7 @@ class SystemCobolParser:
                             f"Unrepresentable arithmetic {first} statement "
                             "in Contract 3.5.3 frozen wire schema"
                         ),
+                        has_terminal_period=has_sentence_ended,
                     )
                 )
                 i += 1
@@ -2154,6 +2249,7 @@ class SystemCobolParser:
                             raw_line,
                             StatementClassification.PARSED_AND_SCORED,
                             f"Run-unit {term_verb} termination",
+                            has_terminal_period=line_is_terminated,
                         )
                     )
                 elif len(tokens) == 1:
@@ -2166,6 +2262,7 @@ class SystemCobolParser:
                             raw_line,
                             StatementClassification.RECOGNIZED_BUT_UNSCORED,
                             "Common procedure end point EXIT statement",
+                            has_terminal_period=line_is_terminated,
                         )
                     )
                 else:
@@ -2178,6 +2275,7 @@ class SystemCobolParser:
                             raw_line,
                             StatementClassification.UNSUPPORTED_RELEVANT,
                             "Unsupported compound EXIT statement or unconsumed tokens",
+                            has_terminal_period=line_is_terminated,
                         )
                     )
                 i += 1
@@ -2207,6 +2305,7 @@ class SystemCobolParser:
                             raw_line,
                             StatementClassification.UNSUPPORTED_RELEVANT,
                             f"Unsupported compound {first} statement or unconsumed tokens",
+                            has_terminal_period=line_is_terminated,
                         )
                     )
                     i += 1
@@ -2227,6 +2326,7 @@ class SystemCobolParser:
                         raw_line,
                         StatementClassification.PARSED_AND_SCORED,
                         f"Run-unit {term_verb} termination",
+                        has_terminal_period=line_is_terminated,
                     )
                 )
                 i += 1
@@ -2234,6 +2334,10 @@ class SystemCobolParser:
 
             if first == "PERFORM":
                 perf_valid = False
+                is_until = False
+                cond_id = ""
+                op = ""
+                exit_val = ""
                 if (
                     len(tokens) == 2
                     and is_canonical_cobol_identifier(tokens[1])
@@ -2256,6 +2360,15 @@ class SystemCobolParser:
                     )
                     if left_ok and right_ok:
                         perf_valid = True
+                        is_until = True
+                        if is_canonical_cobol_identifier(left_op):
+                            cond_id = left_op
+                            op = tokens[3]
+                            exit_val = exact_syntactic_unquote(right_op)
+                        elif is_canonical_cobol_identifier(right_op):
+                            cond_id = right_op
+                            op = tokens[3]
+                            exit_val = exact_syntactic_unquote(left_op)
 
                 if not perf_valid:
                     self.statements.append(
@@ -2267,9 +2380,21 @@ class SystemCobolParser:
                             raw_line,
                             StatementClassification.UNSUPPORTED_RELEVANT,
                             "Unsupported PERFORM syntax or unconsumed tokens",
+                            has_terminal_period=line_is_terminated,
                         )
                     )
                 else:
+                    if is_until:
+                        unit.statements.append(
+                            ASTPerformUntil(
+                                verb="PERFORM",
+                                line_start=line_num,
+                                line_end=line_num,
+                                condition_identifier=cond_id,
+                                comparison_operator=op,
+                                exit_literal=exit_val,
+                            )
+                        )
                     self.statements.append(
                         ClassifiedStatement(
                             target_file.relative_path,
@@ -2279,6 +2404,7 @@ class SystemCobolParser:
                             raw_line,
                             StatementClassification.PARSED_AND_SCORED,
                             "Procedural loop PERFORM",
+                            has_terminal_period=line_is_terminated,
                         )
                     )
                 i += 1
@@ -2348,6 +2474,7 @@ class SystemCobolParser:
                             raw_line,
                             StatementClassification.UNSUPPORTED_RELEVANT,
                             f"Unsupported {first} syntax or unconsumed tokens",
+                            has_terminal_period=line_is_terminated,
                         )
                     )
                 else:
@@ -2360,6 +2487,7 @@ class SystemCobolParser:
                             raw_line,
                             StatementClassification.PARSED_AND_SCORED,
                             f"Branching {first} statement",
+                            has_terminal_period=line_is_terminated,
                         )
                     )
                 i += 1
@@ -2376,6 +2504,7 @@ class SystemCobolParser:
                             raw_line,
                             StatementClassification.RECOGNIZED_BUT_UNSCORED,
                             f"Procedural delimiter {first}",
+                            has_terminal_period=line_is_terminated,
                         )
                     )
                 else:
@@ -2388,6 +2517,7 @@ class SystemCobolParser:
                             raw_line,
                             StatementClassification.UNSUPPORTED_RELEVANT,
                             f"Unsupported {first} delimiter syntax or unconsumed tokens",
+                            has_terminal_period=line_is_terminated,
                         )
                     )
                 i += 1
@@ -2408,6 +2538,7 @@ class SystemCobolParser:
                             raw_line,
                             StatementClassification.RECOGNIZED_BUT_UNSCORED,
                             "Procedural console I/O ACCEPT",
+                            has_terminal_period=line_is_terminated,
                         )
                     )
                 else:
@@ -2420,6 +2551,7 @@ class SystemCobolParser:
                             raw_line,
                             StatementClassification.UNSUPPORTED_RELEVANT,
                             "Unsupported ACCEPT syntax or unconsumed tokens",
+                            has_terminal_period=line_is_terminated,
                         )
                     )
                 i += 1
@@ -2477,6 +2609,7 @@ class SystemCobolParser:
                             raw_line,
                             StatementClassification.RECOGNIZED_BUT_UNSCORED,
                             "Procedural console I/O DISPLAY",
+                            has_terminal_period=line_is_terminated,
                         )
                     )
                 else:
@@ -2489,6 +2622,7 @@ class SystemCobolParser:
                             raw_line,
                             StatementClassification.UNSUPPORTED_RELEVANT,
                             "Unsupported DISPLAY syntax or unconsumed tokens",
+                            has_terminal_period=line_is_terminated,
                         )
                     )
                 i += 1
@@ -2505,6 +2639,7 @@ class SystemCobolParser:
                             raw_line,
                             StatementClassification.RECOGNIZED_BUT_UNSCORED,
                             "Procedural clause helper AT END",
+                            has_terminal_period=line_is_terminated,
                         )
                     )
                 else:
@@ -2517,6 +2652,7 @@ class SystemCobolParser:
                             raw_line,
                             StatementClassification.UNSUPPORTED_RELEVANT,
                             "Unsupported AT clause syntax or unconsumed tokens",
+                            has_terminal_period=line_is_terminated,
                         )
                     )
                 i += 1
@@ -2533,6 +2669,7 @@ class SystemCobolParser:
                             raw_line,
                             StatementClassification.RECOGNIZED_BUT_UNSCORED,
                             "Procedural clause helper NOT AT END",
+                            has_terminal_period=line_is_terminated,
                         )
                     )
                 else:
@@ -2545,6 +2682,7 @@ class SystemCobolParser:
                             raw_line,
                             StatementClassification.UNSUPPORTED_RELEVANT,
                             "Unsupported NOT clause syntax or unconsumed tokens",
+                            has_terminal_period=line_is_terminated,
                         )
                     )
                 i += 1
@@ -2566,6 +2704,7 @@ class SystemCobolParser:
                             raw_line,
                             StatementClassification.RECOGNIZED_BUT_UNSCORED,
                             "Procedural control-flow barrier GO TO",
+                            has_terminal_period=line_is_terminated,
                         )
                     )
                 else:
@@ -2578,6 +2717,7 @@ class SystemCobolParser:
                             raw_line,
                             StatementClassification.UNSUPPORTED_RELEVANT,
                             "Unsupported GO TO syntax or unconsumed tokens",
+                            has_terminal_period=line_is_terminated,
                         )
                     )
                 i += 1
@@ -2598,6 +2738,7 @@ class SystemCobolParser:
                             raw_line,
                             StatementClassification.RECOGNIZED_BUT_UNSCORED,
                             "Procedural control-flow barrier GOTO",
+                            has_terminal_period=line_is_terminated,
                         )
                     )
                 else:
@@ -2610,6 +2751,7 @@ class SystemCobolParser:
                             raw_line,
                             StatementClassification.UNSUPPORTED_RELEVANT,
                             "Unsupported GOTO syntax or unconsumed tokens",
+                            has_terminal_period=line_is_terminated,
                         )
                     )
                 i += 1
@@ -2625,6 +2767,7 @@ class SystemCobolParser:
                     raw_line,
                     StatementClassification.UNSUPPORTED_RELEVANT,
                     f"Unsupported procedural/declarative statement: {first}",
+                    has_terminal_period=line_is_terminated,
                 )
             )
             i += 1
@@ -2636,8 +2779,13 @@ class SystemCobolParser:
         stmts: list[ClassifiedStatement],
         start_idx: int = 0,
         stop_verbs: set[str] | None = None,
-    ) -> tuple[list[Any], int]:
-        """Parse procedural statements into hierarchical control-flow blocks."""
+        stop_on_period: bool = False,
+    ) -> tuple[list[Any], int, bool]:
+        """Parse procedural statements into hierarchical control-flow blocks.
+
+        Respects COBOL sentence boundaries where a period terminates open conditional scopes.
+        Returns (nodes, next_idx, period_terminated).
+        """
         if stop_verbs is None:
             stop_verbs = set()
         nodes: list[Any] = []
@@ -2645,149 +2793,482 @@ class SystemCobolParser:
         while i < len(stmts):
             s = stmts[i]
             if s.verb in stop_verbs:
-                return nodes, i
+                return nodes, i, False
+
             if s.verb == "IF":
-                then_nodes, next_i = self._parse_procedural_cf_block(
-                    stmts, i + 1, {"ELSE", "END-IF"}
+                then_nodes, next_i, p_term = self._parse_procedural_cf_block(
+                    stmts, i + 1, {"ELSE", "END-IF"}, stop_on_period=True
                 )
                 else_nodes: list[Any] = []
+                if p_term:
+                    nodes.append(("IF", s, then_nodes, else_nodes))
+                    i = next_i
+                    if stop_on_period:
+                        return nodes, i, True
+                    continue
+
                 if next_i < len(stmts) and stmts[next_i].verb == "ELSE":
-                    else_nodes, next_i = self._parse_procedural_cf_block(
-                        stmts, next_i + 1, {"END-IF"}
+                    else_nodes, next_i, p_term_else = self._parse_procedural_cf_block(
+                        stmts, next_i + 1, {"END-IF"}, stop_on_period=True
                     )
+                    if p_term_else:
+                        nodes.append(("IF", s, then_nodes, else_nodes))
+                        i = next_i
+                        if stop_on_period:
+                            return nodes, i, True
+                        continue
+
+                end_if_term = False
                 if next_i < len(stmts) and stmts[next_i].verb == "END-IF":
+                    if stmts[next_i].has_terminal_period:
+                        end_if_term = True
                     next_i += 1
                 nodes.append(("IF", s, then_nodes, else_nodes))
                 i = next_i
+                if end_if_term and stop_on_period:
+                    return nodes, i, True
+
             elif s.verb == "PERFORM" and "UNTIL" in s.raw_text.upper():
-                body_nodes, next_i = self._parse_procedural_cf_block(stmts, i + 1, {"END-PERFORM"})
+                body_nodes, next_i, p_term = self._parse_procedural_cf_block(
+                    stmts, i + 1, {"END-PERFORM"}, stop_on_period=True
+                )
+                end_perf_term = False
                 if next_i < len(stmts) and stmts[next_i].verb == "END-PERFORM":
+                    if stmts[next_i].has_terminal_period:
+                        end_perf_term = True
                     next_i += 1
                 nodes.append(("PERFORM_UNTIL", s, body_nodes))
                 i = next_i
+                if (p_term or end_perf_term) and stop_on_period:
+                    return nodes, i, True
+
             elif s.verb == "READ":
                 at_end_nodes: list[Any] = []
                 not_at_end_nodes: list[Any] = []
                 cur_mode: str | None = None
                 next_i = i + 1
-                while next_i < len(stmts) and stmts[next_i].verb != "END-READ":
+                read_p_term = False
+                while next_i < len(stmts):
                     v = stmts[next_i].verb
+                    if v in stop_verbs:
+                        break
+                    if v == "END-READ":
+                        if stmts[next_i].has_terminal_period:
+                            read_p_term = True
+                        next_i += 1
+                        break
                     if v == "AT":
                         cur_mode = "AT_END"
                         next_i += 1
-                    elif v == "NOT":
+                        continue
+                    if v == "NOT":
                         cur_mode = "NOT_AT_END"
                         next_i += 1
-                    else:
-                        sub_nodes, next_i = self._parse_procedural_cf_block(
-                            stmts, next_i, {"AT", "NOT", "END-READ"}
-                        )
-                        if cur_mode == "AT_END":
-                            at_end_nodes.extend(sub_nodes)
-                        elif cur_mode == "NOT_AT_END":
-                            not_at_end_nodes.extend(sub_nodes)
-                if next_i < len(stmts) and stmts[next_i].verb == "END-READ":
-                    next_i += 1
+                        continue
+                    sub_nodes, next_i, p_sub = self._parse_procedural_cf_block(
+                        stmts, next_i, {"AT", "NOT", "END-READ"}, stop_on_period=True
+                    )
+                    if cur_mode == "AT_END":
+                        at_end_nodes.extend(sub_nodes)
+                    elif cur_mode == "NOT_AT_END":
+                        not_at_end_nodes.extend(sub_nodes)
+                    if p_sub:
+                        read_p_term = True
+                        break
+
                 nodes.append(("READ", s, at_end_nodes, not_at_end_nodes))
                 i = next_i
+                if read_p_term and stop_on_period:
+                    return nodes, i, True
+
             elif s.verb == "EVALUATE":
-                when_blocks: list[list[Any]] = []
-                cur_when: list[Any] = []
+                when_blocks: list[tuple[ClassifiedStatement, list[Any]]] = []
+                cur_when_stmt: ClassifiedStatement | None = None
+                cur_when_nodes: list[Any] = []
                 next_i = i + 1
-                while next_i < len(stmts) and stmts[next_i].verb != "END-EVALUATE":
+                eval_p_term = False
+                while next_i < len(stmts):
                     v = stmts[next_i].verb
-                    if v == "WHEN":
-                        if cur_when:
-                            when_blocks.append(cur_when)
-                            cur_when = []
+                    if v in stop_verbs:
+                        break
+                    if v == "END-EVALUATE":
+                        if cur_when_stmt:
+                            when_blocks.append((cur_when_stmt, cur_when_nodes))
+                            cur_when_stmt = None
+                            cur_when_nodes = []
+                        if stmts[next_i].has_terminal_period:
+                            eval_p_term = True
                         next_i += 1
-                    else:
-                        sub_nodes, next_i = self._parse_procedural_cf_block(
-                            stmts, next_i, {"WHEN", "END-EVALUATE"}
-                        )
-                        cur_when.extend(sub_nodes)
-                if cur_when:
-                    when_blocks.append(cur_when)
-                if next_i < len(stmts) and stmts[next_i].verb == "END-EVALUATE":
-                    next_i += 1
+                        break
+                    if v == "WHEN":
+                        if cur_when_stmt:
+                            when_blocks.append((cur_when_stmt, cur_when_nodes))
+                            cur_when_nodes = []
+                        cur_when_stmt = stmts[next_i]
+                        next_i += 1
+                        continue
+                    sub_nodes, next_i, p_sub = self._parse_procedural_cf_block(
+                        stmts, next_i, {"WHEN", "END-EVALUATE"}, stop_on_period=True
+                    )
+                    cur_when_nodes.extend(sub_nodes)
+                    if p_sub:
+                        eval_p_term = True
+                        break
+
+                if cur_when_stmt:
+                    when_blocks.append((cur_when_stmt, cur_when_nodes))
                 nodes.append(("EVALUATE", s, when_blocks))
                 i = next_i
+                if eval_p_term and stop_on_period:
+                    return nodes, i, True
+
             else:
                 nodes.append(("STMT", s))
                 i += 1
-        return nodes, i
+                if s.has_terminal_period and stop_on_period:
+                    return nodes, i, True
+
+        return nodes, i, False
 
     def _verify_finite_loop_progress(
-        self, loop_stmt: ClassifiedStatement, body_nodes: list[Any]
+        self,
+        loop_stmt: ClassifiedStatement,
+        body_nodes: list[Any],
+        callee_unit: ASTCompilationUnit,
     ) -> bool:
         """Verify that a PERFORM UNTIL loop has proven finite-progress semantics."""
-        m = re.search(
-            r"PERFORM\s+UNTIL\s+([A-Z0-9-]+)\s*=\s*['\"]([^'\"]+)['\"]",
-            loop_stmt.raw_text,
-            re.IGNORECASE,
+        perf_node = next(
+            (
+                s
+                for s in callee_unit.statements
+                if isinstance(s, ASTPerformUntil) and s.line_start == loop_stmt.line_start
+            ),
+            None,
         )
-        if not m:
+        if perf_node is None:
             return False
-        flag_var = m.group(1).upper()
-        exit_val = m.group(2)
 
-        read_nodes = [n for n in body_nodes if n[0] == "READ"]
+        cond_id = perf_node.condition_identifier
+        op = perf_node.comparison_operator
+        exit_lit = perf_node.exit_literal
+
+        if op != "=" or not cond_id or not exit_lit:
+            return False
+
+        # Premise 1: Initialization before loop
+        init_moves = [
+            s
+            for s in callee_unit.statements
+            if isinstance(s, ASTMove)
+            and s.target_operand == cond_id
+            and s.line_end < loop_stmt.line_start
+        ]
+        if init_moves:
+            latest_init = init_moves[-1]
+            if _safe_unquote(latest_init.source_operand) == exit_lit:
+                return False
+            check_from = latest_init.line_end
+        else:
+            rec = next(
+                (r for r in callee_unit.record_declarations if r.container_name == cond_id),
+                None,
+            )
+            if not rec or rec.initial_value is None:
+                return False
+            if _safe_unquote(rec.initial_value) == exit_lit:
+                return False
+            check_from = 0
+
+        # Ensure no intervening statement before loop overwrote cond_id with exit_lit
+        intervening_stmts = [
+            s
+            for s in callee_unit.statements
+            if s.line_start > check_from and s.line_end < loop_stmt.line_start
+        ]
+        for s in intervening_stmts:
+            if isinstance(s, ASTMove) and s.target_operand == cond_id:
+                if _safe_unquote(s.source_operand) == exit_lit:
+                    return False
+            if isinstance(s, ASTArithmetic) and s.target == cond_id:
+                return False
+
+        # Premise 2: Open sequential input resource prior to loop
+        open_ops = [
+            s
+            for s in callee_unit.statements
+            if isinstance(s, ASTFileOp)
+            and s.verb == "OPEN"
+            and s.access_mode == "INPUT"
+            and s.line_end < loop_stmt.line_start
+        ]
+        if not open_ops:
+            return False
+        latest_open = open_ops[-1]
+        file_id = latest_open.internal_file_name
+
+        binding = next(
+            (fb for fb in callee_unit.file_bindings if fb.internal_file_name == file_id),
+            None,
+        )
+        if binding is None or binding.organization not in ("SEQUENTIAL", "LINE_SEQUENTIAL"):
+            return False
+
+        # Premise 3: Body inspection
+        def _collect_kinds(nodes: list[Any], target_kind: str) -> list[Any]:
+            res: list[Any] = []
+            for n in nodes:
+                if n[0] == target_kind:
+                    res.append(n)
+                if n[0] == "IF":
+                    res.extend(_collect_kinds(n[2], target_kind))
+                    res.extend(_collect_kinds(n[3], target_kind))
+                elif n[0] == "READ":
+                    res.extend(_collect_kinds(n[2], target_kind))
+                    res.extend(_collect_kinds(n[3], target_kind))
+                elif n[0] == "EVALUATE":
+                    for _, wb in n[2]:
+                        res.extend(_collect_kinds(wb, target_kind))
+                elif n[0] == "PERFORM_UNTIL":
+                    res.extend(_collect_kinds(n[2], target_kind))
+            return res
+
+        # No nested loops
+        if _collect_kinds(body_nodes, "PERFORM_UNTIL"):
+            return False
+
+        # Exactly one READ on the open resource
+        read_nodes = _collect_kinds(body_nodes, "READ")
         if len(read_nodes) != 1:
             return False
         rn = read_nodes[0]
-        at_end_stmts = [x[1] for x in rn[2] if x[0] == "STMT"]
-        has_flag_set = any(
-            s.verb == "MOVE" and f"MOVE '{exit_val}' TO {flag_var}" in s.raw_text.upper()
-            for s in at_end_stmts
+        read_stmt: ClassifiedStatement = rn[1]
+        ast_read = next(
+            (
+                s
+                for s in callee_unit.statements
+                if isinstance(s, ASTFileOp)
+                and s.verb == "READ"
+                and s.line_start == read_stmt.line_start
+            ),
+            None,
         )
-        if not has_flag_set:
+        if ast_read is None or ast_read.internal_file_name != file_id:
             return False
-        not_at_end_stmts = [x[1] for x in rn[3] if x[0] == "STMT"]
-        if any(s.verb == "MOVE" and flag_var in s.raw_text.upper() for s in not_at_end_stmts):
+
+        # Premise 4: AT END sets condition_identifier to exit_literal
+        at_end_nodes = rn[2]
+        at_end_moves = [
+            s
+            for s in callee_unit.statements
+            if isinstance(s, ASTMove)
+            and any(n[0] == "STMT" and n[1].line_start == s.line_start for n in at_end_nodes)
+        ]
+        has_exit_move = any(
+            m.target_operand == cond_id and _safe_unquote(m.source_operand) == exit_lit
+            for m in at_end_moves
+        )
+        if not has_exit_move:
             return False
+
+        # Premise 5: No other statement in body modifies cond_id
+        def _get_all_stmts(nodes: list[Any]) -> list[ClassifiedStatement]:
+            res: list[ClassifiedStatement] = []
+            for n in nodes:
+                if n[0] == "STMT":
+                    res.append(n[1])
+                elif n[0] == "IF":
+                    res.extend(_get_all_stmts(n[2]))
+                    res.extend(_get_all_stmts(n[3]))
+                elif n[0] == "READ":
+                    res.extend(_get_all_stmts(n[3]))
+                elif n[0] == "EVALUATE":
+                    for _, wb in n[2]:
+                        res.extend(_get_all_stmts(wb))
+            return res
+
+        non_at_end_stmts = _get_all_stmts(body_nodes)
+        for cstmt in non_at_end_stmts:
+            if cstmt.classification == StatementClassification.UNSUPPORTED_RELEVANT:
+                return False
+            ast_m = next(
+                (
+                    m
+                    for m in callee_unit.statements
+                    if isinstance(m, ASTMove) and m.line_start == cstmt.line_start
+                ),
+                None,
+            )
+            if ast_m and ast_m.target_operand == cond_id:
+                return False
+            ast_a = next(
+                (
+                    a
+                    for a in callee_unit.statements
+                    if isinstance(a, ASTArithmetic) and a.line_start == cstmt.line_start
+                ),
+                None,
+            )
+            if ast_a and ast_a.target == cond_id:
+                return False
+            if cstmt.verb == "ACCEPT" and cond_id in tokenize_cobol_line(cstmt.raw_text):
+                return False
+
+        # Premise 6: No CLOSE or OPEN on file_id in body, no unresolved CALLs
+        all_body_stmts: list[ClassifiedStatement] = []
+
+        def _collect_all_stmts(nodes: list[Any]) -> None:
+            for n in nodes:
+                if n[0] == "STMT":
+                    all_body_stmts.append(n[1])
+                elif n[0] == "IF":
+                    _collect_all_stmts(n[2])
+                    _collect_all_stmts(n[3])
+                elif n[0] == "READ":
+                    _collect_all_stmts(n[2])
+                    _collect_all_stmts(n[3])
+                elif n[0] == "EVALUATE":
+                    for _, wb in n[2]:
+                        _collect_all_stmts(wb)
+
+        _collect_all_stmts(body_nodes)
+
+        for cstmt in all_body_stmts:
+            ast_f = next(
+                (
+                    f
+                    for f in callee_unit.statements
+                    if isinstance(f, ASTFileOp) and f.line_start == cstmt.line_start
+                ),
+                None,
+            )
+            if ast_f and ast_f.verb in ("OPEN", "CLOSE") and ast_f.internal_file_name == file_id:
+                return False
+            if cstmt.verb == "CALL":
+                ast_c = next(
+                    (
+                        c
+                        for c in callee_unit.statements
+                        if isinstance(c, ASTCall) and c.line_start == cstmt.line_start
+                    ),
+                    None,
+                )
+                if not ast_c or not ast_c.is_literal:
+                    return False
+                if ast_c.target != "SYSTEM":
+                    tgt_u = next(
+                        (u for u in self.compilation_units if u.program_id == ast_c.target),
+                        None,
+                    )
+                    if not tgt_u:
+                        return False
+
         return True
+
+    def _compose_branch_union(self, branches: list[FlowResult]) -> FlowResult:
+        if not branches:
+            return FlowResult(fallthrough_possible=True)
+        if any(b.unknown for b in branches):
+            return FlowResult(
+                fallthrough_possible=any(b.fallthrough_possible for b in branches),
+                process_termination_witnesses=tuple(
+                    dict.fromkeys(w for b in branches for w in b.process_termination_witnesses)
+                ),
+                return_witnesses=tuple(
+                    dict.fromkeys(w for b in branches for w in b.return_witnesses)
+                ),
+                unknown=True,
+            )
+        return FlowResult(
+            fallthrough_possible=any(b.fallthrough_possible for b in branches),
+            process_termination_witnesses=tuple(
+                dict.fromkeys(w for b in branches for w in b.process_termination_witnesses)
+            ),
+            return_witnesses=tuple(dict.fromkeys(w for b in branches for w in b.return_witnesses)),
+            unknown=False,
+        )
+
+    def _compose_sequence(self, first: FlowResult, second: FlowResult) -> FlowResult:
+        if first.unknown:
+            return FlowResult(
+                fallthrough_possible=False,
+                process_termination_witnesses=first.process_termination_witnesses,
+                return_witnesses=first.return_witnesses,
+                unknown=True,
+            )
+        if not first.fallthrough_possible:
+            return first
+
+        combined_proc = first.process_termination_witnesses + second.process_termination_witnesses
+        all_proc = tuple(dict.fromkeys(combined_proc))
+        all_ret = tuple(dict.fromkeys(first.return_witnesses + second.return_witnesses))
+        if second.unknown:
+            return FlowResult(
+                fallthrough_possible=False,
+                process_termination_witnesses=all_proc,
+                return_witnesses=all_ret,
+                unknown=True,
+            )
+        return FlowResult(
+            fallthrough_possible=second.fallthrough_possible,
+            process_termination_witnesses=all_proc,
+            return_witnesses=all_ret,
+            unknown=False,
+        )
 
     def _analyze_cf_nodes(
         self,
         nodes: list[Any],
         callee_unit: ASTCompilationUnit,
         call_stack: frozenset[str],
-    ) -> tuple[ExecutionEffect, ASTTermination | None]:
+    ) -> FlowResult:
         """Trace CFG nodes to conservatively determine execution effect."""
+        current_result = FlowResult(fallthrough_possible=True)
         idx = 0
         while idx < len(nodes):
+            if not current_result.fallthrough_possible:
+                break
+            if current_result.unknown:
+                return FlowResult(
+                    fallthrough_possible=False,
+                    process_termination_witnesses=current_result.process_termination_witnesses,
+                    return_witnesses=current_result.return_witnesses,
+                    unknown=True,
+                )
+
             node = nodes[idx]
             kind = node[0]
+            node_res: FlowResult
+
             if kind == "STMT":
                 s: ClassifiedStatement = node[1]
                 if s.classification == StatementClassification.UNSUPPORTED_RELEVANT:
-                    return ExecutionEffect.UNKNOWN, None
-                if s.verb in ("GO", "GOTO"):
-                    return ExecutionEffect.UNKNOWN, None
-                if s.verb == "STOP_RUN":
-                    ast_term = next(
-                        (
-                            t
-                            for t in callee_unit.statements
-                            if isinstance(t, ASTTermination)
-                            and t.line_start == s.line_start
-                            and t.verb == "STOP_RUN"
-                        ),
-                        None,
+                    node_res = FlowResult(fallthrough_possible=False, unknown=True)
+                elif s.verb in ("GO", "GOTO"):
+                    node_res = FlowResult(fallthrough_possible=False, unknown=True)
+                elif s.verb == "STOP_RUN":
+                    witness = TerminationWitness(
+                        program_id=callee_unit.program_id or "",
+                        file_path=callee_unit.file_path,
+                        line_start=s.line_start,
+                        line_end=s.line_end,
+                        termination_kind="STOP_RUN",
                     )
-                    return ExecutionEffect.MUST_PROCESS_TERMINATE, ast_term
+                    node_res = FlowResult(
+                        fallthrough_possible=False,
+                        process_termination_witnesses=(witness,),
+                    )
                 elif s.verb in ("GOBACK", "EXIT_PROGRAM"):
-                    ast_term = next(
-                        (
-                            t
-                            for t in callee_unit.statements
-                            if isinstance(t, ASTTermination)
-                            and t.line_start == s.line_start
-                            and t.verb in ("GOBACK", "EXIT_PROGRAM")
-                        ),
-                        None,
+                    witness = TerminationWitness(
+                        program_id=callee_unit.program_id or "",
+                        file_path=callee_unit.file_path,
+                        line_start=s.line_start,
+                        line_end=s.line_end,
+                        termination_kind=s.verb,
                     )
-                    return ExecutionEffect.MUST_RETURN_TO_CALLER, ast_term
+                    node_res = FlowResult(
+                        fallthrough_possible=False,
+                        return_witnesses=(witness,),
+                    )
                 elif s.verb == "CALL":
                     ast_call = next(
                         (
@@ -2798,25 +3279,54 @@ class SystemCobolParser:
                         None,
                     )
                     if not ast_call or not ast_call.is_literal:
-                        return ExecutionEffect.UNKNOWN, None
-                    target = ast_call.target
-                    if target == "SYSTEM":
-                        idx += 1
-                        continue
-                    target_unit = next(
-                        (u for u in self.compilation_units if u.program_id == target),
-                        None,
-                    )
-                    if not target_unit or target in call_stack:
-                        return ExecutionEffect.UNKNOWN, None
-                    target_eff, target_t = self._prove_callee_continuation(target_unit, call_stack)
-                    if target_eff == ExecutionEffect.MUST_PROCESS_TERMINATE:
-                        return ExecutionEffect.MUST_PROCESS_TERMINATE, target_t
-                    elif target_eff == ExecutionEffect.MUST_RETURN_TO_CALLER:
-                        idx += 1
-                        continue
+                        node_res = FlowResult(fallthrough_possible=False, unknown=True)
+                    elif ast_call.target == "SYSTEM":
+                        cmd_var = ast_call.using_args[0] if ast_call.using_args else None
+                        if cmd_var:
+                            prec_move = next(
+                                (
+                                    m
+                                    for m in reversed(callee_unit.statements)
+                                    if isinstance(m, ASTMove)
+                                    and m.target_operand == cmd_var
+                                    and m.line_end < s.line_start
+                                ),
+                                None,
+                            )
+                            if prec_move and prec_move.is_literal_source:
+                                cmd_lit = exact_syntactic_unquote(prec_move.source_operand)
+                                dialect, _, _ = classify_command_dialect(cmd_lit)
+                                if dialect == CommandDialect.SUPPORTED_WINDOWS_CMD:
+                                    node_res = FlowResult(fallthrough_possible=True)
+                                else:
+                                    node_res = FlowResult(fallthrough_possible=False, unknown=True)
+                            else:
+                                node_res = FlowResult(fallthrough_possible=False, unknown=True)
+                        else:
+                            node_res = FlowResult(fallthrough_possible=False, unknown=True)
                     else:
-                        return ExecutionEffect.UNKNOWN, None
+                        target = ast_call.target
+                        target_unit = next(
+                            (u for u in self.compilation_units if u.program_id == target),
+                            None,
+                        )
+                        if not target_unit or target in call_stack:
+                            node_res = FlowResult(fallthrough_possible=False, unknown=True)
+                        else:
+                            callee_flow = self._prove_callee_continuation(target_unit, call_stack)
+                            if callee_flow.unknown:
+                                node_res = FlowResult(fallthrough_possible=False, unknown=True)
+                            else:
+                                can_return_to_caller_from_callee = (
+                                    callee_flow.fallthrough_possible
+                                    or len(callee_flow.return_witnesses) > 0
+                                )
+                                node_res = FlowResult(
+                                    fallthrough_possible=can_return_to_caller_from_callee,
+                                    process_termination_witnesses=callee_flow.process_termination_witnesses,
+                                    return_witnesses=(),
+                                    unknown=callee_flow.unknown,
+                                )
                 elif s.verb in (
                     "DISPLAY",
                     "ACCEPT",
@@ -2827,110 +3337,80 @@ class SystemCobolParser:
                     "ADD",
                     "SUBTRACT",
                 ):
-                    idx += 1
-                    continue
+                    node_res = FlowResult(fallthrough_possible=True)
                 else:
-                    return ExecutionEffect.UNKNOWN, None
+                    node_res = FlowResult(fallthrough_possible=False, unknown=True)
+
             elif kind == "IF":
                 then_nodes, else_nodes = node[2], node[3]
-                then_eff, then_t = self._analyze_cf_nodes(then_nodes, callee_unit, call_stack)
-                else_eff, else_t = (
+                then_res = self._analyze_cf_nodes(then_nodes, callee_unit, call_stack)
+                else_res = (
                     self._analyze_cf_nodes(else_nodes, callee_unit, call_stack)
                     if else_nodes
-                    else (ExecutionEffect.MUST_RETURN_TO_CALLER, None)
+                    else FlowResult(fallthrough_possible=True)
                 )
-                both_term = (
-                    then_eff != ExecutionEffect.MUST_RETURN_TO_CALLER
-                    and else_eff != ExecutionEffect.MUST_RETURN_TO_CALLER
-                )
-                if both_term:
-                    if then_eff == else_eff:
-                        return then_eff, then_t
-                    return ExecutionEffect.UNKNOWN, None
-                neither_term = (
-                    then_eff == ExecutionEffect.MUST_RETURN_TO_CALLER
-                    and else_eff == ExecutionEffect.MUST_RETURN_TO_CALLER
-                )
-                if neither_term:
-                    idx += 1
-                    continue
-                rem_eff, rem_t = self._analyze_cf_nodes(nodes[idx + 1 :], callee_unit, call_stack)
-                target_term_eff = (
-                    then_eff if then_eff != ExecutionEffect.MUST_RETURN_TO_CALLER else else_eff
-                )
-                if rem_eff == target_term_eff:
-                    return rem_eff, rem_t
-                return ExecutionEffect.UNKNOWN, None
+                node_res = self._compose_branch_union([then_res, else_res])
+
             elif kind == "PERFORM_UNTIL":
                 loop_stmt, body_nodes = node[1], node[2]
-                if not self._verify_finite_loop_progress(loop_stmt, body_nodes):
-                    return ExecutionEffect.UNKNOWN, None
-                idx += 1
-                continue
+                if not self._verify_finite_loop_progress(loop_stmt, body_nodes, callee_unit):
+                    node_res = FlowResult(fallthrough_possible=False, unknown=True)
+                else:
+                    body_res = self._analyze_cf_nodes(body_nodes, callee_unit, call_stack)
+                    node_res = FlowResult(
+                        fallthrough_possible=True,
+                        process_termination_witnesses=body_res.process_termination_witnesses,
+                        return_witnesses=body_res.return_witnesses,
+                        unknown=body_res.unknown,
+                    )
+
             elif kind == "READ":
-                at_end_eff, _ = self._analyze_cf_nodes(node[2], callee_unit, call_stack)
-                not_at_end_eff, _ = self._analyze_cf_nodes(node[3], callee_unit, call_stack)
-                if (
-                    at_end_eff != ExecutionEffect.MUST_RETURN_TO_CALLER
-                    or not_at_end_eff != ExecutionEffect.MUST_RETURN_TO_CALLER
-                ):
-                    if at_end_eff == not_at_end_eff:
-                        return at_end_eff, None
-                    return ExecutionEffect.UNKNOWN, None
-                idx += 1
-                continue
+                at_end_nodes, not_at_end_nodes = node[2], node[3]
+                at_end_res = (
+                    self._analyze_cf_nodes(at_end_nodes, callee_unit, call_stack)
+                    if at_end_nodes
+                    else FlowResult(fallthrough_possible=True)
+                )
+                not_at_end_res = (
+                    self._analyze_cf_nodes(not_at_end_nodes, callee_unit, call_stack)
+                    if not_at_end_nodes
+                    else FlowResult(fallthrough_possible=True)
+                )
+                node_res = self._compose_branch_union([at_end_res, not_at_end_res])
+
             elif kind == "EVALUATE":
                 when_blocks = node[2]
-                branch_effects = [
-                    self._analyze_cf_nodes(wb, callee_unit, call_stack) for wb in when_blocks
-                ]
-                all_term = all(
-                    eff != ExecutionEffect.MUST_RETURN_TO_CALLER for eff, _ in branch_effects
-                )
-                if all_term:
-                    first_eff = branch_effects[0][0]
-                    if all(eff == first_eff for eff, _ in branch_effects):
-                        return first_eff, branch_effects[0][1]
-                    return ExecutionEffect.UNKNOWN, None
-                all_fall = all(
-                    eff == ExecutionEffect.MUST_RETURN_TO_CALLER for eff, _ in branch_effects
-                )
-                if all_fall:
-                    idx += 1
-                    continue
-                return ExecutionEffect.UNKNOWN, None
+                if not when_blocks:
+                    node_res = FlowResult(fallthrough_possible=True)
+                else:
+                    branch_results = [
+                        self._analyze_cf_nodes(wb, callee_unit, call_stack) for _, wb in when_blocks
+                    ]
+                    has_when_other = any(
+                        w_stmt.raw_text.upper().strip().startswith("WHEN OTHER")
+                        for w_stmt, _ in when_blocks
+                    )
+                    if not has_when_other:
+                        branch_results.append(FlowResult(fallthrough_possible=True))
+                    node_res = self._compose_branch_union(branch_results)
+
             else:
-                return ExecutionEffect.UNKNOWN, None
-        return ExecutionEffect.MUST_RETURN_TO_CALLER, None
+                node_res = FlowResult(fallthrough_possible=False, unknown=True)
 
-    def _prove_callee_continuation(
+            current_result = self._compose_sequence(current_result, node_res)
+            idx += 1
+
+        return current_result
+
+    def _are_statements_in_same_linear_cf_segment(
         self,
+        stmt1: ClassifiedStatement,
+        stmt2: ClassifiedStatement,
         callee_unit: ASTCompilationUnit,
-        call_stack: frozenset[str] | None = None,
-    ) -> tuple[ExecutionEffect, ASTTermination | None]:
-        """Conservative control-flow effect proof of callee termination outcome.
-
-        Result domain:
-        - MUST_PROCESS_TERMINATE
-        - MUST_RETURN_TO_CALLER
-        - UNKNOWN
-        """
-        curr_prog = callee_unit.program_id or ""
-        if call_stack is None:
-            call_stack = frozenset([curr_prog])
-        elif curr_prog in call_stack:
-            return ExecutionEffect.UNKNOWN, None
-        else:
-            call_stack = call_stack | {curr_prog}
-
-        callee_stmts = [s for s in self.statements if s.file_path == callee_unit.file_path]
-        if any(
-            s.classification == StatementClassification.UNSUPPORTED_RELEVANT for s in callee_stmts
-        ):
-            return ExecutionEffect.UNKNOWN, None
-
-        if any(s.verb in ("GO", "GOTO") for s in callee_stmts):
-            return ExecutionEffect.UNKNOWN, None
+    ) -> bool:
+        """Determine if stmt1 and stmt2 are consecutive in the same linear control-flow segment."""
+        if stmt1.has_terminal_period:
+            return False
 
         proc_idx = next(
             (
@@ -2941,14 +3421,83 @@ class SystemCobolParser:
             None,
         )
         if proc_idx is None:
-            return ExecutionEffect.UNKNOWN, None
+            return False
 
         prog_stmts = [
             s
             for s in self.statements[proc_idx + 1 :]
             if s.file_path == callee_unit.file_path and s.verb != "PARAGRAPH_HEADER"
         ]
-        nodes, _ = self._parse_procedural_cf_block(prog_stmts)
+        nodes, _, _ = self._parse_procedural_cf_block(prog_stmts)
+
+        def _check_linear_list(node_list: list[Any]) -> bool:
+            for idx, n in enumerate(node_list):
+                if n[0] == "STMT" and n[1].line_start == stmt1.line_start:
+                    if idx + 1 < len(node_list):
+                        next_n = node_list[idx + 1]
+                        if next_n[0] == "STMT" and next_n[1].line_start == stmt2.line_start:
+                            return True
+                    return False
+                elif n[0] == "IF":
+                    if _check_linear_list(n[2]) or _check_linear_list(n[3]):
+                        return True
+                elif n[0] == "PERFORM_UNTIL":
+                    if _check_linear_list(n[2]):
+                        return True
+                elif n[0] == "READ":
+                    if _check_linear_list(n[2]) or _check_linear_list(n[3]):
+                        return True
+                elif n[0] == "EVALUATE":
+                    for _, wb in n[2]:
+                        if _check_linear_list(wb):
+                            return True
+            return False
+
+        return _check_linear_list(nodes)
+
+    def _prove_callee_continuation(
+        self,
+        callee_unit: ASTCompilationUnit,
+        call_stack: frozenset[str] | None = None,
+    ) -> FlowResult:
+        """Conservative control-flow effect proof of callee termination outcome.
+
+        Returns outcome-bound FlowResult.
+        """
+        curr_prog = callee_unit.program_id or ""
+        if call_stack is None:
+            call_stack = frozenset([curr_prog])
+        elif curr_prog in call_stack:
+            return FlowResult(fallthrough_possible=False, unknown=True)
+        else:
+            call_stack = call_stack | {curr_prog}
+
+        callee_stmts = [s for s in self.statements if s.file_path == callee_unit.file_path]
+        if any(
+            s.classification == StatementClassification.UNSUPPORTED_RELEVANT for s in callee_stmts
+        ):
+            return FlowResult(fallthrough_possible=False, unknown=True)
+
+        if any(s.verb in ("GO", "GOTO") for s in callee_stmts):
+            return FlowResult(fallthrough_possible=False, unknown=True)
+
+        proc_idx = next(
+            (
+                i
+                for i, s in enumerate(self.statements)
+                if s.file_path == callee_unit.file_path and s.verb == "PROCEDURE_DIVISION"
+            ),
+            None,
+        )
+        if proc_idx is None:
+            return FlowResult(fallthrough_possible=False, unknown=True)
+
+        prog_stmts = [
+            s
+            for s in self.statements[proc_idx + 1 :]
+            if s.file_path == callee_unit.file_path and s.verb != "PARAGRAPH_HEADER"
+        ]
+        nodes, _, _ = self._parse_procedural_cf_block(prog_stmts)
         return self._analyze_cf_nodes(nodes, callee_unit, call_stack)
 
     # -----------------------------------------------------------------------
@@ -3067,34 +3616,60 @@ class SystemCobolParser:
                         )
 
                         # Caller continuation constraint
-                        callee_effect, callee_term = self._prove_callee_continuation(callee_unit)
-                        if callee_effect != ExecutionEffect.UNKNOWN and callee_term is not None:
-                            constraint_effect = (
-                                "PROCESS_TERMINATION_ON_CALL"
-                                if callee_effect == ExecutionEffect.MUST_PROCESS_TERMINATE
-                                else "RETURN_TO_CALLER"
-                            )
-                            self.supported_facts.append(
-                                SupportedSystemFact(
-                                    fact=CallerContinuationConstraintFact(
-                                        caller_program=caller,
-                                        callee_program=target,
-                                        constraint_type=constraint_effect,
-                                    ),
-                                    proposition_id=f"prop.continuation.{caller.lower()}_{target.lower()}",
-                                    evidence_spans={
-                                        "call_evidence": EvidenceSpan(
-                                            unit.file_path, stmt.line_start, stmt.line_end
-                                        ),
-                                        "callee_termination_evidence": EvidenceSpan(
-                                            callee_unit.file_path,
-                                            callee_term.line_start,
-                                            callee_term.line_end,
-                                        ),
-                                    },
-                                )
-                            )
-                        else:
+                        callee_flow = self._prove_callee_continuation(callee_unit)
+                        constraint_emitted = False
+                        if callee_flow.is_definite_process_terminate:
+                            if len(callee_flow.process_termination_witnesses) == 1:
+                                w = callee_flow.process_termination_witnesses[0]
+                                if w.program_id == target and w.file_path == callee_unit.file_path:
+                                    self.supported_facts.append(
+                                        SupportedSystemFact(
+                                            fact=CallerContinuationConstraintFact(
+                                                caller_program=caller,
+                                                callee_program=target,
+                                                constraint_type="PROCESS_TERMINATION_ON_CALL",
+                                            ),
+                                            proposition_id=f"prop.continuation.{caller.lower()}_{target.lower()}",
+                                            evidence_spans={
+                                                "call_evidence": EvidenceSpan(
+                                                    unit.file_path, stmt.line_start, stmt.line_end
+                                                ),
+                                                "callee_termination_evidence": EvidenceSpan(
+                                                    callee_unit.file_path,
+                                                    w.line_start,
+                                                    w.line_end,
+                                                ),
+                                            },
+                                        )
+                                    )
+                                    constraint_emitted = True
+                        elif callee_flow.is_definite_return:
+                            if len(callee_flow.return_witnesses) == 1:
+                                w = callee_flow.return_witnesses[0]
+                                if w.program_id == target and w.file_path == callee_unit.file_path:
+                                    self.supported_facts.append(
+                                        SupportedSystemFact(
+                                            fact=CallerContinuationConstraintFact(
+                                                caller_program=caller,
+                                                callee_program=target,
+                                                constraint_type="RETURN_TO_CALLER",
+                                            ),
+                                            proposition_id=f"prop.continuation.{caller.lower()}_{target.lower()}",
+                                            evidence_spans={
+                                                "call_evidence": EvidenceSpan(
+                                                    unit.file_path, stmt.line_start, stmt.line_end
+                                                ),
+                                                "callee_termination_evidence": EvidenceSpan(
+                                                    callee_unit.file_path,
+                                                    w.line_start,
+                                                    w.line_end,
+                                                ),
+                                            },
+                                        )
+                                    )
+                                    constraint_emitted = True
+
+                        if not constraint_emitted:
                             for idx_s, s in enumerate(self.statements):
                                 if (
                                     s.file_path == unit.file_path
@@ -3107,10 +3682,8 @@ class SystemCobolParser:
                                         s.verb,
                                         s.raw_text,
                                         StatementClassification.UNSUPPORTED_RELEVANT,
-                                        (
-                                            "Unproven callee continuation outcome "
-                                            f"({callee_effect.value})"
-                                        ),
+                                        "Unproven or unrepresentable continuation outcome",
+                                        has_terminal_period=s.has_terminal_period,
                                     )
 
         # 3. File Bindings
