@@ -5781,7 +5781,8 @@ def test_h7_6_b_h01_control_flow_outcome_algebra() -> None:
     }
     parser1 = SystemCobolParser(_make_multi_file_bundle(files1))
     cert1 = parser1.parse_system()
-    assert cert1.unsupported_relevant_count == 0
+    assert cert1.unsupported_relevant_count >= 1, "Unproven continuation must fail closed"
+    assert cert1.is_evaluation_blocked is True
     units1 = {u.program_id: u for u in parser1.compilation_units}
     flow1 = parser1._prove_callee_continuation(units1["CALLEE"])
     assert flow1.is_definite_process_terminate is False
@@ -5811,7 +5812,8 @@ def test_h7_6_b_h01_control_flow_outcome_algebra() -> None:
     }
     parser2 = SystemCobolParser(_make_multi_file_bundle(files2))
     cert2 = parser2.parse_system()
-    assert cert2.unsupported_relevant_count == 0
+    assert cert2.unsupported_relevant_count >= 1, "Unproven continuation must fail closed"
+    assert cert2.is_evaluation_blocked is True
     units2 = {u.program_id: u for u in parser2.compilation_units}
     flow2 = parser2._prove_callee_continuation(units2["CALLEE"])
     assert flow2.is_definite_process_terminate is False
@@ -5844,6 +5846,7 @@ def test_h7_6_b_h01_control_flow_outcome_algebra() -> None:
     ]
     assert len(ccc3) == 0
     assert cert3.unsupported_relevant_count >= 1
+    assert cert3.is_evaluation_blocked is True
 
 
 def test_h7_6_b_h03_call_system_effect_summaries() -> None:
@@ -5910,3 +5913,350 @@ def test_h7_6_b_h05_sentence_period_control_boundary() -> None:
     ]
     assert len(ccc) == 0
     assert cert.unsupported_relevant_count >= 1
+
+
+def test_h7_6_c_h04_command_fail_closed_and_clean_controls() -> None:
+    """H-04: Non-cmd.exe command dialects fail closed.
+
+    Clean controls pass without sequence emission.
+    """
+    # 1. PowerShell fails closed
+    src_ps = """       IDENTIFICATION DIVISION.
+       PROGRAM-ID. TPOWERSHELL.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 WS-CMD PIC X(100).
+       PROCEDURE DIVISION.
+           MOVE "powershell -c Remove-Item accounts.dat" TO WS-CMD.
+           CALL "SYSTEM" USING WS-CMD.
+           STOP RUN.
+"""
+    p_ps = SystemCobolParser(_make_synth_bundle(src_ps))
+    cert_ps = p_ps.parse_system()
+    assert cert_ps.unsupported_relevant_count >= 1
+    assert cert_ps.is_evaluation_blocked is True
+    assert any(
+        "Unsupported command" in s.description
+        for s in p_ps.statements
+        if s.classification.value == "UNSUPPORTED_RELEVANT"
+    )
+
+    # 2. command.com fails closed
+    src_com = """       IDENTIFICATION DIVISION.
+       PROGRAM-ID. TCOMMANDCOM.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 WS-CMD PIC X(100).
+       PROCEDURE DIVISION.
+           MOVE "command.com /c del accounts.dat" TO WS-CMD.
+           CALL "SYSTEM" USING WS-CMD.
+           STOP RUN.
+"""
+    p_com = SystemCobolParser(_make_synth_bundle(src_com))
+    cert_com = p_com.parse_system()
+    assert cert_com.unsupported_relevant_count >= 1
+    assert cert_com.is_evaluation_blocked is True
+
+    # 3. Bare del (not wrapped in cmd /c) fails closed
+    src_bare = """       IDENTIFICATION DIVISION.
+       PROGRAM-ID. TBAREDEL.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 WS-CMD PIC X(100).
+       PROCEDURE DIVISION.
+           MOVE "del accounts.dat" TO WS-CMD.
+           CALL "SYSTEM" USING WS-CMD.
+           STOP RUN.
+"""
+    p_bare = SystemCobolParser(_make_synth_bundle(src_bare))
+    cert_bare = p_bare.parse_system()
+    assert cert_bare.unsupported_relevant_count >= 1
+    assert cert_bare.is_evaluation_blocked is True
+
+    # 4. Redirection (> out.txt) fails closed
+    src_redir = """       IDENTIFICATION DIVISION.
+       PROGRAM-ID. TREDIR.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 WS-CMD PIC X(100).
+       PROCEDURE DIVISION.
+           MOVE "cmd /c echo test > out.txt" TO WS-CMD.
+           CALL "SYSTEM" USING WS-CMD.
+           STOP RUN.
+"""
+    p_redir = SystemCobolParser(_make_synth_bundle(src_redir))
+    cert_redir = p_redir.parse_system()
+    assert cert_redir.unsupported_relevant_count >= 1
+    assert cert_redir.is_evaluation_blocked is True
+
+    # 5. Command chaining (& del) fails closed
+    src_chain = """       IDENTIFICATION DIVISION.
+       PROGRAM-ID. TCHAIN.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 WS-CMD PIC X(100).
+       PROCEDURE DIVISION.
+           MOVE "cmd /c echo test & del file.dat" TO WS-CMD.
+           CALL "SYSTEM" USING WS-CMD.
+           STOP RUN.
+"""
+    p_chain = SystemCobolParser(_make_synth_bundle(src_chain))
+    cert_chain = p_chain.parse_system()
+    assert cert_chain.unsupported_relevant_count >= 1
+    assert cert_chain.is_evaluation_blocked is True
+
+    # 6. Shell switch (/s) on dir fails closed
+    src_switch = """       IDENTIFICATION DIVISION.
+       PROGRAM-ID. TSWITCH.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 WS-CMD PIC X(100).
+       PROCEDURE DIVISION.
+           MOVE "cmd /c dir /s BANKING" TO WS-CMD.
+           CALL "SYSTEM" USING WS-CMD.
+           STOP RUN.
+"""
+    p_switch = SystemCobolParser(_make_synth_bundle(src_switch))
+    cert_switch = p_switch.parse_system()
+    assert cert_switch.unsupported_relevant_count >= 1
+    assert cert_switch.is_evaluation_blocked is True
+
+    # 7. Valid clean control: echo
+    src_echo = """       IDENTIFICATION DIVISION.
+       PROGRAM-ID. TECHOPASS.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 WS-CMD PIC X(100).
+       PROCEDURE DIVISION.
+           MOVE "cmd /c echo Processing started" TO WS-CMD.
+           CALL "SYSTEM" USING WS-CMD.
+           STOP RUN.
+"""
+    p_echo = SystemCobolParser(_make_synth_bundle(src_echo))
+    cert_echo = p_echo.parse_system()
+    assert cert_echo.unsupported_relevant_count == 0
+    assert cert_echo.is_evaluation_blocked is False
+    invocations_echo = [
+        f.fact for f in p_echo.supported_facts if isinstance(f.fact, CommandInvocationFact)
+    ]
+    assert len(invocations_echo) == 1
+    plat_echo = [
+        f.fact for f in p_echo.supported_facts if isinstance(f.fact, PlatformDependencyFact)
+    ]
+    assert len(plat_echo) == 1
+    assert plat_echo[0].platform_family == "WINDOWS"
+    seq_echo = [f.fact for f in p_echo.supported_facts if isinstance(f.fact, OperationSequenceFact)]
+    assert len(seq_echo) == 0
+
+    # 8. Valid clean control: dir
+    src_dir = """       IDENTIFICATION DIVISION.
+       PROGRAM-ID. TDIRPASS.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 WS-CMD PIC X(100).
+       PROCEDURE DIVISION.
+           MOVE "cmd /c dir BANKING" TO WS-CMD.
+           CALL "SYSTEM" USING WS-CMD.
+           STOP RUN.
+"""
+    p_dir = SystemCobolParser(_make_synth_bundle(src_dir))
+    cert_dir = p_dir.parse_system()
+    assert cert_dir.unsupported_relevant_count == 0
+    assert cert_dir.is_evaluation_blocked is False
+    invocations_dir = [
+        f.fact for f in p_dir.supported_facts if isinstance(f.fact, CommandInvocationFact)
+    ]
+    assert len(invocations_dir) == 1
+    seq_dir = [f.fact for f in p_dir.supported_facts if isinstance(f.fact, OperationSequenceFact)]
+    assert len(seq_dir) == 0
+
+
+def test_h7_6_c_h05_operation_sequence_cf_boundaries() -> None:
+    """H-05: OperationSequenceFact requires linear CF segment.
+
+    Branching and period boundaries reject cross-block sequences.
+    """
+    # 1. Historical bug reproduction: period closes IF, del is inside IF, ren is outside
+    src_period_branch = """       IDENTIFICATION DIVISION.
+       PROGRAM-ID. TCFPERIOD.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 WS-CMD PIC X(100).
+       01 WS-FLAG PIC X VALUE 'N'.
+       PROCEDURE DIVISION.
+           IF WS-FLAG = 'Y'
+               MOVE "cmd /c del b.dat" TO WS-CMD
+               CALL "SYSTEM" USING WS-CMD.
+           MOVE "cmd /c ren a.dat b.dat" TO WS-CMD.
+           CALL "SYSTEM" USING WS-CMD.
+           STOP RUN.
+"""
+    p1 = SystemCobolParser(_make_synth_bundle(src_period_branch))
+    p1.parse_system()
+    seq1 = [f.fact for f in p1.supported_facts if isinstance(f.fact, OperationSequenceFact)]
+    assert len(seq1) == 0, "Cross-block sequence across sentence period must not be emitted"
+    risk1 = [f.fact for f in p1.supported_facts if isinstance(f.fact, BehavioralRiskFact)]
+    assert len(risk1) == 0, "No NON_ATOMIC_EXTERNAL_MUTATION across conditional boundary"
+
+    # 2. Explicit END-IF: del inside IF block, ren outside
+    src_endif = """       IDENTIFICATION DIVISION.
+       PROGRAM-ID. TCFENDIF.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 WS-CMD PIC X(100).
+       01 WS-FLAG PIC X VALUE 'N'.
+       PROCEDURE DIVISION.
+           IF WS-FLAG = 'Y'
+               MOVE "cmd /c del b.dat" TO WS-CMD
+               CALL "SYSTEM" USING WS-CMD
+           END-IF.
+           MOVE "cmd /c ren a.dat b.dat" TO WS-CMD.
+           CALL "SYSTEM" USING WS-CMD.
+           STOP RUN.
+"""
+    p2 = SystemCobolParser(_make_synth_bundle(src_endif))
+    p2.parse_system()
+    seq2 = [f.fact for f in p2.supported_facts if isinstance(f.fact, OperationSequenceFact)]
+    assert len(seq2) == 0, "del inside IF and ren outside must not form OperationSequenceFact"
+
+    # 3. Branch split: del in THEN, ren in ELSE
+    src_then_else = """       IDENTIFICATION DIVISION.
+       PROGRAM-ID. TCFELSE.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 WS-CMD PIC X(100).
+       01 WS-FLAG PIC X VALUE 'N'.
+       PROCEDURE DIVISION.
+           IF WS-FLAG = 'Y'
+               MOVE "cmd /c del b.dat" TO WS-CMD
+               CALL "SYSTEM" USING WS-CMD
+           ELSE
+               MOVE "cmd /c ren a.dat b.dat" TO WS-CMD
+               CALL "SYSTEM" USING WS-CMD
+           END-IF.
+           STOP RUN.
+"""
+    p3 = SystemCobolParser(_make_synth_bundle(src_then_else))
+    p3.parse_system()
+    seq3 = [f.fact for f in p3.supported_facts if isinstance(f.fact, OperationSequenceFact)]
+    assert len(seq3) == 0, "Branch split (THEN vs ELSE) must not form OperationSequenceFact"
+
+    # 4. Valid linear sequence in top-level block: DEL followed by REN
+    src_linear = """       IDENTIFICATION DIVISION.
+       PROGRAM-ID. TCFLINEAR.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 WS-CMD PIC X(100).
+       PROCEDURE DIVISION.
+           MOVE "cmd /c del b.dat" TO WS-CMD.
+           CALL "SYSTEM" USING WS-CMD.
+           MOVE "cmd /c ren a.dat b.dat" TO WS-CMD.
+           CALL "SYSTEM" USING WS-CMD.
+           STOP RUN.
+"""
+    p4 = SystemCobolParser(_make_synth_bundle(src_linear))
+    cert4 = p4.parse_system()
+    assert cert4.unsupported_relevant_count == 0
+    seq4 = [f.fact for f in p4.supported_facts if isinstance(f.fact, OperationSequenceFact)]
+    assert len(seq4) == 1
+    assert seq4[0].first_operation == "DELETE"
+    assert seq4[0].second_operation == "RENAME"
+
+
+def test_h7_6_c_h06_level_88_complete_grammar() -> None:
+    """H-06: Level-88 complete grammar permits only valid VALUE/VALUES forms.
+
+    Rejects malformed prefix tokens and unquoted delimiters.
+    """
+    # 1. Valid forms
+    src_valid = """       IDENTIFICATION DIVISION.
+       PROGRAM-ID. T88GRAMMAR.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 WS-REC.
+          05 WS-CODE PIC X(2).
+             88 CODE-A VALUE 'AA'.
+             88 CODE-B VALUES 'BB' 'CC'.
+             88 CODE-C VALUE IS 'DD'.
+             88 CODE-D VALUES ARE 'EE' 'FF'.
+"""
+    p_val = SystemCobolParser(_make_synth_bundle(src_valid))
+    cert_val = p_val.parse_system()
+    assert cert_val.unsupported_relevant_count == 0
+    assert cert_val.is_evaluation_blocked is False
+    recs = [f.fact for f in p_val.supported_facts if isinstance(f.fact, RecordLayoutFact)]
+    assert len(recs) == 1
+    c_fields = {
+        f.name: f.condition_values for f in recs[0].fields if f.field_kind == "CONDITION_NAME"
+    }
+    assert c_fields["CODE-A"] == ("AA",)
+    assert c_fields["CODE-B"] == ("BB", "CC")
+    assert c_fields["CODE-C"] == ("DD",)
+    assert c_fields["CODE-D"] == ("EE", "FF")
+
+    # 2. Malformed prefix: 88 COND INVALID VALUE 'A'.
+    src_bad1 = """       IDENTIFICATION DIVISION.
+       PROGRAM-ID. T88BAD1.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 WS-REC.
+          05 WS-CODE PIC X(2).
+             88 COND INVALID VALUE 'AA'.
+"""
+    p_bad1 = SystemCobolParser(_make_synth_bundle(src_bad1))
+    cert_bad1 = p_bad1.parse_system()
+    assert cert_bad1.unsupported_relevant_count >= 1
+    assert cert_bad1.is_evaluation_blocked is True
+    assert (
+        len([f.fact for f in p_bad1.supported_facts if isinstance(f.fact, RecordLayoutFact)]) == 0
+    )
+
+    # 3. Malformed prefix: 88 COND PIC X VALUE 'A'.
+    src_bad2 = """       IDENTIFICATION DIVISION.
+       PROGRAM-ID. T88BAD2.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 WS-REC.
+          05 WS-CODE PIC X(2).
+             88 COND PIC X VALUE 'AA'.
+"""
+    p_bad2 = SystemCobolParser(_make_synth_bundle(src_bad2))
+    cert_bad2 = p_bad2.parse_system()
+    assert cert_bad2.unsupported_relevant_count >= 1
+    assert cert_bad2.is_evaluation_blocked is True
+    assert (
+        len([f.fact for f in p_bad2.supported_facts if isinstance(f.fact, RecordLayoutFact)]) == 0
+    )
+
+
+def test_h7_6_c_m02_record_scope_layout_atomicity() -> None:
+    """M-02: Non-allowlisted statements invalidate active record.
+
+    Does not leak across division or section boundaries.
+    """
+    src_multi = """       IDENTIFICATION DIVISION.
+       PROGRAM-ID. TMULTIREC.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 WS-REC1.
+          05 WS-ID PIC 9(5).
+          EXEC SQL INCLUDE SQLCA END-EXEC.
+          05 WS-NAME PIC X(20).
+       01 WS-REC2.
+          05 WS-ACC PIC 9(10).
+          05 WS-BAL PIC S9(7)V99 COMP-3.
+"""
+    p = SystemCobolParser(_make_synth_bundle(src_multi))
+    cert = p.parse_system()
+    # WS-REC1 has unhandled EXEC SQL, so unsupported count increments
+    assert cert.unsupported_relevant_count >= 1
+    rec_facts = [f.fact for f in p.supported_facts if isinstance(f.fact, RecordLayoutFact)]
+    # WS-REC1 is omitted due to atomicity invalidation
+    assert not any(r.record_name == "WS-REC1" for r in rec_facts)
+    # WS-REC2 is clean, parsed, and certified independently
+    rec2 = next((r for r in rec_facts if r.record_name == "WS-REC2"), None)
+    assert rec2 is not None
+    assert len(rec2.fields) == 2
+    assert rec2.fields[0].name == "WS-ACC"
+    assert rec2.fields[1].name == "WS-BAL"
+    assert rec2.fields[1].usage == "COMP-3"

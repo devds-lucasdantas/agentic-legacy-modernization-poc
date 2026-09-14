@@ -633,7 +633,11 @@ def classify_command_dialect(cmd_text: str) -> tuple[CommandDialect, str, str | 
                 f"Unsupported cmd.exe wrapper options: '{args}'",
             )
 
-    return (CommandDialect.OTHER_COMMAND, clean, None)
+    return (
+        CommandDialect.OTHER_COMMAND,
+        clean,
+        f"Unsupported command or shell wrapper: '{clean}'",
+    )
 
 
 SHELL_METACHARACTERS: frozenset[str] = frozenset(
@@ -722,6 +726,55 @@ def tokenize_windows_mutation_operands(text: str) -> tuple[bool, list[str], str 
                 return False, [], "Lossy whitespace in mutation operand: boundary whitespace"
             operands.append(raw)
     return True, operands, None
+
+
+@dataclass(frozen=True)
+class CleanControlResult:
+    is_allowed: bool
+    reason: str | None = None
+
+
+def classify_clean_control_command(unwrapped_cmd: str) -> CleanControlResult:
+    """Classify non-mutation Windows shell command for fail-closed safety.
+
+    Permits only safe, well-defined control commands:
+    - 'echo' <text>: with no shell metacharacters (><|&^%!*?())
+    - 'dir' [path]: bare or targeting a file/directory path without shell switches or metacharacters
+
+    Rejects any ungrounded command, unknown executable/verb, shell metacharacters, or switches.
+    """
+    clean = unwrapped_cmd.strip()
+    if not clean:
+        return CleanControlResult(is_allowed=False, reason="Empty command inside cmd.exe wrapper")
+
+    if any(ord(c) >= 128 for c in clean):
+        return CleanControlResult(is_allowed=False, reason="Non-ASCII characters in command text")
+
+    if any(c in SHELL_METACHARACTERS for c in clean):
+        return CleanControlResult(
+            is_allowed=False,
+            reason="Shell metacharacters not permitted in control command",
+        )
+
+    tokens = clean.split()
+    verb = tokens[0].lower()
+
+    if verb == "echo":
+        return CleanControlResult(is_allowed=True)
+
+    if verb == "dir":
+        for arg in tokens[1:]:
+            if arg.startswith("/") or arg.startswith("-"):
+                return CleanControlResult(
+                    is_allowed=False,
+                    reason=f"Switches not supported in clean control command: '{arg}'",
+                )
+        return CleanControlResult(is_allowed=True)
+
+    return CleanControlResult(
+        is_allowed=False,
+        reason=f"Unsupported non-mutation command verb or executable: '{verb}'",
+    )
 
 
 def classify_mutation_command(cmd_text: str) -> MutationCommandResult:
@@ -1333,6 +1386,7 @@ class SystemCobolParser:
                 continue
 
             if first in ("DATA", "FILE", "WORKING-STORAGE"):
+                current_record = None
                 if first in ("WORKING-STORAGE", "LOCAL-STORAGE", "LINKAGE"):
                     current_fd = None
                 self.statements.append(
@@ -1350,6 +1404,7 @@ class SystemCobolParser:
                 continue
 
             if first == "FD":
+                current_record = None
                 fd_name = tokens[1].rstrip(".") if len(tokens) > 1 else ""
                 if not is_canonical_cobol_identifier(fd_name):
                     self.statements.append(
@@ -1620,18 +1675,16 @@ class SystemCobolParser:
                             is_supported = False
 
                         val_tokens_upper = [t.upper() for t in no_dot_tokens]
-                        start_idx = -1
-                        for v_key in ("VALUE", "VALUES"):
-                            if v_key in val_tokens_upper:
-                                start_idx = val_tokens_upper.index(v_key) + 1
-                                if start_idx < len(no_dot_tokens) and val_tokens_upper[
-                                    start_idx
-                                ] in (
-                                    "IS",
-                                    "ARE",
-                                ):
-                                    start_idx += 1
-                                break
+                        if len(no_dot_tokens) < 3 or val_tokens_upper[2] not in ("VALUE", "VALUES"):
+                            is_supported = False
+                            start_idx = -1
+                        else:
+                            start_idx = 3
+                            if start_idx < len(no_dot_tokens) and val_tokens_upper[start_idx] in (
+                                "IS",
+                                "ARE",
+                            ):
+                                start_idx += 1
 
                         if not cond_name or start_idx == -1 or start_idx >= len(no_dot_tokens):
                             is_supported = False
@@ -1725,6 +1778,7 @@ class SystemCobolParser:
 
             # PROCEDURE DIVISION / PARAGRAPHS
             if first == "PROCEDURE" and len(tokens) > 1 and tokens[1].upper().startswith("DIV"):
+                current_record = None
                 in_procedure_division = True
                 self.statements.append(
                     ClassifiedStatement(
@@ -1742,6 +1796,7 @@ class SystemCobolParser:
                 continue
 
             if len(tokens) == 2 and tokens[1].upper() == "SECTION":
+                current_record = None
                 self.statements.append(
                     ClassifiedStatement(
                         target_file.relative_path,
@@ -2770,6 +2825,9 @@ class SystemCobolParser:
                     has_terminal_period=line_is_terminated,
                 )
             )
+            if not in_procedure_division and current_record:
+                current_record.is_unsupported = True
+                current_record.line_end = max(current_record.line_end, line_num)
             i += 1
 
         return unit
@@ -3404,14 +3462,11 @@ class SystemCobolParser:
 
     def _are_statements_in_same_linear_cf_segment(
         self,
-        stmt1: ClassifiedStatement,
-        stmt2: ClassifiedStatement,
+        stmt1: ClassifiedStatement | ASTStatement,
+        stmt2: ClassifiedStatement | ASTStatement,
         callee_unit: ASTCompilationUnit,
     ) -> bool:
         """Determine if stmt1 and stmt2 are consecutive in the same linear control-flow segment."""
-        if stmt1.has_terminal_period:
-            return False
-
         proc_idx = next(
             (
                 i
@@ -3849,23 +3904,11 @@ class SystemCobolParser:
 
                         # Platform dependency (Contract 3.5.3 wire schema permits only WINDOWS)
                         dialect, unwrapped_cmd, dialect_reason = classify_command_dialect(cmd_clean)
-                        if dialect == CommandDialect.SUPPORTED_WINDOWS_CMD:
-                            self.supported_facts.append(
-                                SupportedSystemFact(
-                                    fact=PlatformDependencyFact(
-                                        program_id=caller,
-                                        platform_family="WINDOWS",
-                                        command_literal=cmd_clean,
-                                    ),
-                                    proposition_id=f"prop.platform.{caller.lower()}_{cmd_idx}",
-                                    evidence_spans={
-                                        "evidence": EvidenceSpan(
-                                            unit.file_path, s1.line_start, s1.line_end
-                                        )
-                                    },
-                                )
+                        if dialect != CommandDialect.SUPPORTED_WINDOWS_CMD:
+                            fail_reason = (
+                                dialect_reason
+                                or f"Unsupported command dialect or shell wrapper: '{cmd_clean}'"
                             )
-                        elif dialect == CommandDialect.UNSUPPORTED_WRAPPER:
                             for idx_s, s in enumerate(self.statements):
                                 if s.file_path == unit.file_path and s.line_start in (
                                     s1.line_start,
@@ -3878,13 +3921,25 @@ class SystemCobolParser:
                                         s.verb,
                                         s.raw_text,
                                         StatementClassification.UNSUPPORTED_RELEVANT,
-                                        (
-                                            "Unsupported shell wrapper establishes an "
-                                            "unrepresentable platform dependency outside "
-                                            f"Contract 3.5.3 frozen schema: {dialect_reason}"
-                                        ),
+                                        fail_reason,
                                     )
                             continue
+
+                        self.supported_facts.append(
+                            SupportedSystemFact(
+                                fact=PlatformDependencyFact(
+                                    program_id=caller,
+                                    platform_family="WINDOWS",
+                                    command_literal=cmd_clean,
+                                ),
+                                proposition_id=f"prop.platform.{caller.lower()}_{cmd_idx}",
+                                evidence_spans={
+                                    "evidence": EvidenceSpan(
+                                        unit.file_path, s1.line_start, s1.line_end
+                                    )
+                                },
+                            )
+                        )
 
                         mut_res = classify_mutation_command(cmd_clean)
                         if mut_res.status == "MUTATION_UNSUPPORTED":
@@ -3907,6 +3962,28 @@ class SystemCobolParser:
                                     )
                             continue
 
+                        if mut_res.status == "NOT_MUTATION":
+                            clean_ctrl = classify_clean_control_command(unwrapped_cmd)
+                            if not clean_ctrl.is_allowed:
+                                for idx_s, s in enumerate(self.statements):
+                                    if s.file_path == unit.file_path and s.line_start in (
+                                        s1.line_start,
+                                        s2.line_start,
+                                    ):
+                                        self.statements[idx_s] = ClassifiedStatement(
+                                            s.file_path,
+                                            s.line_start,
+                                            s.line_end,
+                                            s.verb,
+                                            s.raw_text,
+                                            StatementClassification.UNSUPPORTED_RELEVANT,
+                                            (
+                                                "Unsupported non-mutation command: "
+                                                f"{clean_ctrl.reason}"
+                                            ),
+                                        )
+                                continue
+
                         commands_in_unit.append((s1, s2, idx, idx + 1, mut_res))
 
             # Operation sequence and non-atomic risk: generic operand-aware
@@ -3927,6 +4004,13 @@ class SystemCobolParser:
                         unit_raw_lines, c1.line_end, m2.line_start
                     )
                     if has_seq_barrier:
+                        continue
+
+                    if not self._are_statements_in_same_linear_cf_segment(m1, c1, unit):
+                        continue
+                    if not self._are_statements_in_same_linear_cf_segment(c1, m2, unit):
+                        continue
+                    if not self._are_statements_in_same_linear_cf_segment(m2, c2, unit):
                         continue
 
                     if mut1.status == "MUTATION_PARSED" and mut2.status == "MUTATION_PARSED":
