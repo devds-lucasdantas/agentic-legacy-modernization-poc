@@ -1,11 +1,12 @@
-# Gate 3 H7.5 Contract 3.5.3 Remediation Report
+# Gate 3 H7.6 Contract 3.5.3 Remediation Report
 
-**Date:** 2026-09-13  
+**Date:** 2026-09-14  
 **Contract Version:** 3.5.3  
-**Functional Commit (H7.5-C):** `d786c3fcd4e0bbc51d0f9e7b96e1d922dd1fccac`  
-**Functional Commit (H7.5-B):** `b3dbbc9d537ec246b6153d799042170f74d39ea7`  
-**Functional Commit (H7.5-A):** `984920f2a8e9a5f253952576649a9d2ddd38cff2`  
-**Prior Functional Commit (H7.4.4.2-0):** `ad115a2b48ffcc7db998fa09a663ca680cf8a404`  
+**Functional Commit (H7.6-D):** `2b8b5f981d156ecba0360b8713f95f495e6567ed`  
+**Functional Commit (H7.6-C):** `60c243e3761b9657f6d7316ae63158557d83db41`  
+**Functional Commit (H7.6-B):** `e37a58e87498c863fc90a3674cf48f7608240590`  
+**Functional Commit (H7.6-A):** `0e7b42fe31e9c704257125eef050dbd44933939d`  
+**Prior Report Commit (H7.5):** `ec2bcb4d42b1c172bade60d1fe872105841dfe8d`  
 **Classification:** `STRUCTURAL_VERIFIER_LOGICAL_PARSING_AND_EXHAUSTIVE_COMPLETENESS_REMEDIATION`  
 **Mode:** STRICTLY OFFLINE  
 **Live Provider Calls:** 0  
@@ -895,14 +896,167 @@ Following the Astra XHigh External Technical Audit on Contract 3.5.3, this remed
 
 ---
 
-## 23. Final Status (H7.5 Release)
+## 23. Historical H7.5 Release Status
 
 - **Functional Commit H7.5-A:** `984920f2a8e9a5f253952576649a9d2ddd38cff2` (Host oracle & parser soundness F-01, F-03..F-09)
 - **Functional Commit H7.5-B:** `b3dbbc9d537ec246b6153d799042170f74d39ea7` (Continuation effect proof F-02 & Exhaustive completeness F-10)
 - **Functional Commit H7.5-C:** `d786c3fcd4e0bbc51d0f9e7b96e1d922dd1fccac` (Raw invocation terminal failure evidence sealing F-11)
-- **Report Commit H7.5:** Direct report-only child of `H7.5-C` (modifying strictly `docs/gate-3-h7-contract-remediation-report.md`)
+- **Report Commit H7.5:** `ec2bcb4d42b1c172bade60d1fe872105841dfe8d`
 - **Remote Branch:** `feat/gate-3-system-analysis`
 - **Execution Mode:** Strictly OFFLINE. 0 provider calls, 0 baseline-v3 reservations, baseline-v2 reservation byte-for-byte preserved.
+
+---
+
+## 24. H7.6 / Contract 3.5.3 Comprehensive Remediation of Astra XHigh Audit Findings
+
+Following the second-round independent Astra XHigh External Technical Audit on Gate 3 / Contract 3.5.3, all 13 findings (`B-01`, `B-02`, `H-01` through `H-08`, `M-01`, `M-02`, `D-01`) have been remediated across a strict 4-commit functional partition followed by this report commit.
+
+### 24.1 Detailed Remediation Breakdown
+
+#### B-01: Structural Finite-Loop Termination Proof
+- **Finding:** Procedural loop analysis relied on step count heuristics that could fail to distinguish true non-terminating loops from valid terminating loops with complex progress conditions.
+- **Remediation (`H7.6-B`):** Replaced ad-hoc step counters with a formal finite loop invariant proof in `_verify_finite_loop_progress`:
+  1. Identifies loop control variables in `UNTIL` conditions.
+  2. Proves that the loop body contains at least one progress-making mutation to the control variables.
+  3. Proves monotonic delta progression toward the termination boundary.
+  4. Verifies exit or termination site reachability.
+  5. Any loop failing structural proof fails closed as indeterminate `UNKNOWN`, triggering `UNSUPPORTED_RELEVANT` coverage blockage.
+
+#### B-02: Lossless Support-Index Occurrences
+- **Finding:** `SystemSupportIndex` and `SourceSupportIndex` performed lossy deduplication by keying strictly on proposition IDs, causing identical propositions with distinct evidence spans to overwrite each other and obscuring honest fact occurrence counts.
+- **Remediation (`H7.6-A`):** Redesigned support index internal storage:
+  1. Maintained an ordered, complete list of occurrences per proposition ID without deduplication.
+  2. Enhanced lookup methods (`get_facts_by_id`, `get_fact_by_id`, `find_matching_occurrence`) to operate losslessly over all occurrences.
+  3. Reported honest occurrence counts (`total_expected_facts == 80` on canonical legacy bundle).
+
+#### H-01: Control-Flow Outcome Algebra
+- **Finding:** Branch outcome merging lacked a rigorous algebraic foundation for composing parallel and sequential procedural outcomes.
+- **Remediation (`H7.6-B`):** Defined and implemented formal outcome algebra over procedural control flow paths:
+  - Parallel composition ($O_1 \oplus O_2$): Both branches must agree on termination (`TERMINATES`) to yield definite termination; divergence between `TERMINATES` and `RETURNS` yields sound branch-level constraint evaluation.
+  - Sequential composition ($O_1 \otimes O_2$): Early termination dominates subsequent statements; dead-code branches do not dilute prior termination proof.
+
+#### H-02: Direct Callee Termination Site Provenance
+- **Finding:** Caller continuation constraints could propagate transitive or fabricated termination assumptions without verifying direct evidence from the callee's physical termination site.
+- **Remediation (`H7.6-B`):** Enforced direct callee termination site provenance:
+  1. `CallerContinuationConstraintFact` requires direct evidence of the callee's physical `STOP RUN` or `GOBACK` statement.
+  2. Transitive-only or ungrounded continuation assumptions fail closed as `UNKNOWN`.
+
+#### H-03: Explicit CALL / SYSTEM Effect Summaries
+- **Finding:** Interprocedural calls and external `CALL 'SYSTEM'` dispatches lacked explicit effect summaries, risking inaccurate side-effect assumptions.
+- **Remediation (`H7.6-B`):** Constructed explicit effect summaries:
+  - Internal `CALL`: Interprocedural summaries capturing parameter mutations and return/termination behavior.
+  - `CALL 'SYSTEM'`: External process invocation summary ensuring system-level dispatches are never assumed to terminate the COBOL runtime process unless explicitly bounded.
+
+#### H-04: Command Fail-Closed Semantics
+- **Finding:** Unrecognized or non-allowlisted external command dispatches could be bypassed without enforcing coverage blocks.
+- **Remediation (`H7.6-C`):** Strict fail-closed semantics on all external commands:
+  - Only allowlisted commands (`cmd /c del ...`, `cmd /c ren ...`) in recognized sequences (`DELETE -> RENAME`) are certifiable.
+  - Any non-allowlisted, malformed, or reversed dispatch pair strictly increments `unsupported_relevant_count >= 1` and sets `is_evaluation_blocked = True`.
+
+#### H-05: Sentence-Period Control Boundary IR
+- **Finding:** Period tokens could bleed across procedural statements, causing incorrect grouping of independent statements into linear segments.
+- **Remediation (`H7.6-B`, `H7.6-C`):** Implemented strict sentence-period IR:
+  - Period tokens unconditionally terminate active procedural control structures (`IF`, `PERFORM`, `EVALUATE`, `READ ... AT END`).
+  - `OperationSequence` strictly enforces sentence boundaries, preventing dispatches across distinct sentences from being grouped into single operation sequences.
+
+#### H-06: Level-88 Complete Grammar
+- **Finding:** Level-88 condition names allowed non-standard prefixes (e.g. `88 COND PIC X VALUE ...`) or unclosed literals without failing closed.
+- **Remediation (`H7.6-C`):** Enforced complete level-88 grammar:
+  - Requires strict `88 <name> VALUE/VALUES <literal(s)>.` syntax.
+  - Non-standard prefixes, missing values, unclosed quotes, or range keywords (`THRU`) fail closed as `UNSUPPORTED_RELEVANT`.
+
+#### H-07: Sealed-Evidence State Machine
+- **Finding:** Post-model failure finalization lacked read-back verification of evidence artifacts on disk, and could leave ambiguous reservation states if disk writes failed after evidence generation.
+- **Remediation (`H7.6-D`):** Centralized `finalize_post_model_failure` with rigorous read-back verification:
+  1. Re-reads `terminal-result.json` and `manifest.json` from disk.
+  2. Verifies presence of all required phase artifacts in `manifest.json`.
+  3. Verifies byte-for-byte SHA256 checksums of all manifested artifacts against bytes on disk.
+  4. **Case A (Evidence Sealed, Reservation Write Failed):** If evidence is verified on disk but writing `FAILED` to `reservation-state.json` fails, status transitions to `COORDINATION_FAILURE`, evidence remains preserved, and `coordination-failure.json` is written with `evidence_sealed: True`.
+  5. **Case B (Evidence Sealing Failed):** If artifact verification fails (e.g. SHA mismatch, missing file, disk corruption), status becomes `FAILED_UNSEALED`, `reservation-state.json` is marked `FAILED_UNSEALED`, and `coordination-failure.json` is written with `evidence_sealed: False` and `verification_errors`.
+
+#### H-08: Post-Claim Failure Envelope & Irrevocable Claim Check
+- **Finding:** If a failure occurred between attempt claim creation and model invocation, or if an attempt claim already existed, re-entry could potentially attempt uncoordinated execution.
+- **Remediation (`H7.6-D`):**
+  1. **Unconditional Claim Re-Entry Refusal:** Child startup checks for `attempt-claim.json`. If present, execution immediately halts with exit code 1 across all reservation states (`RESERVED`, `FAILED_UNSEALED`, `MODEL_INVOCATION`, `FAILED`, missing, corrupt) with 0 provider calls.
+  2. **Wrapped Post-Claim Reservation Update:** The write of `MODEL_INVOCATION` to `reservation-state.json` is wrapped in `try...except`, routing to `finalize_post_model_failure(error_phase="MODEL_INVOCATION_RESERVATION")` on failure, sealing terminal failure evidence and exiting 1.
+
+#### M-01: `FileOrganization.SEQUENTIAL` Certification
+- **Finding:** `ORGANIZATION IS SEQUENTIAL` and `LINE SEQUENTIAL` clauses in `SELECT` statements required explicit parser certification.
+- **Remediation (`H7.6-A`):** Explicitly parsed and certified `ORGANIZATION IS [LINE] SEQUENTIAL`, ensuring clean file binding fact extraction without spurious coverage blocks.
+
+#### M-02: Record-Scope Layout Atomicity
+- **Finding:** Unhandled statements within a 01 record definition could invalidate subsequent valid record definitions or divisions.
+- **Remediation (`H7.6-C`):** Scoped layout atomicity to individual 01 records:
+  - An invalidating statement within a record discards only that active record layout.
+  - Invalidation does not bleed across record boundaries: valid sibling 01 records are certified independently while unsupported count increments.
+
+#### D-01: Independent Golden Documentation & Traceability
+- **Finding:** Golden dataset required explicit documentation of auditor-facing static source rationales and verified independence from the production parser.
+- **Remediation (`H7.6-A` through `H7.6-D`):** Re-verified complete auditor rationales for all 59 propositions under `INDEPENDENT_STATIC_SOURCE_AUDIT`. Golden generation modules import zero parser logic.
+
+---
+
+## 25. Quality Gates & Final Verification (H7.6 Release)
+
+### 25.1 Test Suite Verification
+1. **Targeted H7 / Contract Regression Suite (`evals/tests/test_h7_contract_regressions.py`):**
+   - **98 passed, 0 failures** (including 4 new tests in Section H7.6-D for H-07 and H-08).
+2. **Runner & Authorization Contract Suite (`evals/tests/test_gate_3_runner.py`):**
+   - **13 passed, 0 failures** (including irrevocable claim check, failure sealing, and dynamic Python 3.12 compatibility).
+3. **Remediation Regression Suite (`evals/tests/test_gate_3_remediation_regressions.py`):**
+   - **25 passed, 0 failures** (all 5 failure scenarios, reservation state transitions, immutable artifact preservation).
+4. **Combined Gate 3 Regression Suites:**
+   - **136 passed, 0 failures**.
+5. **Static Type Checking (`mypy scripts/run-gate-3.py evals/tests/`):**
+   - **Success: no issues found in source files**.
+6. **Linter & Formatter (`ruff check .`, `ruff format --check .`):**
+   - **All checks passed, all files formatted cleanly**.
+7. **Dependency Hygiene (`pip check`):**
+   - **No broken requirements found**.
+
+### 25.2 Grounded Canonical Reference Metrics (`legacy/core-banking-system`)
+- **Parser Supported Facts Count:** 80
+- **Support Index Total Expected Facts:** 80
+- **Support Index All Facts Count:** 80
+- **Evaluation Gate 3 Pass:** `True`
+- **Precision:** `1.0` (59 / 59)
+- **Recall:** `1.0` (59 / 59)
+- **Host Exhaustive Fact Count:** 45
+- **Matched Host Exhaustive Fact Count:** 45
+- **Missing Host Exhaustive Fact Count:** 0
+- **Unsupported Relevant Count:** 0
+- **Evaluation Blocked:** `False`
+
+### 25.3 Complete Scientific Immutability Invariants (CLI-Grounded)
+
+| Asset | Target / File | Hash / Value | Verification Status |
+|---|---|---|---|
+| Baseline-v1 Spec | `evals/baselines/gate-3-baseline-v1.json` | `b37e8815e2605f279ecc417b8e037f0b235f5e1dcfa64d79b10708e852509695` | Byte-for-byte verified |
+| Baseline-v1 Artifacts | `artifacts/gate-3/baseline-v1/manifest.json` | 13 artifacts matching manifest SHAs | All 13 verified identical |
+| Baseline-v2 Reservation | `artifacts/gate-3/baseline-v2/reservation-state.json` | `108c51b222e476f32bd98c092c5dc814be9a25b4d1b93ae60f0f28ea2f5a631d` | Byte-for-byte verified |
+| Production Prompt | `agents/legacy_analyzer/prompts/system_v3.md` | `4be25cfc25933d6f0e69cbeeae1efe12ccf2e1354857e04c90108d8534ea92e8` | Byte-for-byte verified |
+| Generated Wire Schema | `get_system_openai_wire_schema()` | `07655be0a119440e1f693cbd3242842ed87e82c43518bce61f741bc7dc4423dc` | Byte-for-byte verified |
+| Golden Dataset | `evals/expected/system-understanding-v3.json` | `da5bdee9286dd5fbc79cb8331b70aabf73fca029fe4a3d3c5ede5ed2c984b82b` | Byte-for-byte verified |
+| Dependency Lock | `requirements-lock.txt` | `732cb9370e90af2d0972eeda7fc18fd5745f17cb301f359b268df228fe7f18be` | Byte-for-byte verified |
+| Source Manifest | `evals/baselines/gate-3-baseline-v3.json` (`target_bundle`) | `daf28b3314199db8e31bfacdf2fb8441b54682caa7854ed288e1bc00866a1dd1` | Byte-for-byte verified |
+| Canonical Bundle | `legacy/` (6 artifacts) | `95bb386b51d653c0a1834e1950634a9887b7cb6826b8c317a07c4b6a4167d060` | Byte-for-byte verified |
+| Baseline-v3 Spec | `evals/baselines/gate-3-baseline-v3.json` | `candidate_git_sha = ""` | Verified empty |
+| Baseline-v3 Artifacts | `artifacts/gate-3/baseline-v3` | Does NOT exist | Verified absent |
+| Golden Semantic Digest | Proposition & Policy canonical JSON digest | `0bb874ca3070f71f23134fe2ec4f7cc2d48c37d2bc4663887d343a6d159d65f2` | Byte-for-byte verified |
+| Reference Evaluation | Golden vs Host Evaluator on `legacy/` | 59/59, Precision=1.0, Recall=1.0, Exhaustive=45/45 | Full Pass |
+
+---
+
+## 26. Final Status (H7.6 Release)
+
+- **Functional Commit H7.6-A:** `0e7b42fe31e9c704257125eef050dbd44933939d` (Lossless support-index occurrences `B-02`, sequential certification `M-01`, documentation `D-01`)
+- **Functional Commit H7.6-B:** `e37a58e87498c863fc90a3674cf48f7608240590` (Finite-loop proof `B-01`, CF algebra `H-01`, termination provenance `H-02`, effect summaries `H-03`, sentence IR `H-05`)
+- **Functional Commit H7.6-C:** `60c243e3761b9657f6d7316ae63158557d83db41` (Fail-closed commands `H-04`, operation sequence CF `H-05`, level-88 grammar `H-06`, record layout atomicity `M-02`)
+- **Functional Commit H7.6-D:** `2b8b5f981d156ecba0360b8713f95f495e6567ed` (Sealed-evidence state machine `H-07`, post-claim failure envelope & re-entry refusal `H-08`)
+- **Report Commit H7.6:** Direct report-only child of `H7.6-D` (modifying strictly `docs/gate-3-h7-contract-remediation-report.md`)
+- **Remote Branch:** `feat/gate-3-system-analysis`
+- **Execution Mode:** Strictly OFFLINE. 0 provider calls, 0 baseline-v3 reservations, baseline-v2 reservation byte-for-byte preserved.
+
 
 
 
