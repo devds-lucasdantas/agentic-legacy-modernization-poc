@@ -6897,3 +6897,200 @@ def test_h7_7_a_lossless_grammar_and_record_atomicity():
     para_stmts = [s for s in parser_bog.statements if s.verb == "PARAGRAPH_HEADER"]
     assert not any("BOGUS" in s.raw_text for s in para_stmts)
 
+
+def test_h7_7_b_aud_01_finite_loop_progress_theorem() -> None:
+    """AUD-01: Finite-loop progress theorem verification over sequential file loops.
+
+    Verifies:
+    - Mutating NOT AT END to reset condition flag (MOVE 'N' TO WS-EOF-FLAG) destroys
+      progress invariant and fails closed with is_evaluation_blocked == True.
+    - Subsequent mutation of condition flag in AT END handler fails closed.
+    - Non-equality operator in loop condition fails closed.
+    """
+    base_src = """       IDENTIFICATION DIVISION.
+       PROGRAM-ID. LOOPPROG.
+       ENVIRONMENT DIVISION.
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+           SELECT ACCT-FILE ASSIGN TO 'ACCOUNTS.DAT'
+               ORGANIZATION IS LINE SEQUENTIAL.
+       DATA DIVISION.
+       FILE SECTION.
+       FD ACCT-FILE.
+       01 ACCT-REC PIC X(50).
+       WORKING-STORAGE SECTION.
+       01 WS-EOF-FLAG PIC X VALUE 'N'.
+       PROCEDURE DIVISION.
+           OPEN INPUT ACCT-FILE.
+           MOVE 'N' TO WS-EOF-FLAG.
+{loop_body}
+           CLOSE ACCT-FILE.
+           GOBACK.
+"""
+    caller_src = """       IDENTIFICATION DIVISION.
+       PROGRAM-ID. CALLER.
+       PROCEDURE DIVISION.
+           CALL 'LOOPPROG'.
+           STOP RUN.
+"""
+
+    # 1. NOT AT END resets EOF flag -> fails closed
+    p1_loop = """           PERFORM UNTIL WS-EOF-FLAG = 'Y'
+               READ ACCT-FILE
+                   AT END
+                       MOVE 'Y' TO WS-EOF-FLAG
+                   NOT AT END
+                       MOVE 'N' TO WS-EOF-FLAG
+               END-READ
+           END-PERFORM."""
+    p1 = SystemCobolParser(_make_multi_file_bundle({
+        "CALLER.CBL": caller_src,
+        "LOOPPROG.CBL": base_src.format(loop_body=p1_loop),
+    }))
+    cert1 = p1.parse_system()
+    assert cert1.unsupported_relevant_count >= 1
+    assert cert1.is_evaluation_blocked is True
+    assert any("progress" in s.description.lower() for s in p1.statements
+               if s.classification == StatementClassification.UNSUPPORTED_RELEVANT)
+
+    # 2. AT END clobbers EOF flag subsequently -> fails closed
+    p2_loop = """           PERFORM UNTIL WS-EOF-FLAG = 'Y'
+               READ ACCT-FILE
+                   AT END
+                       MOVE 'Y' TO WS-EOF-FLAG
+                       MOVE 'N' TO WS-EOF-FLAG
+                   NOT AT END
+                       DISPLAY 'REC'
+               END-READ
+           END-PERFORM."""
+    p2 = SystemCobolParser(_make_multi_file_bundle({
+        "CALLER.CBL": caller_src,
+        "LOOPPROG.CBL": base_src.format(loop_body=p2_loop),
+    }))
+    cert2 = p2.parse_system()
+    assert cert2.unsupported_relevant_count >= 1
+    assert cert2.is_evaluation_blocked is True
+
+    # 3. Non-equality comparison operator in loop condition -> fails closed
+    p3_loop = """           PERFORM UNTIL WS-EOF-FLAG NOT = 'N'
+               READ ACCT-FILE
+                   AT END
+                       MOVE 'Y' TO WS-EOF-FLAG
+                   NOT AT END
+                       DISPLAY 'REC'
+               END-READ
+           END-PERFORM."""
+    p3 = SystemCobolParser(_make_multi_file_bundle({
+        "CALLER.CBL": caller_src,
+        "LOOPPROG.CBL": base_src.format(loop_body=p3_loop),
+    }))
+    cert3 = p3.parse_system()
+    assert cert3.unsupported_relevant_count >= 1
+    assert cert3.is_evaluation_blocked is True
+
+
+def test_h7_7_b_aud_03_reaching_definition_system_binding() -> None:
+    """AUD-03: Reaching-definition effect analysis for CALL 'SYSTEM' USING <var>.
+
+    Verifies:
+    - Conflicting reaching definitions from branches fail closed as UNSUPPORTED_RELEVANT.
+    - ACCEPT overwriting a command literal before CALL 'SYSTEM' fails closed.
+    - Grounded unique reaching definition succeeds.
+    """
+    caller_src = """       IDENTIFICATION DIVISION.
+       PROGRAM-ID. CALLER.
+       PROCEDURE DIVISION.
+           CALL 'CALLEE'.
+           STOP RUN.
+"""
+
+    # 1. Branch-split conflicting definitions
+    callee_branch = """       IDENTIFICATION DIVISION.
+       PROGRAM-ID. CALLEE.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 WS-FLAG PIC X VALUE 'Y'.
+       01 WS-CMD  PIC X(50).
+       PROCEDURE DIVISION.
+           IF WS-FLAG = 'Y'
+               MOVE 'cmd /c echo A' TO WS-CMD
+           ELSE
+               MOVE 'cmd /c echo B' TO WS-CMD
+           END-IF.
+           CALL 'SYSTEM' USING WS-CMD.
+           GOBACK.
+"""
+    p1 = SystemCobolParser(_make_multi_file_bundle({
+        "CALLER.CBL": caller_src,
+        "CALLEE.CBL": callee_branch,
+    }))
+    cert1 = p1.parse_system()
+    assert cert1.unsupported_relevant_count >= 1
+    assert cert1.is_evaluation_blocked is True
+    unsupp1 = [
+        s for s in p1.statements
+        if s.classification == StatementClassification.UNSUPPORTED_RELEVANT
+    ]
+    assert any("conflicting" in s.description.lower() for s in unsupp1)
+
+    # 2. ACCEPT clobbers command literal into unknown
+    callee_clobber = """       IDENTIFICATION DIVISION.
+       PROGRAM-ID. CALLEE.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 WS-CMD PIC X(50).
+       PROCEDURE DIVISION.
+           MOVE 'cmd /c echo A' TO WS-CMD.
+           ACCEPT WS-CMD.
+           CALL 'SYSTEM' USING WS-CMD.
+           GOBACK.
+"""
+    p2 = SystemCobolParser(_make_multi_file_bundle({
+        "CALLER.CBL": caller_src,
+        "CALLEE.CBL": callee_clobber,
+    }))
+    cert2 = p2.parse_system()
+    assert cert2.unsupported_relevant_count >= 1
+    assert cert2.is_evaluation_blocked is True
+
+
+def test_h7_7_b_aud_05_unreachable_operation_sequences_and_risks() -> None:
+    """AUD-05: Unreachable statements emit zero facts, sequences, and behavioral risks.
+
+    Verifies:
+    - Commands placed after unconditional GOBACK / STOP RUN are unreachable.
+    - Unreachable commands emit 0 CommandInvocationFact, 0 PlatformDependencyFact.
+    - Unreachable commands do NOT form OperationSequenceFact or BehavioralRiskFact.
+    """
+    dead_cobol = """       IDENTIFICATION DIVISION.
+       PROGRAM-ID. UNREACH.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 WS-CMD-A PIC X(50).
+       01 WS-CMD-B PIC X(50).
+       PROCEDURE DIVISION.
+           MOVE 'cmd /c echo REACHABLE' TO WS-CMD-A.
+           CALL 'SYSTEM' USING WS-CMD-A.
+           GOBACK.
+           MOVE 'cmd /c echo UNREACHABLE' TO WS-CMD-B.
+           CALL 'SYSTEM' USING WS-CMD-B.
+"""
+    p = SystemCobolParser(_make_synth_bundle(dead_cobol, filename="UNREACH.CBL"))
+    cert = p.parse_system()
+    assert cert.unsupported_relevant_count == 0
+
+    cmds = [f.fact for f in p.supported_facts if isinstance(f.fact, CommandInvocationFact)]
+    assert len(cmds) == 1
+    assert cmds[0].command_template == "cmd /c echo REACHABLE"
+
+    plat_deps = [f.fact for f in p.supported_facts if isinstance(f.fact, PlatformDependencyFact)]
+    assert len(plat_deps) == 1
+    assert plat_deps[0].command_literal == "cmd /c echo REACHABLE"
+
+    op_seqs = [f.fact for f in p.supported_facts if isinstance(f.fact, OperationSequenceFact)]
+    assert len(op_seqs) == 0, "Unreachable command must not form operation sequence"
+
+    risks = [f.fact for f in p.supported_facts if isinstance(f.fact, BehavioralRiskFact)]
+    assert len(risks) == 0, "Single reachable echo command does not form risk sequence"
+
+

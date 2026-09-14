@@ -27,17 +27,19 @@ from src.cobol.multi_source_reader import (
     read_system_bundle,
 )
 from src.cobol.system_atomic_facts import (
+    BehavioralRiskFact,
     CallEdgeFact,
     CallerContinuationConstraintFact,
     CallOccurrenceFact,
     CommandInvocationFact,
     FileBindingFact,
     InternalCallResolutionFact,
+    OperationSequenceFact,
     RecordLayoutFact,
     RecordLayoutRelationFact,
     TerminationSiteFact,
 )
-from src.cobol.system_cobol_parser import SystemCobolParser
+from src.cobol.system_cobol_parser import StatementClassification, SystemCobolParser
 from src.cobol.system_support_index import SystemSupportIndex
 from src.validation.evaluator_v3 import SystemEvaluatorV3, load_golden_assessment
 
@@ -568,7 +570,10 @@ def test_cf5_extra_call_occurrence(tmp_path: Path):
 def test_cf6_changed_system_command_assignment(tmp_path: Path):
     """CF 6: Mutate TRANS-PROC.CBL to move 'rm -f ACCOUNTS.DAT' TO WS-CMD.
 
-    Verifies CommandInvocation updates command_template to Linux syntax.
+    Under Contract 3.5.3, non-allowlisted / Linux SYSTEM commands (such as 'rm -f')
+    fail closed. The parser must classify the statement as UNSUPPORTED_RELEVANT,
+    block evaluation, emit zero supported facts for the command, and prevent any
+    evaluator or Gate path from certifying the mutated system.
     """
     orig = (REPO_ROOT / "legacy/core-banking-system/TRANS-PROC.CBL").read_text(encoding="utf-8")
     mutated = orig.replace(
@@ -580,12 +585,63 @@ def test_cf6_changed_system_command_assignment(tmp_path: Path):
         {"legacy/core-banking-system/TRANS-PROC.CBL": mutated}, tmp_path
     )
     parser = SystemCobolParser(bundle)
-    facts = parser.get_supported_facts()
+    cert = parser.parse_system()
 
+    # 1. Negative / Fail-Closed Assertions for unsupported 'rm -f' command
+    # No supported/certifiable CommandInvocationFact for 'rm -f ACCOUNTS.DAT'
+    facts = parser.get_supported_facts()
     cmds = [f.fact for f in facts if isinstance(f.fact, CommandInvocationFact)]
-    rm_cmd = next((c for c in cmds if c.command_template == "rm -f ACCOUNTS.DAT"), None)
-    assert rm_cmd is not None
-    assert rm_cmd.target_operand == "WS-CMD"
+    rm_cmd = next((c for c in cmds if "rm -f" in c.command_template), None)
+    assert rm_cmd is None, "Unsupported 'rm -f' command must not yield CommandInvocationFact"
+
+    # Relevant source is classified UNSUPPORTED_RELEVANT
+    unsupported_stmts = [
+        c
+        for c in cert.per_statement_classifications
+        if c.get("classification")
+        in (StatementClassification.UNSUPPORTED_RELEVANT.value, "UNSUPPORTED_RELEVANT")
+    ]
+    assert len(unsupported_stmts) > 0, "Mutated statement must be classified UNSUPPORTED_RELEVANT"
+
+    # Final ParserCoverageCertificate flags evaluation blocked
+    assert cert.unsupported_relevant_count > 0, (
+        f"Expected unsupported_relevant_count > 0, got {cert.unsupported_relevant_count}"
+    )
+    assert cert.is_evaluation_blocked is True, "Mutated system must block evaluation"
+
+    # Zero OperationSequenceFact derived from the unsupported command
+    op_facts = [f.fact for f in facts if isinstance(f.fact, OperationSequenceFact)]
+    assert len(op_facts) == 0, "No OperationSequenceFact may be derived from unsupported command"
+
+    # Zero BehavioralRiskFact derived from the unsupported command
+    risk_facts = [f.fact for f in facts if isinstance(f.fact, BehavioralRiskFact)]
+    mutation_risks = [
+        r
+        for r in risk_facts
+        if r.risk_basis_kind == "NON_ATOMIC_EXTERNAL_MUTATION" or "rm -f" in (r.resource_name or "")
+    ]
+    assert len(mutation_risks) == 0, "No BehavioralRiskFact may be derived from unsupported command"
+
+    # No evaluator/Gate path can treat mutated source as cleanly understood
+    assert parser.is_evaluation_blocked is True
+    assert cert.is_evaluation_blocked is True
+    assert cert.unsupported_relevant_count > 0
+
+    # 2. Positive Control: Supported command remains certifiable
+    # The original unmutated bundle produces supported CommandInvocationFact for cmd /c del
+    orig_bundle = read_system_bundle(REPO_ROOT)
+    orig_parser = SystemCobolParser(orig_bundle)
+    orig_cert = orig_parser.parse_system()
+
+    assert orig_cert.unsupported_relevant_count == 0
+    assert orig_cert.is_evaluation_blocked is False
+
+    orig_facts = orig_parser.get_supported_facts()
+    orig_cmds = [f.fact for f in orig_facts if isinstance(f.fact, CommandInvocationFact)]
+    del_cmd = next((c for c in orig_cmds if c.command_template == "cmd /c del ACCOUNTS.DAT"), None)
+    assert del_cmd is not None, "Supported command must produce CommandInvocationFact"
+    assert del_cmd.target_operand == "WS-CMD"
+    assert del_cmd.program_id == "TRANS-PROC"
 
 
 def test_cf7_changed_select_assign(tmp_path: Path):
