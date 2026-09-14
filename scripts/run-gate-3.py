@@ -1850,6 +1850,60 @@ def execute_internal_child(args: argparse.Namespace) -> int:
         )
         return 1
 
+    # Host <-> Golden REQUIRED_EXHAUSTIVE preflight parity check
+    try:
+        from src.cobol.system_support_index import SystemSupportIndex
+        from src.validation.evaluator_v3 import SystemEvaluatorV3, load_golden_assessment
+
+        facts = parser.get_supported_facts()
+        support_index = SystemSupportIndex(
+            facts, bundle, file_status_certificate=parser.file_status_certificate
+        )
+        evaluator = SystemEvaluatorV3(support_index, golden_dataset_path=golden_file)
+        host_exhaustive = evaluator.extract_host_exhaustive_obligations()
+        golden_assessment = load_golden_assessment(golden_file)
+        golden_exhaustive = evaluator.extract_exhaustive_obligations_from_assessment(
+            golden_assessment
+        )
+        if host_exhaustive != golden_exhaustive:
+            diff_missing = host_exhaustive - golden_exhaustive
+            diff_extra = golden_exhaustive - host_exhaustive
+            err_msg = (
+                f"REQUIRED_EXHAUSTIVE preflight parity check failed: "
+                f"host_count={len(host_exhaustive)}, golden_count={len(golden_exhaustive)}, "
+                f"host_missing_in_golden={len(diff_missing)}, "
+                f"golden_missing_in_host={len(diff_extra)}"
+            )
+            print(f"ERROR: {err_msg}", file=sys.stderr)
+            atomic_write_json(
+                reservation_file,
+                {
+                    "status": "FAILED",
+                    "error_phase": "REQUIRED_EXHAUSTIVE_PREFLIGHT_DRIFT",
+                    "error_message": err_msg,
+                    "timestamp": datetime.now(UTC).isoformat(),
+                    "candidate_git_sha": candidate_sha,
+                    "authorization_commit_sha": authorization_commit_sha,
+                    "git_commit_sha": authorized_sha,
+                },
+            )
+            return 1
+    except Exception as e:
+        print(f"ERROR: REQUIRED_EXHAUSTIVE preflight verification failed: {e}", file=sys.stderr)
+        atomic_write_json(
+            reservation_file,
+            {
+                "status": "FAILED",
+                "error_phase": "REQUIRED_EXHAUSTIVE_PREFLIGHT_DRIFT",
+                "error_message": str(e),
+                "timestamp": datetime.now(UTC).isoformat(),
+                "candidate_git_sha": candidate_sha,
+                "authorization_commit_sha": authorization_commit_sha,
+                "git_commit_sha": authorized_sha,
+            },
+        )
+        return 1
+
     # If dry-run, report success without live call or credentials
     if args.dry_run:
         print("[OK] Dry-run preflight verification complete. All authorization checks PASSED.")

@@ -50,6 +50,15 @@ def _single_span(ev: Any) -> dict[str, EvidenceSpan]:
 
 
 @dataclass(frozen=True)
+class CanonicalExhaustiveObligation:
+    """Canonical representation of an AST-derived exhaustive fact obligation."""
+
+    fact_category: str
+    fact: SystemAtomicFact
+    evidence_spans: tuple[tuple[str, str, int, int], ...]
+
+
+@dataclass(frozen=True)
 class EvaluationMetricSummary:
     """Official summary metrics for Gate 3 evaluation."""
 
@@ -66,6 +75,9 @@ class EvaluationMetricSummary:
     precision: float
     recall: float
     gate_3_pass: bool
+    host_exhaustive_fact_count: int = 0
+    matched_host_exhaustive_fact_count: int = 0
+    missing_host_exhaustive_fact_count: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         """Convert metrics to dictionary."""
@@ -159,11 +171,11 @@ class SystemEvaluatorV3:
             )
             self.golden_by_key_and_spans[(p["semantic_key"], sig)] = p["id"]
 
-    def evaluate_assessment(
+    def extract_candidate_items(
         self,
         assessment: SystemAssessment | dict[str, Any],
-    ) -> tuple[EvaluationMetricSummary, list[EvaluatedPrediction]]:
-        """Evaluate a model assessment against the support index and golden dataset."""
+    ) -> list[tuple[SystemAtomicFact, dict[str, EvidenceSpan]]]:
+        """Extract atomic facts and evidence spans from a SystemAssessment."""
         if isinstance(assessment, dict):
             raw_payload = assessment
         elif hasattr(assessment, "model_dump"):
@@ -534,11 +546,75 @@ class SystemEvaluatorV3:
             }
             candidate_items.append((f_dsc, spans))
 
+        return candidate_items
+
+    def extract_host_exhaustive_obligations(self) -> set[CanonicalExhaustiveObligation]:
+        """Extract canonical exhaustive obligations from host support index."""
+        obligations: set[CanonicalExhaustiveObligation] = set()
+        for sf in self.support_index.get_all_facts():
+            if self.category_policies.get(sf.fact.fact_category) == "REQUIRED_EXHAUSTIVE":
+                canon_spans = tuple(
+                    sorted(
+                        (
+                            role_name,
+                            self._canonicalize_path(span.file_path),
+                            span.line_start,
+                            span.line_end,
+                        )
+                        for role_name, span in sf.evidence_spans.items()
+                    )
+                )
+                obligations.add(
+                    CanonicalExhaustiveObligation(
+                        fact_category=sf.fact.fact_category,
+                        fact=sf.fact,
+                        evidence_spans=canon_spans,
+                    )
+                )
+        return obligations
+
+    def extract_exhaustive_obligations_from_assessment(
+        self,
+        assessment: SystemAssessment | dict[str, Any],
+    ) -> set[CanonicalExhaustiveObligation]:
+        """Extract canonical exhaustive obligations from an assessment."""
+        candidate_items = self.extract_candidate_items(assessment)
+        obligations: set[CanonicalExhaustiveObligation] = set()
+        for fact, spans in candidate_items:
+            if self.category_policies.get(fact.fact_category) == "REQUIRED_EXHAUSTIVE":
+                canon_spans = tuple(
+                    sorted(
+                        (
+                            role_name,
+                            self._canonicalize_path(span.file_path),
+                            span.line_start,
+                            span.line_end,
+                        )
+                        for role_name, span in spans.items()
+                    )
+                )
+                obligations.add(
+                    CanonicalExhaustiveObligation(
+                        fact_category=fact.fact_category,
+                        fact=fact,
+                        evidence_spans=canon_spans,
+                    )
+                )
+        return obligations
+
+    def evaluate_assessment(
+        self,
+        assessment: SystemAssessment | dict[str, Any],
+    ) -> tuple[EvaluationMetricSummary, list[EvaluatedPrediction]]:
+        """Evaluate a model assessment against the support index and golden dataset."""
+        candidate_items = self.extract_candidate_items(assessment)
+
         # Evaluation counters
         evaluated_predictions: list[EvaluatedPrediction] = []
         seen_assertions: set[str] = set()
         seen_supported_assertions: set[str] = set()
         matched_golden_ids: set[str] = set()
+        covered_host_exhaustive_obligations: set[CanonicalExhaustiveObligation] = set()
         supported_count = 0
         unsupported_count = 0
         invalid_evidence_count = 0
@@ -638,6 +714,25 @@ class SystemEvaluatorV3:
             if is_supp and matched_sf:
                 supported_count += 1
                 seen_supported_assertions.add(span_sig)
+                if self.category_policies.get(fact.fact_category) == "REQUIRED_EXHAUSTIVE":
+                    matched_canon_spans = tuple(
+                        sorted(
+                            (
+                                role_name,
+                                self._canonicalize_path(s.file_path),
+                                s.line_start,
+                                s.line_end,
+                            )
+                            for role_name, s in matched_sf.evidence_spans.items()
+                        )
+                    )
+                    covered_host_exhaustive_obligations.add(
+                        CanonicalExhaustiveObligation(
+                            fact_category=matched_sf.fact.fact_category,
+                            fact=matched_sf.fact,
+                            evidence_spans=matched_canon_spans,
+                        )
+                    )
                 matched_id = matched_sf.proposition_id
                 cand_sig = tuple(
                     sorted(
@@ -688,6 +783,15 @@ class SystemEvaluatorV3:
         matched_expected_count = len(matched_required_golden_ids)
         missing_expected_count = self.expected_fact_count - matched_expected_count
 
+        host_exhaustive_obligations = self.extract_host_exhaustive_obligations()
+        host_exhaustive_fact_count = len(host_exhaustive_obligations)
+        matched_host_exhaustive_fact_count = len(
+            covered_host_exhaustive_obligations & host_exhaustive_obligations
+        )
+        missing_host_exhaustive_fact_count = (
+            host_exhaustive_fact_count - matched_host_exhaustive_fact_count
+        )
+
         precision = (
             supported_unique_count / unique_predicted_count if unique_predicted_count > 0 else 1.0
         )
@@ -704,6 +808,7 @@ class SystemEvaluatorV3:
             and invalid_evidence_count == 0
             and contradiction_count == 0
             and duplicate_count == 0
+            and missing_host_exhaustive_fact_count == 0
         )
 
         metrics = EvaluationMetricSummary(
@@ -720,6 +825,9 @@ class SystemEvaluatorV3:
             precision=precision,
             recall=recall,
             gate_3_pass=gate_3_pass,
+            host_exhaustive_fact_count=host_exhaustive_fact_count,
+            matched_host_exhaustive_fact_count=matched_host_exhaustive_fact_count,
+            missing_host_exhaustive_fact_count=missing_host_exhaustive_fact_count,
         )
 
         return metrics, evaluated_predictions

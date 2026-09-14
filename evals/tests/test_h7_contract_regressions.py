@@ -83,9 +83,13 @@ from src.cobol.system_atomic_facts import (
     SupportedSystemFact,
     canonicalize_picture,
 )
-from src.cobol.system_cobol_parser import SystemCobolParser
+from src.cobol.system_cobol_parser import ExecutionEffect, SystemCobolParser
 from src.cobol.system_support_index import SystemSupportIndex
-from src.validation.evaluator_v3 import SystemEvaluatorV3, load_golden_assessment
+from src.validation.evaluator_v3 import (
+    CanonicalExhaustiveObligation,
+    SystemEvaluatorV3,
+    load_golden_assessment,
+)
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 
@@ -5091,3 +5095,370 @@ def test_h7_5_a_f09_level_88_sentence_boundary_trailing_fragment() -> None:
     assert cert1.is_evaluation_blocked is True
     rec_facts1 = [f.fact for f in p1.supported_facts if isinstance(f.fact, RecordLayoutFact)]
     assert len(rec_facts1) == 0
+
+
+# ======================================================================
+# 18. H7.5-B: CONSERVATIVE CONTROL-FLOW EFFECT PROOF (F-02) REGRESSION SUITE
+# ======================================================================
+
+
+def test_h7_5_b_f02_real_fixture_continuation_proofs() -> None:
+    """F-02: Real fixture callee continuation proofs on INIT-DB, REPORT-GEN, TRANS-PROC."""
+    bundle = read_system_bundle(repo_root=REPO_ROOT)
+    parser = SystemCobolParser(bundle)
+    cert = parser.parse_system()
+    assert cert.unsupported_relevant_count == 0
+    assert cert.is_evaluation_blocked is False
+
+    units = {u.program_id: u for u in parser.compilation_units}
+    assert "INIT-DB" in units
+    assert "REPORT-GEN" in units
+    assert "TRANS-PROC" in units
+
+    # 1. INIT-DB: proved MUST_PROCESS_TERMINATE at STOP RUN (line 46)
+    eff_init, term_init = parser._prove_callee_continuation(units["INIT-DB"])
+    assert eff_init == ExecutionEffect.MUST_PROCESS_TERMINATE
+    assert term_init is not None
+    assert term_init.line_start == 46
+    assert term_init.verb == "STOP_RUN"
+
+    # 2. REPORT-GEN: proved MUST_PROCESS_TERMINATE at STOP RUN (line 57)
+    eff_rep, term_rep = parser._prove_callee_continuation(units["REPORT-GEN"])
+    assert eff_rep == ExecutionEffect.MUST_PROCESS_TERMINATE
+    assert term_rep is not None
+    assert term_rep.line_start == 57
+    assert term_rep.verb == "STOP_RUN"
+
+    # 3. TRANS-PROC: proved MUST_PROCESS_TERMINATE at STOP RUN (line 96)
+    eff_trans, term_trans = parser._prove_callee_continuation(units["TRANS-PROC"])
+    assert eff_trans == ExecutionEffect.MUST_PROCESS_TERMINATE
+    assert term_trans is not None
+    assert term_trans.line_start == 96
+    assert term_trans.verb == "STOP_RUN"
+
+    # Verify caller continuation facts emitted for BANK-MAIN
+    ccc_facts = [
+        f.fact
+        for f in parser.supported_facts
+        if isinstance(f.fact, CallerContinuationConstraintFact)
+    ]
+    ccc_map = {(f.caller_program, f.callee_program): f for f in ccc_facts}
+    assert ("BANK-MAIN", "INIT-DB") in ccc_map
+    assert ccc_map[("BANK-MAIN", "INIT-DB")].constraint_type == "PROCESS_TERMINATION_ON_CALL"
+    assert ("BANK-MAIN", "REPORT-GEN") in ccc_map
+    assert ccc_map[("BANK-MAIN", "REPORT-GEN")].constraint_type == "PROCESS_TERMINATION_ON_CALL"
+    assert ("BANK-MAIN", "TRANS-PROC") in ccc_map
+    assert ccc_map[("BANK-MAIN", "TRANS-PROC")].constraint_type == "PROCESS_TERMINATION_ON_CALL"
+
+
+def test_h7_5_b_f02_counterexample_a_callee_terminates_caller_dead_code() -> None:
+    """F-02 Counterexample A: Callee executes CALL 'HALT' (which terminates) then dead GOBACK.
+
+    Verifier must prove MUST_PROCESS_TERMINATE, never MUST_RETURN_TO_CALLER.
+    """
+    files = {
+        "CALLER.CBL": """       IDENTIFICATION DIVISION.
+       PROGRAM-ID. CALLER.
+       PROCEDURE DIVISION.
+           CALL 'CALLEE'
+           STOP RUN.
+""",
+        "CALLEE.CBL": """       IDENTIFICATION DIVISION.
+       PROGRAM-ID. CALLEE.
+       PROCEDURE DIVISION.
+           CALL 'HALT'
+           GOBACK.
+""",
+        "HALT.CBL": """       IDENTIFICATION DIVISION.
+       PROGRAM-ID. HALT.
+       PROCEDURE DIVISION.
+           STOP RUN.
+""",
+    }
+    parser = SystemCobolParser(_make_multi_file_bundle(files))
+    cert = parser.parse_system()
+    assert cert.unsupported_relevant_count == 0
+
+    units = {u.program_id: u for u in parser.compilation_units}
+    eff, term = parser._prove_callee_continuation(units["CALLEE"])
+    assert eff == ExecutionEffect.MUST_PROCESS_TERMINATE
+    assert term is not None
+    assert term.verb == "STOP_RUN"
+
+    ccc_facts = [
+        f.fact
+        for f in parser.supported_facts
+        if isinstance(f.fact, CallerContinuationConstraintFact)
+    ]
+    assert len(ccc_facts) >= 1
+    callee_fact = next(
+        f for f in ccc_facts if f.caller_program == "CALLER" and f.callee_program == "CALLEE"
+    )
+    assert callee_fact.constraint_type == "PROCESS_TERMINATION_ON_CALL"
+
+
+def test_h7_5_b_f02_counterexample_b_infinite_loop_fails_closed() -> None:
+    """F-02 Counterexample B: Unproven loop (PERFORM UNTIL 1 = 2) without progress fails closed."""
+    files = {
+        "CALLER.CBL": """       IDENTIFICATION DIVISION.
+       PROGRAM-ID. CALLER.
+       PROCEDURE DIVISION.
+           CALL 'LOOPPROG'
+           STOP RUN.
+""",
+        "LOOPPROG.CBL": """       IDENTIFICATION DIVISION.
+       PROGRAM-ID. LOOPPROG.
+       PROCEDURE DIVISION.
+           PERFORM UNTIL 1 = 2
+               DISPLAY 'SPINNING'
+           END-PERFORM.
+           STOP RUN.
+""",
+    }
+    parser = SystemCobolParser(_make_multi_file_bundle(files))
+    cert = parser.parse_system()
+    assert cert.unsupported_relevant_count >= 1
+    assert cert.is_evaluation_blocked is True
+
+
+def test_h7_5_b_f02_counterexample_c_dead_code_terminal_statement() -> None:
+    """F-02 Counterexample C: Consecutive STOP RUN statements.
+
+    First reachable STOP RUN must be selected as terminal evidence, not unreachable second.
+    """
+    files = {
+        "CALLER.CBL": """       IDENTIFICATION DIVISION.
+       PROGRAM-ID. CALLER.
+       PROCEDURE DIVISION.
+           CALL 'CALLEE'
+           STOP RUN.
+""",
+        "CALLEE.CBL": """       IDENTIFICATION DIVISION.
+       PROGRAM-ID. CALLEE.
+       PROCEDURE DIVISION.
+           STOP RUN.
+           STOP RUN.
+""",
+    }
+    parser = SystemCobolParser(_make_multi_file_bundle(files))
+    cert = parser.parse_system()
+    assert cert.unsupported_relevant_count == 0
+
+    units = {u.program_id: u for u in parser.compilation_units}
+    eff, term = parser._prove_callee_continuation(units["CALLEE"])
+    assert eff == ExecutionEffect.MUST_PROCESS_TERMINATE
+    assert term is not None
+    assert term.line_start == 4
+
+
+def test_h7_5_b_f02_counterexample_d_branch_disagreement_fails_closed() -> None:
+    """F-02 Counterexample D: Branch disagreement (one terminates, one continues) fails closed."""
+    files = {
+        "CALLER.CBL": """       IDENTIFICATION DIVISION.
+       PROGRAM-ID. CALLER.
+       PROCEDURE DIVISION.
+           CALL 'BRANCHPROG'
+           STOP RUN.
+""",
+        "BRANCHPROG.CBL": """       IDENTIFICATION DIVISION.
+       PROGRAM-ID. BRANCHPROG.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 WS-FLAG PIC X VALUE 'Y'.
+       PROCEDURE DIVISION.
+           IF WS-FLAG = 'Y'
+               STOP RUN
+           ELSE
+               GOBACK
+           END-IF.
+""",
+    }
+    parser = SystemCobolParser(_make_multi_file_bundle(files))
+    cert = parser.parse_system()
+    assert cert.unsupported_relevant_count >= 1
+    assert cert.is_evaluation_blocked is True
+
+
+def test_h7_5_b_f02_cyclic_calls_fail_closed() -> None:
+    """F-02: Cyclic calls (P1 calls P2, P2 calls P1) terminate CFG recursion and fail closed."""
+    files = {
+        "P1.CBL": """       IDENTIFICATION DIVISION.
+       PROGRAM-ID. P1.
+       PROCEDURE DIVISION.
+           CALL 'P2'
+           STOP RUN.
+""",
+        "P2.CBL": """       IDENTIFICATION DIVISION.
+       PROGRAM-ID. P2.
+       PROCEDURE DIVISION.
+           CALL 'P1'
+           STOP RUN.
+""",
+    }
+    parser = SystemCobolParser(_make_multi_file_bundle(files))
+    cert = parser.parse_system()
+    assert cert.unsupported_relevant_count >= 1
+    assert cert.is_evaluation_blocked is True
+
+
+# ======================================================================
+# 19. H7.5-B: SOURCE-DERIVED EXHAUSTIVE COMPLETENESS (F-10) REGRESSION SUITE
+# ======================================================================
+
+
+def test_h7_5_b_f10_frozen_fixture_preflight_parity() -> None:
+    """F-10: Preflight parity passes exactly for frozen legacy fixture (45/45)."""
+    bundle = read_system_bundle(repo_root=REPO_ROOT)
+    parser = SystemCobolParser(bundle)
+    facts = parser.get_supported_facts()
+    index = SystemSupportIndex(
+        facts, bundle, file_status_certificate=parser.file_status_certificate
+    )
+    evaluator = SystemEvaluatorV3(index)
+    golden = load_golden_assessment()
+
+    host_obs = evaluator.extract_host_exhaustive_obligations()
+    golden_obs = evaluator.extract_exhaustive_obligations_from_assessment(golden)
+
+    assert len(host_obs) == 45
+    assert len(golden_obs) == 45
+    assert host_obs == golden_obs
+
+    metrics, preds = evaluator.evaluate_assessment(golden)
+    assert metrics.gate_3_pass is True
+    assert metrics.host_exhaustive_fact_count == 45
+    assert metrics.matched_host_exhaustive_fact_count == 45
+    assert metrics.missing_host_exhaustive_fact_count == 0
+
+
+def test_h7_5_b_f10_canonical_exhaustive_obligation_exact_semantics() -> None:
+    """F-10: CanonicalExhaustiveObligation dataclass enforces exact role coordinates & facts."""
+    fact1 = CallEdgeFact(caller_program="A", target_program="B", call_mechanism="DYNAMIC")
+    fact2 = CallEdgeFact(caller_program="A", target_program="B", call_mechanism="STATIC")
+    spans1 = (("evidence", "src/cbl/A.CBL", 10, 10),)
+    spans2 = (("evidence", "src/cbl/A.CBL", 10, 11),)
+
+    ob1 = CanonicalExhaustiveObligation("CALL_EDGE", fact1, spans1)
+    ob1_same = CanonicalExhaustiveObligation("CALL_EDGE", fact1, spans1)
+    ob2 = CanonicalExhaustiveObligation("CALL_EDGE", fact2, spans1)
+    ob3 = CanonicalExhaustiveObligation("CALL_EDGE", fact1, spans2)
+
+    assert ob1 == ob1_same
+    assert hash(ob1) == hash(ob1_same)
+    assert ob1 != ob2
+    assert ob1 != ob3
+    s = {ob1, ob1_same, ob2, ob3}
+    assert len(s) == 3
+
+
+def _create_mutated_system_bundle(mutations: dict[str, str], tmp_path: Path) -> MultiSourceBundle:
+    """Create a temporary directory, apply mutations, and read legacy bundle."""
+    overlays: dict[str, str] = {}
+    for rel_path in (
+        "legacy/core-banking-system/ACCOUNTS.CPY",
+        "legacy/core-banking-system/ACCOUNTS.DAT",
+        "legacy/core-banking-system/BANK-MAIN.CBL",
+        "legacy/core-banking-system/INIT-DB.CBL",
+        "legacy/core-banking-system/REPORT-GEN.CBL",
+        "legacy/core-banking-system/TRANS-PROC.CBL",
+    ):
+        target_file = tmp_path / rel_path
+        target_file.parent.mkdir(parents=True, exist_ok=True)
+        if rel_path in mutations:
+            content = mutations[rel_path]
+        else:
+            orig = (REPO_ROOT / rel_path).resolve()
+            content = orig.read_text(encoding="utf-8")
+        target_file.write_text(content, encoding="utf-8")
+        overlays[rel_path] = content
+    return read_system_bundle(repo_root=tmp_path, overlays=overlays)
+
+
+def test_h7_5_b_f10_source_mutation_extra_call_fails_gate_3(tmp_path: Path) -> None:
+    """F-10: In-memory source mutation adding CALL 'EXTRA' fails Gate 3 with missing_host=2."""
+    orig_content = (REPO_ROOT / "legacy/core-banking-system/BANK-MAIN.CBL").read_text(
+        encoding="utf-8"
+    )
+    lines = orig_content.splitlines()
+    lines.append("           CALL 'EXTRA'.")
+    mutated_content = "\n".join(lines) + "\n"
+
+    mut_bundle = _create_mutated_system_bundle(
+        {"legacy/core-banking-system/BANK-MAIN.CBL": mutated_content}, tmp_path
+    )
+
+    parser = SystemCobolParser(mut_bundle)
+    facts = parser.get_supported_facts()
+    index = SystemSupportIndex(
+        facts, mut_bundle, file_status_certificate=parser.file_status_certificate
+    )
+    evaluator = SystemEvaluatorV3(index)
+    golden = load_golden_assessment()
+
+    host_obs = evaluator.extract_host_exhaustive_obligations()
+    assert len(host_obs) == 47
+
+    metrics, preds = evaluator.evaluate_assessment(golden)
+    assert metrics.host_exhaustive_fact_count == 47
+    assert metrics.matched_host_exhaustive_fact_count == 45
+    assert metrics.missing_host_exhaustive_fact_count == 2
+    assert metrics.gate_3_pass is False
+
+
+def test_h7_5_b_f10_source_mutation_file_binding_fails_gate_3(tmp_path: Path) -> None:
+    """F-10: In-memory source mutation adding SELECT EXTRA-FILE fails Gate 3."""
+    orig_content = (REPO_ROOT / "legacy/core-banking-system/INIT-DB.CBL").read_text(
+        encoding="utf-8"
+    )
+    lines = orig_content.splitlines()
+    lines[8] = "           SELECT EXTRA-FILE ASSIGN TO 'EXTRA.DAT' ORGANIZATION IS LINE SEQUENTIAL."
+    mutated_content = "\n".join(lines) + "\n"
+
+    mut_bundle = _create_mutated_system_bundle(
+        {"legacy/core-banking-system/INIT-DB.CBL": mutated_content}, tmp_path
+    )
+
+    parser = SystemCobolParser(mut_bundle)
+    facts = parser.get_supported_facts()
+    index = SystemSupportIndex(
+        facts, mut_bundle, file_status_certificate=parser.file_status_certificate
+    )
+    evaluator = SystemEvaluatorV3(index)
+    golden = load_golden_assessment()
+
+    host_obs = evaluator.extract_host_exhaustive_obligations()
+    assert len(host_obs) == 46
+
+    metrics, preds = evaluator.evaluate_assessment(golden)
+    assert metrics.host_exhaustive_fact_count == 46
+    assert metrics.matched_host_exhaustive_fact_count == 45
+    assert metrics.missing_host_exhaustive_fact_count == 1
+    assert metrics.gate_3_pass is False
+
+
+def test_h7_5_b_f10_runner_preflight_drift_detects_mismatch(tmp_path: Path) -> None:
+    """F-10: Preflight parity check detects drift when host obligations differ from golden."""
+    orig_content = (REPO_ROOT / "legacy/core-banking-system/BANK-MAIN.CBL").read_text(
+        encoding="utf-8"
+    )
+    lines = orig_content.splitlines()
+    lines.append("           CALL 'EXTRA'.")
+    mutated_content = "\n".join(lines) + "\n"
+
+    mut_bundle = _create_mutated_system_bundle(
+        {"legacy/core-banking-system/BANK-MAIN.CBL": mutated_content}, tmp_path
+    )
+
+    parser = SystemCobolParser(mut_bundle)
+    facts = parser.get_supported_facts()
+    index = SystemSupportIndex(
+        facts, mut_bundle, file_status_certificate=parser.file_status_certificate
+    )
+    evaluator = SystemEvaluatorV3(index)
+    golden = load_golden_assessment()
+
+    host_obs = evaluator.extract_host_exhaustive_obligations()
+    golden_obs = evaluator.extract_exhaustive_obligations_from_assessment(golden)
+
+    assert host_obs != golden_obs
+    assert len(host_obs - golden_obs) == 2

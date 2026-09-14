@@ -58,6 +58,14 @@ class StatementClassification(StrEnum):
     UNSUPPORTED_RELEVANT = "UNSUPPORTED_RELEVANT"
 
 
+class ExecutionEffect(StrEnum):
+    """Conservative execution continuation effect domain for Gate 3 Contract 3.5.3."""
+
+    MUST_PROCESS_TERMINATE = "MUST_PROCESS_TERMINATE"
+    MUST_RETURN_TO_CALLER = "MUST_RETURN_TO_CALLER"
+    UNKNOWN = "UNKNOWN"
+
+
 @dataclass(frozen=True)
 class ClassifiedStatement:
     """Represents a classified logical COBOL statement or structural header."""
@@ -2614,98 +2622,327 @@ class SystemCobolParser:
 
         return unit
 
-    def _prove_callee_continuation(self, callee_unit: ASTCompilationUnit) -> ASTTermination | None:
-        """Structural proof of unavoidable callee continuation outcome.
+    def _parse_procedural_cf_block(
+        self,
+        stmts: list[ClassifiedStatement],
+        start_idx: int = 0,
+        stop_verbs: set[str] | None = None,
+    ) -> tuple[list[Any], int]:
+        """Parse procedural statements into hierarchical control-flow blocks."""
+        if stop_verbs is None:
+            stop_verbs = set()
+        nodes: list[Any] = []
+        i = start_idx
+        while i < len(stmts):
+            s = stmts[i]
+            if s.verb in stop_verbs:
+                return nodes, i
+            if s.verb == "IF":
+                then_nodes, next_i = self._parse_procedural_cf_block(
+                    stmts, i + 1, {"ELSE", "END-IF"}
+                )
+                else_nodes: list[Any] = []
+                if next_i < len(stmts) and stmts[next_i].verb == "ELSE":
+                    else_nodes, next_i = self._parse_procedural_cf_block(
+                        stmts, next_i + 1, {"END-IF"}
+                    )
+                if next_i < len(stmts) and stmts[next_i].verb == "END-IF":
+                    next_i += 1
+                nodes.append(("IF", s, then_nodes, else_nodes))
+                i = next_i
+            elif s.verb == "PERFORM" and "UNTIL" in s.raw_text.upper():
+                body_nodes, next_i = self._parse_procedural_cf_block(stmts, i + 1, {"END-PERFORM"})
+                if next_i < len(stmts) and stmts[next_i].verb == "END-PERFORM":
+                    next_i += 1
+                nodes.append(("PERFORM_UNTIL", s, body_nodes))
+                i = next_i
+            elif s.verb == "READ":
+                at_end_nodes: list[Any] = []
+                not_at_end_nodes: list[Any] = []
+                cur_mode: str | None = None
+                next_i = i + 1
+                while next_i < len(stmts) and stmts[next_i].verb != "END-READ":
+                    v = stmts[next_i].verb
+                    if v == "AT":
+                        cur_mode = "AT_END"
+                        next_i += 1
+                    elif v == "NOT":
+                        cur_mode = "NOT_AT_END"
+                        next_i += 1
+                    else:
+                        sub_nodes, next_i = self._parse_procedural_cf_block(
+                            stmts, next_i, {"AT", "NOT", "END-READ"}
+                        )
+                        if cur_mode == "AT_END":
+                            at_end_nodes.extend(sub_nodes)
+                        elif cur_mode == "NOT_AT_END":
+                            not_at_end_nodes.extend(sub_nodes)
+                if next_i < len(stmts) and stmts[next_i].verb == "END-READ":
+                    next_i += 1
+                nodes.append(("READ", s, at_end_nodes, not_at_end_nodes))
+                i = next_i
+            elif s.verb == "EVALUATE":
+                when_blocks: list[list[Any]] = []
+                cur_when: list[Any] = []
+                next_i = i + 1
+                while next_i < len(stmts) and stmts[next_i].verb != "END-EVALUATE":
+                    v = stmts[next_i].verb
+                    if v == "WHEN":
+                        if cur_when:
+                            when_blocks.append(cur_when)
+                            cur_when = []
+                        next_i += 1
+                    else:
+                        sub_nodes, next_i = self._parse_procedural_cf_block(
+                            stmts, next_i, {"WHEN", "END-EVALUATE"}
+                        )
+                        cur_when.extend(sub_nodes)
+                if cur_when:
+                    when_blocks.append(cur_when)
+                if next_i < len(stmts) and stmts[next_i].verb == "END-EVALUATE":
+                    next_i += 1
+                nodes.append(("EVALUATE", s, when_blocks))
+                i = next_i
+            else:
+                nodes.append(("STMT", s))
+                i += 1
+        return nodes, i
 
-        Establishes that:
-        - no UNSUPPORTED_RELEVANT statements exist in the callee;
-        - no GO/GOTO statements exist;
-        - all ASTTermination nodes agree on their termination verb;
-        - control block nesting is balanced and depth is 0 at termination;
-        - the proving termination occurs at top-level and is the final
-          reachable executable procedural outcome.
+    def _verify_finite_loop_progress(
+        self, loop_stmt: ClassifiedStatement, body_nodes: list[Any]
+    ) -> bool:
+        """Verify that a PERFORM UNTIL loop has proven finite-progress semantics."""
+        m = re.search(
+            r"PERFORM\s+UNTIL\s+([A-Z0-9-]+)\s*=\s*['\"]([^'\"]+)['\"]",
+            loop_stmt.raw_text,
+            re.IGNORECASE,
+        )
+        if not m:
+            return False
+        flag_var = m.group(1).upper()
+        exit_val = m.group(2)
+
+        read_nodes = [n for n in body_nodes if n[0] == "READ"]
+        if len(read_nodes) != 1:
+            return False
+        rn = read_nodes[0]
+        at_end_stmts = [x[1] for x in rn[2] if x[0] == "STMT"]
+        has_flag_set = any(
+            s.verb == "MOVE" and f"MOVE '{exit_val}' TO {flag_var}" in s.raw_text.upper()
+            for s in at_end_stmts
+        )
+        if not has_flag_set:
+            return False
+        not_at_end_stmts = [x[1] for x in rn[3] if x[0] == "STMT"]
+        if any(s.verb == "MOVE" and flag_var in s.raw_text.upper() for s in not_at_end_stmts):
+            return False
+        return True
+
+    def _analyze_cf_nodes(
+        self,
+        nodes: list[Any],
+        callee_unit: ASTCompilationUnit,
+        call_stack: frozenset[str],
+    ) -> tuple[ExecutionEffect, ASTTermination | None]:
+        """Trace CFG nodes to conservatively determine execution effect."""
+        idx = 0
+        while idx < len(nodes):
+            node = nodes[idx]
+            kind = node[0]
+            if kind == "STMT":
+                s: ClassifiedStatement = node[1]
+                if s.classification == StatementClassification.UNSUPPORTED_RELEVANT:
+                    return ExecutionEffect.UNKNOWN, None
+                if s.verb in ("GO", "GOTO"):
+                    return ExecutionEffect.UNKNOWN, None
+                if s.verb == "STOP_RUN":
+                    ast_term = next(
+                        (
+                            t
+                            for t in callee_unit.statements
+                            if isinstance(t, ASTTermination)
+                            and t.line_start == s.line_start
+                            and t.verb == "STOP_RUN"
+                        ),
+                        None,
+                    )
+                    return ExecutionEffect.MUST_PROCESS_TERMINATE, ast_term
+                elif s.verb in ("GOBACK", "EXIT_PROGRAM"):
+                    ast_term = next(
+                        (
+                            t
+                            for t in callee_unit.statements
+                            if isinstance(t, ASTTermination)
+                            and t.line_start == s.line_start
+                            and t.verb in ("GOBACK", "EXIT_PROGRAM")
+                        ),
+                        None,
+                    )
+                    return ExecutionEffect.MUST_RETURN_TO_CALLER, ast_term
+                elif s.verb == "CALL":
+                    ast_call = next(
+                        (
+                            c
+                            for c in callee_unit.statements
+                            if isinstance(c, ASTCall) and c.line_start == s.line_start
+                        ),
+                        None,
+                    )
+                    if not ast_call or not ast_call.is_literal:
+                        return ExecutionEffect.UNKNOWN, None
+                    target = ast_call.target
+                    if target == "SYSTEM":
+                        idx += 1
+                        continue
+                    target_unit = next(
+                        (u for u in self.compilation_units if u.program_id == target),
+                        None,
+                    )
+                    if not target_unit or target in call_stack:
+                        return ExecutionEffect.UNKNOWN, None
+                    target_eff, target_t = self._prove_callee_continuation(
+                        target_unit, call_stack
+                    )
+                    if target_eff == ExecutionEffect.MUST_PROCESS_TERMINATE:
+                        return ExecutionEffect.MUST_PROCESS_TERMINATE, target_t
+                    elif target_eff == ExecutionEffect.MUST_RETURN_TO_CALLER:
+                        idx += 1
+                        continue
+                    else:
+                        return ExecutionEffect.UNKNOWN, None
+                elif s.verb in (
+                    "DISPLAY",
+                    "ACCEPT",
+                    "MOVE",
+                    "OPEN",
+                    "CLOSE",
+                    "WRITE",
+                    "ADD",
+                    "SUBTRACT",
+                ):
+                    idx += 1
+                    continue
+                else:
+                    return ExecutionEffect.UNKNOWN, None
+            elif kind == "IF":
+                then_nodes, else_nodes = node[2], node[3]
+                then_eff, then_t = self._analyze_cf_nodes(then_nodes, callee_unit, call_stack)
+                else_eff, else_t = (
+                    self._analyze_cf_nodes(else_nodes, callee_unit, call_stack)
+                    if else_nodes
+                    else (ExecutionEffect.MUST_RETURN_TO_CALLER, None)
+                )
+                both_term = (
+                    then_eff != ExecutionEffect.MUST_RETURN_TO_CALLER
+                    and else_eff != ExecutionEffect.MUST_RETURN_TO_CALLER
+                )
+                if both_term:
+                    if then_eff == else_eff:
+                        return then_eff, then_t
+                    return ExecutionEffect.UNKNOWN, None
+                neither_term = (
+                    then_eff == ExecutionEffect.MUST_RETURN_TO_CALLER
+                    and else_eff == ExecutionEffect.MUST_RETURN_TO_CALLER
+                )
+                if neither_term:
+                    idx += 1
+                    continue
+                rem_eff, rem_t = self._analyze_cf_nodes(nodes[idx + 1 :], callee_unit, call_stack)
+                target_term_eff = (
+                    then_eff if then_eff != ExecutionEffect.MUST_RETURN_TO_CALLER else else_eff
+                )
+                if rem_eff == target_term_eff:
+                    return rem_eff, rem_t
+                return ExecutionEffect.UNKNOWN, None
+            elif kind == "PERFORM_UNTIL":
+                loop_stmt, body_nodes = node[1], node[2]
+                if not self._verify_finite_loop_progress(loop_stmt, body_nodes):
+                    return ExecutionEffect.UNKNOWN, None
+                idx += 1
+                continue
+            elif kind == "READ":
+                at_end_eff, _ = self._analyze_cf_nodes(node[2], callee_unit, call_stack)
+                not_at_end_eff, _ = self._analyze_cf_nodes(node[3], callee_unit, call_stack)
+                if (
+                    at_end_eff != ExecutionEffect.MUST_RETURN_TO_CALLER
+                    or not_at_end_eff != ExecutionEffect.MUST_RETURN_TO_CALLER
+                ):
+                    if at_end_eff == not_at_end_eff:
+                        return at_end_eff, None
+                    return ExecutionEffect.UNKNOWN, None
+                idx += 1
+                continue
+            elif kind == "EVALUATE":
+                when_blocks = node[2]
+                branch_effects = [
+                    self._analyze_cf_nodes(wb, callee_unit, call_stack) for wb in when_blocks
+                ]
+                all_term = all(
+                    eff != ExecutionEffect.MUST_RETURN_TO_CALLER for eff, _ in branch_effects
+                )
+                if all_term:
+                    first_eff = branch_effects[0][0]
+                    if all(eff == first_eff for eff, _ in branch_effects):
+                        return first_eff, branch_effects[0][1]
+                    return ExecutionEffect.UNKNOWN, None
+                all_fall = all(
+                    eff == ExecutionEffect.MUST_RETURN_TO_CALLER for eff, _ in branch_effects
+                )
+                if all_fall:
+                    idx += 1
+                    continue
+                return ExecutionEffect.UNKNOWN, None
+            else:
+                return ExecutionEffect.UNKNOWN, None
+        return ExecutionEffect.MUST_RETURN_TO_CALLER, None
+
+    def _prove_callee_continuation(
+        self,
+        callee_unit: ASTCompilationUnit,
+        call_stack: frozenset[str] | None = None,
+    ) -> tuple[ExecutionEffect, ASTTermination | None]:
+        """Conservative control-flow effect proof of callee termination outcome.
+
+        Result domain:
+        - MUST_PROCESS_TERMINATE
+        - MUST_RETURN_TO_CALLER
+        - UNKNOWN
         """
+        curr_prog = callee_unit.program_id or ""
+        if call_stack is None:
+            call_stack = frozenset([curr_prog])
+        elif curr_prog in call_stack:
+            return ExecutionEffect.UNKNOWN, None
+        else:
+            call_stack = call_stack | {curr_prog}
+
         callee_stmts = [s for s in self.statements if s.file_path == callee_unit.file_path]
         if any(
             s.classification == StatementClassification.UNSUPPORTED_RELEVANT for s in callee_stmts
         ):
-            return None
+            return ExecutionEffect.UNKNOWN, None
 
         if any(s.verb in ("GO", "GOTO") for s in callee_stmts):
-            return None
+            return ExecutionEffect.UNKNOWN, None
 
-        term_stmts = [s for s in callee_unit.statements if isinstance(s, ASTTermination)]
-        if not term_stmts:
-            return None
+        proc_idx = next(
+            (
+                i
+                for i, s in enumerate(self.statements)
+                if s.file_path == callee_unit.file_path and s.verb == "PROCEDURE_DIVISION"
+            ),
+            None,
+        )
+        if proc_idx is None:
+            return ExecutionEffect.UNKNOWN, None
 
-        first_verb = term_stmts[0].verb
-        if any(t.verb != first_verb for t in term_stmts):
-            return None
-
-        # Track structural control depth
-        depth = 0
-        proving_term: ASTTermination | None = None
-        for s in callee_stmts:
-            if s.verb in ("IF", "EVALUATE"):
-                depth += 1
-            elif s.verb == "PERFORM" and "UNTIL" in s.raw_text.upper():
-                depth += 1
-            elif s.verb in ("END-IF", "END-EVALUATE", "END-PERFORM"):
-                depth -= 1
-                if depth < 0:
-                    return None
-            elif s.verb in ("STOP_RUN", "GOBACK", "EXIT_PROGRAM"):
-                if depth == 0:
-                    ast_t = next(
-                        (t for t in term_stmts if t.line_start == s.line_start),
-                        None,
-                    )
-                    if ast_t:
-                        proving_term = ast_t
-
-        if depth != 0 or proving_term is None:
-            return None
-
-        # Must be the final reachable executable outcome
-        exec_classes = (ASTCall, ASTMove, ASTFileOp, ASTArithmetic)
-        try:
-            proving_idx = callee_unit.statements.index(proving_term)
-            remaining_stmts = callee_unit.statements[proving_idx + 1 :]
-            if any(isinstance(r, exec_classes) for r in remaining_stmts):
-                return None
-        except ValueError:
-            return None
-
-        procedural_verbs = {
-            "DISPLAY",
-            "ACCEPT",
-            "PERFORM",
-            "IF",
-            "EVALUATE",
-            "WHEN",
-            "MOVE",
-            "CALL",
-            "OPEN",
-            "READ",
-            "WRITE",
-            "CLOSE",
-            "ADD",
-            "SUBTRACT",
-            "COMPUTE",
-            "MULTIPLY",
-            "DIVIDE",
-            "GO",
-            "GOTO",
-        }
-        after_stmts = [
+        prog_stmts = [
             s
-            for s in callee_stmts
-            if s.line_start > proving_term.line_end and s.verb in procedural_verbs
+            for s in self.statements[proc_idx + 1 :]
+            if s.file_path == callee_unit.file_path and s.verb != "PARAGRAPH_HEADER"
         ]
-        if after_stmts:
-            return None
-
-        return proving_term
+        nodes, _ = self._parse_procedural_cf_block(prog_stmts)
+        return self._analyze_cf_nodes(nodes, callee_unit, call_stack)
 
     # -----------------------------------------------------------------------
     # Generic Deterministic Fact Extraction (Zero Fixture Identifiers)
@@ -2823,11 +3060,11 @@ class SystemCobolParser:
                         )
 
                         # Caller continuation constraint
-                        callee_term = self._prove_callee_continuation(callee_unit)
-                        if callee_term:
+                        callee_effect, callee_term = self._prove_callee_continuation(callee_unit)
+                        if callee_effect != ExecutionEffect.UNKNOWN and callee_term is not None:
                             constraint_effect = (
                                 "PROCESS_TERMINATION_ON_CALL"
-                                if callee_term.verb == "STOP_RUN"
+                                if callee_effect == ExecutionEffect.MUST_PROCESS_TERMINATE
                                 else "RETURN_TO_CALLER"
                             )
                             self.supported_facts.append(
@@ -2863,7 +3100,10 @@ class SystemCobolParser:
                                         s.verb,
                                         s.raw_text,
                                         StatementClassification.UNSUPPORTED_RELEVANT,
-                                        "Unproven callee continuation outcome",
+                                        (
+                                            "Unproven callee continuation outcome "
+                                            f"({callee_effect.value})"
+                                        ),
                                     )
 
         # 3. File Bindings
