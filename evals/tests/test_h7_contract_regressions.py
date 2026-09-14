@@ -81,6 +81,7 @@ from src.cobol.system_atomic_facts import (
     RecordLayoutRelationFact,
     ResourceLifecycleFact,
     SupportedSystemFact,
+    TerminationSiteFact,
     canonicalize_picture,
 )
 from src.cobol.system_cobol_parser import ExecutionEffect, SystemCobolParser
@@ -5462,3 +5463,190 @@ def test_h7_5_b_f10_runner_preflight_drift_detects_mismatch(tmp_path: Path) -> N
 
     assert host_obs != golden_obs
     assert len(host_obs - golden_obs) == 2
+
+
+# ======================================================================
+# 20. H7.6-A: LOSSLESS OCCURRENCES & SEQUENTIAL CERTIFICATION (B-02 & M-01)
+# ======================================================================
+
+
+def test_h7_6_a_b02_lossless_support_index_duplicate_prop_ids(tmp_path: Path) -> None:
+    """B-02: Appending two distinct STOP RUNs preserves all distinct occurrences and obligations.
+
+    Evaluating old golden + only the later termination assertion (omitting earlier)
+    must yield missing_host_exhaustive_fact_count >= 1 and gate_3_pass == False.
+    """
+    orig_content = (REPO_ROOT / "legacy/core-banking-system/BANK-MAIN.CBL").read_text(
+        encoding="utf-8"
+    )
+    lines = orig_content.splitlines()
+    # Append two additional distinct STOP RUN lines
+    lines.append("           STOP RUN.")
+    lines.append("           DISPLAY 'UNREACHABLE'.")
+    lines.append("           STOP RUN.")
+    mutated_content = "\n".join(lines) + "\n"
+
+    mut_bundle = _create_mutated_system_bundle(
+        {"legacy/core-banking-system/BANK-MAIN.CBL": mutated_content}, tmp_path
+    )
+
+    parser = SystemCobolParser(mut_bundle)
+    facts = parser.get_supported_facts()
+    index = SystemSupportIndex(
+        facts, mut_bundle, file_status_certificate=parser.file_status_certificate
+    )
+
+    # 1. Total facts in parser == total facts in support index (lossless occurrences)
+    assert len(facts) == len(index.get_all_facts())
+    assert index.total_expected_facts == len(facts)
+
+    # Termination site occurrences for BANK-MAIN: original + 2 added = 3
+    bank_terms = [
+        sf
+        for sf in index.get_all_facts()
+        if isinstance(sf.fact, TerminationSiteFact) and sf.fact.program_id == "BANK-MAIN"
+    ]
+    assert len(bank_terms) == 3
+
+    # All distinct termination occurrences share the same proposition_id pattern
+    term_prop_ids = [sf.proposition_id for sf in bank_terms]
+    assert len(set(term_prop_ids)) == 1  # All share "prop.term.bank-main"
+
+    # get_facts_by_id returns all 3
+    assert len(index.get_facts_by_id(term_prop_ids[0])) == 3
+
+    # get_fact_by_id fails explicitly on ambiguous proposition ID
+    with pytest.raises(ValueError, match="Ambiguous proposition ID"):
+        index.get_fact_by_id(term_prop_ids[0])
+
+    # 2. Raw parser exhaustive obligations == support index exhaustive obligations
+    evaluator = SystemEvaluatorV3(index)
+    host_obs = evaluator.extract_host_exhaustive_obligations()
+
+    # Original 45 + 2 new termination site obligations = 47
+    assert len(host_obs) == 47
+
+    # 3. Evaluate old golden + ONLY the later new termination assertion, omitting earlier
+    golden = load_golden_assessment()
+    later_term = bank_terms[-1]  # The second appended STOP RUN
+    later_span = later_term.evidence_spans["evidence"]
+
+    golden.termination_sites.append(
+        TerminationSite(
+            program_id="BANK-MAIN",
+            statement_type="STOP_RUN",
+            evidence=SourceEvidence(
+                file_path=later_span.file_path,
+                line_start=later_span.line_start,
+                line_end=later_span.line_end,
+            ),
+        )
+    )
+
+    metrics, preds = evaluator.evaluate_assessment(golden)
+    # Earlier appended STOP RUN is omitted, so missing host exhaustive count must be >= 1
+    assert metrics.missing_host_exhaustive_fact_count == 1
+    assert metrics.gate_3_pass is False
+
+
+def test_h7_6_a_b02_exact_duplicate_host_integrity_check() -> None:
+    """B-02: Host integrity error raised if exact duplicate occurrence emitted with same coords."""
+    bundle = read_system_bundle(repo_root=REPO_ROOT)
+    fact = TerminationSiteFact(program_id="BANK-MAIN", statement_type="STOP_RUN")
+    spans = {"evidence": EvidenceSpan("legacy/core-banking-system/BANK-MAIN.CBL", 96, 96)}
+    sf1 = SupportedSystemFact(fact=fact, proposition_id="prop.term.bank-main", evidence_spans=spans)
+    sf2 = SupportedSystemFact(fact=fact, proposition_id="prop.term.bank-main", evidence_spans=spans)
+
+    index = SystemSupportIndex([sf1, sf2], bundle)
+    evaluator = SystemEvaluatorV3(index)
+
+    with pytest.raises(ValueError, match="Host-oracle integrity error"):
+        evaluator.extract_host_exhaustive_obligations()
+
+
+def test_h7_6_a_b02_system_support_index_occurrence_lookup_semantics() -> None:
+    """B-02: SystemSupportIndex lookup semantics for unique, ambiguous, and missing IDs."""
+    bundle = read_system_bundle(repo_root=REPO_ROOT)
+    f1 = TerminationSiteFact(program_id="A", statement_type="STOP_RUN")
+    f2 = TerminationSiteFact(program_id="B", statement_type="STOP_RUN")
+    f3 = TerminationSiteFact(program_id="C", statement_type="STOP_RUN")
+    sf1 = SupportedSystemFact(
+        fact=f1,
+        proposition_id="prop.term.same",
+        evidence_spans={
+            "evidence": EvidenceSpan("legacy/core-banking-system/BANK-MAIN.CBL", 10, 10)
+        },
+    )
+    sf2 = SupportedSystemFact(
+        fact=f2,
+        proposition_id="prop.term.same",
+        evidence_spans={
+            "evidence": EvidenceSpan("legacy/core-banking-system/BANK-MAIN.CBL", 20, 20)
+        },
+    )
+    sf3 = SupportedSystemFact(
+        fact=f3,
+        proposition_id="prop.term.unique",
+        evidence_spans={
+            "evidence": EvidenceSpan("legacy/core-banking-system/BANK-MAIN.CBL", 30, 30)
+        },
+    )
+
+    index = SystemSupportIndex([sf1, sf2, sf3], bundle)
+
+    # total_expected_facts is honest total occurrence count (3, not 2)
+    assert index.total_expected_facts == 3
+    assert len(index.get_all_facts()) == 3
+
+    # get_facts_by_id returns all occurrences
+    assert len(index.get_facts_by_id("prop.term.same")) == 2
+    assert len(index.get_facts_by_id("prop.term.unique")) == 1
+    assert len(index.get_facts_by_id("prop.term.missing")) == 0
+
+    # get_fact_by_id returns unique match
+    unique_match = index.get_fact_by_id("prop.term.unique")
+    assert unique_match is not None
+    assert unique_match.fact == f3
+
+    # get_fact_by_id returns None for missing ID
+    assert index.get_fact_by_id("prop.term.missing") is None
+
+    # get_fact_by_id raises on ambiguous ID
+    with pytest.raises(
+        ValueError, match="Ambiguous proposition ID: 'prop.term.same' has 2 occurrences"
+    ):
+        index.get_fact_by_id("prop.term.same")
+
+
+def test_h7_6_a_m01_organization_is_sequential_certification(tmp_path: Path) -> None:
+    """M-01: Deterministic parser certification for ORGANIZATION [IS] SEQUENTIAL."""
+    seq_src = """       IDENTIFICATION DIVISION.
+       PROGRAM-ID. TSEQ.
+       ENVIRONMENT DIVISION.
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+           SELECT SEQ-FILE ASSIGN TO 'SEQDATA.DAT'
+               ORGANIZATION IS SEQUENTIAL.
+       DATA DIVISION.
+       FILE SECTION.
+       FD SEQ-FILE.
+       01 SEQ-REC PIC X(10).
+       PROCEDURE DIVISION.
+           STOP RUN.
+"""
+    mut_bundle = _create_mutated_system_bundle(
+        {"legacy/core-banking-system/INIT-DB.CBL": seq_src}, tmp_path
+    )
+    parser = SystemCobolParser(mut_bundle)
+    cert = parser.parse_system()
+    assert cert.unsupported_relevant_count == 0
+    assert cert.is_evaluation_blocked is False
+
+    fb_facts = [
+        sf.fact
+        for sf in parser.supported_facts
+        if isinstance(sf.fact, FileBindingFact) and sf.fact.internal_file_name == "SEQ-FILE"
+    ]
+    assert len(fb_facts) == 1
+    assert fb_facts[0].organization == "SEQUENTIAL"
+    assert fb_facts[0].external_file_name == "SEQDATA.DAT"

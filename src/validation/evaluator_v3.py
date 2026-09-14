@@ -564,13 +564,17 @@ class SystemEvaluatorV3:
                         for role_name, span in sf.evidence_spans.items()
                     )
                 )
-                obligations.add(
-                    CanonicalExhaustiveObligation(
-                        fact_category=sf.fact.fact_category,
-                        fact=sf.fact,
-                        evidence_spans=canon_spans,
-                    )
+                ob = CanonicalExhaustiveObligation(
+                    fact_category=sf.fact.fact_category,
+                    fact=sf.fact,
+                    evidence_spans=canon_spans,
                 )
+                if ob in obligations:
+                    raise ValueError(
+                        f"Host-oracle integrity error: exact duplicate occurrence emitted twice "
+                        f"with same structured fact and evidence coordinates: {ob}"
+                    )
+                obligations.add(ob)
         return obligations
 
     def extract_exhaustive_obligations_from_assessment(

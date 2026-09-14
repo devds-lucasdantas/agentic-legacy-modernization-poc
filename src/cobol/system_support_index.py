@@ -29,13 +29,14 @@ class SystemSupportIndex:
     ) -> None:
         self.bundle = bundle
         self.file_status_certificate = file_status_certificate
-        self._facts_by_prop_id: dict[str, SupportedSystemFact] = {}
+        self._all_facts: tuple[SupportedSystemFact, ...] = tuple(supported_facts)
+        self._facts_by_prop_id: dict[str, list[SupportedSystemFact]] = {}
         self._facts_by_semantic_key: dict[str, list[SupportedSystemFact]] = {}
         self._facts_by_file: dict[str, list[SupportedSystemFact]] = {}
 
-        for sf in supported_facts:
+        for sf in self._all_facts:
             prop_id = sf.proposition_id
-            self._facts_by_prop_id[prop_id] = sf
+            self._facts_by_prop_id.setdefault(prop_id, []).append(sf)
 
             key = sf.fact.get_semantic_key()
             self._facts_by_semantic_key.setdefault(key, []).append(sf)
@@ -49,16 +50,32 @@ class SystemSupportIndex:
 
     @property
     def total_expected_facts(self) -> int:
-        """Total count of canonical golden propositions."""
-        return len(self._facts_by_prop_id)
+        """Total count of verified supported system fact occurrences."""
+        return len(self._all_facts)
 
     def get_all_facts(self) -> list[SupportedSystemFact]:
-        """Return all supported system facts."""
-        return list(self._facts_by_prop_id.values())
+        """Return all supported system fact occurrences."""
+        return list(self._all_facts)
+
+    def get_facts_by_id(self, proposition_id: str) -> list[SupportedSystemFact]:
+        """Look up all supported facts matching proposition ID."""
+        return list(self._facts_by_prop_id.get(proposition_id, []))
 
     def get_fact_by_id(self, proposition_id: str) -> SupportedSystemFact | None:
-        """Look up a supported fact by its canonical golden proposition ID."""
-        return self._facts_by_prop_id.get(proposition_id)
+        """Look up a supported fact by its canonical golden proposition ID.
+
+        Returns the item only when exactly one occurrence exists.
+        Fails explicitly if proposition ID is ambiguous (multiple occurrences).
+        """
+        matches = self._facts_by_prop_id.get(proposition_id, [])
+        if len(matches) > 1:
+            raise ValueError(
+                f"Ambiguous proposition ID: '{proposition_id}' has {len(matches)} occurrences. "
+                "Use get_facts_by_id() instead."
+            )
+        if not matches:
+            return None
+        return matches[0]
 
     def get_facts_for_file(self, file_path: str) -> list[SupportedSystemFact]:
         """Return all supported facts grounded in the specified file."""

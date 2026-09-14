@@ -1146,7 +1146,8 @@ class SystemCobolParser:
                         sel_valid = False
                         sel_reason = "Missing target literal after ASSIGN"
 
-                # ORGANIZATION [IS] LINE SEQUENTIAL is MANDATORY
+                org_val = "LINE_SEQUENTIAL"
+                # ORGANIZATION [IS] LINE SEQUENTIAL or SEQUENTIAL is MANDATORY
                 if sel_valid:
                     if idx < len(c_toks) and c_toks[idx].upper() == "ORGANIZATION":
                         idx += 1
@@ -1158,14 +1159,22 @@ class SystemCobolParser:
                             and c_toks[idx + 1].upper() == "SEQUENTIAL"
                         ):
                             idx += 2
+                            org_val = "LINE_SEQUENTIAL"
+                        elif idx < len(c_toks) and c_toks[idx].upper() == "SEQUENTIAL":
+                            idx += 1
+                            org_val = "SEQUENTIAL"
                         else:
                             sel_valid = False
                             sel_reason = (
-                                "Unsupported file organization (only LINE SEQUENTIAL supported)"
+                                "Unsupported file organization "
+                                "(only LINE SEQUENTIAL and SEQUENTIAL supported)"
                             )
                     else:
                         sel_valid = False
-                        sel_reason = "Missing mandatory ORGANIZATION IS LINE SEQUENTIAL clause"
+                        sel_reason = (
+                            "Missing mandatory ORGANIZATION clause "
+                            "(LINE SEQUENTIAL or SEQUENTIAL required)"
+                        )
 
                 # Optional FILE STATUS [IS] <identifier>
                 if sel_valid and idx < len(c_toks) and c_toks[idx].upper() == "FILE":
@@ -1214,7 +1223,7 @@ class SystemCobolParser:
                     ASTFileBinding(
                         internal_file_name=internal_name,
                         external_file_name=assign_target,
-                        organization="LINE_SEQUENTIAL",
+                        organization=org_val,
                         has_file_status=has_status,
                         line_start=start_l,
                         line_end=end_l,
@@ -2800,9 +2809,7 @@ class SystemCobolParser:
                     )
                     if not target_unit or target in call_stack:
                         return ExecutionEffect.UNKNOWN, None
-                    target_eff, target_t = self._prove_callee_continuation(
-                        target_unit, call_stack
-                    )
+                    target_eff, target_t = self._prove_callee_continuation(target_unit, call_stack)
                     if target_eff == ExecutionEffect.MUST_PROCESS_TERMINATE:
                         return ExecutionEffect.MUST_PROCESS_TERMINATE, target_t
                     elif target_eff == ExecutionEffect.MUST_RETURN_TO_CALLER:
