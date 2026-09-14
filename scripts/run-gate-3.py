@@ -142,6 +142,48 @@ class AttemptClaimCollisionError(RuntimeError):
     """Raised when an attempt claim file already exists, indicating attempt consumed."""
 
 
+class FailureFinalizationResult:
+    """Outcome of centralized post-invocation failure finalization (H-07 / H-08)."""
+
+    def __init__(
+        self,
+        sealed: bool,
+        reservation_updated: bool,
+        status: str,
+        error_phase: str,
+        verified_artifacts: dict[str, str] | None = None,
+        failure_details: list[dict[str, str]] | None = None,
+    ) -> None:
+        self.sealed = sealed
+        self.reservation_updated = reservation_updated
+        self.status = status
+        self.error_phase = error_phase
+        self.verified_artifacts = verified_artifacts if verified_artifacts is not None else {}
+        self.failure_details = failure_details if failure_details is not None else []
+
+    def __repr__(self) -> str:
+        return (
+            f"FailureFinalizationResult(sealed={self.sealed!r}, "
+            f"reservation_updated={self.reservation_updated!r}, "
+            f"status={self.status!r}, "
+            f"error_phase={self.error_phase!r}, "
+            f"verified_artifacts={self.verified_artifacts!r}, "
+            f"failure_details={self.failure_details!r})"
+        )
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, FailureFinalizationResult):
+            return NotImplemented
+        return (
+            self.sealed == other.sealed
+            and self.reservation_updated == other.reservation_updated
+            and self.status == other.status
+            and self.error_phase == other.error_phase
+            and self.verified_artifacts == other.verified_artifacts
+            and self.failure_details == other.failure_details
+        )
+
+
 def acquire_atomic_attempt_claim(
     artifact_dir: Path,
     gate: int,
@@ -1203,13 +1245,13 @@ def finalize_post_model_failure(
     evaluated_predictions: Any | None = None,
     spec_sha: str | None = None,
     runtime_manifest_sha: str | None = None,
-) -> None:
+) -> FailureFinalizationResult:
     """Centralized post-invocation failure finalizer.
 
     Preserves all obtainable immutable evidence artifacts, writes terminal-result.json with
-    status=FAILED, generates manifest.json over preserved immutable artifacts, and finally
-    transitions reservation-state.json to FAILED.
-    Never propagates ordinary artifact-specific I/O failures.
+    status=FAILED, generates manifest.json over preserved immutable artifacts, performs
+    read-back verification (H-07), and transitions reservation-state.json to FAILED or
+    FAILED_UNSEALED (H-08 Case A / Case B).
     """
     try:
         artifact_dir.mkdir(parents=True, exist_ok=True)
@@ -1495,25 +1537,255 @@ def finalize_post_model_failure(
         artifact_dir / "manifest.json", manifest, is_json=True, failures=failures
     )
 
-    # 12. Only AFTER the failure evidence set is finalized: reservation-state.json -> FAILED
-    safe_preserve_artifact(
-        reservation_file,
-        {
-            "status": "FAILED",
-            "error_phase": error_phase,
-            "error_type": error_type,
-            "error_message": error_message,
-            "run_label": run_label,
-            "gate": 3,
-            "timestamp": datetime.now(UTC).isoformat(),
-            "candidate_git_sha": candidate_sha,
-            "authorization_commit_sha": authorization_commit_sha,
-            "git_commit_sha": authorized_sha,
-            "response_id": response_id,
-            "response_model_id": response_model_id,
-        },
-        is_json=True,
-        failures=failures,
+    # 12. READ-BACK VERIFICATION of sealed failure evidence (H-07)
+    verification_errors: list[dict[str, str]] = []
+    verified_artifacts: dict[str, str] = {}
+    is_sealed = False
+
+    term_path = artifact_dir / TERMINAL_RESULT_FILE
+    man_path = artifact_dir / "manifest.json"
+
+    try:
+        if not term_path.is_file():
+            verification_errors.append(
+                {"file": TERMINAL_RESULT_FILE, "error": "File does not exist on disk"}
+            )
+        else:
+            term_data = json.loads(term_path.read_text(encoding="utf-8"))
+            if not isinstance(term_data, dict):
+                verification_errors.append(
+                    {"file": TERMINAL_RESULT_FILE, "error": "Not a JSON object"}
+                )
+            else:
+                if term_data.get("status") != "FAILED":
+                    verification_errors.append(
+                        {
+                            "file": TERMINAL_RESULT_FILE,
+                            "error": f"status='{term_data.get('status')}', expected 'FAILED'",
+                        }
+                    )
+                if term_data.get("run_label") != run_label:
+                    verification_errors.append(
+                        {
+                            "file": TERMINAL_RESULT_FILE,
+                            "error": (
+                                f"run_label='{term_data.get('run_label')}', expected '{run_label}'"
+                            ),
+                        }
+                    )
+                if term_data.get("candidate_git_sha") != candidate_sha:
+                    verification_errors.append(
+                        {"file": TERMINAL_RESULT_FILE, "error": "candidate_git_sha mismatch"}
+                    )
+                if term_data.get("error_phase") != error_phase:
+                    verification_errors.append(
+                        {
+                            "file": TERMINAL_RESULT_FILE,
+                            "error": (
+                                f"error_phase='{term_data.get('error_phase')}', "
+                                f"expected '{error_phase}'"
+                            ),
+                        }
+                    )
+
+        if not man_path.is_file():
+            verification_errors.append(
+                {"file": "manifest.json", "error": "File does not exist on disk"}
+            )
+        else:
+            man_data = json.loads(man_path.read_text(encoding="utf-8"))
+            if not isinstance(man_data, dict):
+                verification_errors.append({"file": "manifest.json", "error": "Not a JSON object"})
+            else:
+                if man_data.get("status") != "FAILED":
+                    verification_errors.append(
+                        {
+                            "file": "manifest.json",
+                            "error": f"status='{man_data.get('status')}', expected 'FAILED'",
+                        }
+                    )
+                if man_data.get("run_label") != run_label:
+                    verification_errors.append(
+                        {
+                            "file": "manifest.json",
+                            "error": (
+                                f"run_label='{man_data.get('run_label')}', expected '{run_label}'"
+                            ),
+                        }
+                    )
+                if man_data.get("candidate_git_sha") != candidate_sha:
+                    verification_errors.append(
+                        {"file": "manifest.json", "error": "candidate_git_sha mismatch"}
+                    )
+
+                man_arts = man_data.get("artifacts")
+                if not isinstance(man_arts, dict):
+                    verification_errors.append(
+                        {"file": "manifest.json", "error": "manifest.artifacts is not a dictionary"}
+                    )
+                else:
+                    if TERMINAL_RESULT_FILE not in man_arts:
+                        verification_errors.append(
+                            {
+                                "file": "manifest.json",
+                                "error": f"Missing {TERMINAL_RESULT_FILE} in manifest artifacts",
+                            }
+                        )
+                    # Check required artifacts by failure phase
+                    if raw_response_content is not None and "raw-response.json" not in man_arts:
+                        verification_errors.append(
+                            {
+                                "file": "manifest.json",
+                                "error": "Missing raw-response.json for post-model failure",
+                            }
+                        )
+                    if (
+                        metadata is not None or (artifact_dir / "run-metadata.json").is_file()
+                    ) and "run-metadata.json" not in man_arts:
+                        verification_errors.append(
+                            {
+                                "file": "manifest.json",
+                                "error": "Missing run-metadata.json in manifest artifacts",
+                            }
+                        )
+
+                    # Verify actual bytes on disk against recorded SHA-256
+                    for art_name, expected_sha in man_arts.items():
+                        art_file = artifact_dir / art_name
+                        if not art_file.is_file():
+                            verification_errors.append(
+                                {"file": art_name, "error": "Manifested artifact missing from disk"}
+                            )
+                        else:
+                            try:
+                                actual_sha = hashlib.sha256(art_file.read_bytes()).hexdigest()
+                                if actual_sha != expected_sha:
+                                    verification_errors.append(
+                                        {
+                                            "file": art_name,
+                                            "error": (
+                                                f"SHA mismatch: actual={actual_sha}, "
+                                                f"manifest={expected_sha}"
+                                            ),
+                                        }
+                                    )
+                                else:
+                                    verified_artifacts[art_name] = actual_sha
+                            except Exception as read_err:
+                                verification_errors.append(
+                                    {
+                                        "file": art_name,
+                                        "error": f"Failed reading artifact bytes: {read_err}",
+                                    }
+                                )
+
+        if not verification_errors:
+            is_sealed = True
+    except Exception as verif_err:
+        verification_errors.append({"file": "verification_exception", "error": str(verif_err)})
+
+    # 13. Transition reservation-state.json (H-08 Case A vs Case B)
+    reservation_updated = False
+    final_status = "FAILED" if is_sealed else "FAILED_UNSEALED"
+
+    if is_sealed:
+        # Evidence successfully sealed. Attempt to write FAILED to reservation-state.json.
+        res_write_ok = False
+        try:
+            atomic_write_json(
+                reservation_file,
+                {
+                    "status": "FAILED",
+                    "error_phase": error_phase,
+                    "error_type": error_type,
+                    "error_message": error_message,
+                    "run_label": run_label,
+                    "gate": 3,
+                    "timestamp": datetime.now(UTC).isoformat(),
+                    "candidate_git_sha": candidate_sha,
+                    "authorization_commit_sha": authorization_commit_sha,
+                    "git_commit_sha": authorized_sha,
+                    "response_id": response_id,
+                    "response_model_id": response_model_id,
+                },
+            )
+            if reservation_file.is_file():
+                check_res = json.loads(reservation_file.read_text(encoding="utf-8"))
+                if check_res.get("status") == "FAILED":
+                    res_write_ok = True
+                    reservation_updated = True
+        except Exception as res_err:
+            failures.append({"file": RESERVATION_STATE_FILE, "error": str(res_err)})
+
+        if not res_write_ok:
+            # Case A: Evidence sealed, but writing reservation status FAILED failed!
+            final_status = "COORDINATION_FAILURE"
+            try:
+                atomic_write_json(
+                    artifact_dir / "coordination-failure.json",
+                    {
+                        "status": "SEALED_RESERVATION_UPDATE_FAILED",
+                        "error_phase": error_phase,
+                        "error_message": error_message,
+                        "evidence_sealed": True,
+                        "timestamp": datetime.now(UTC).isoformat(),
+                        "run_label": run_label,
+                        "candidate_git_sha": candidate_sha,
+                    },
+                )
+            except Exception:
+                pass
+    else:
+        # Case B: Evidence failed to seal! Status must be FAILED_UNSEALED.
+        final_status = "FAILED_UNSEALED"
+        try:
+            atomic_write_json(
+                reservation_file,
+                {
+                    "status": "FAILED_UNSEALED",
+                    "error_phase": error_phase,
+                    "error_type": error_type,
+                    "error_message": error_message,
+                    "run_label": run_label,
+                    "gate": 3,
+                    "timestamp": datetime.now(UTC).isoformat(),
+                    "candidate_git_sha": candidate_sha,
+                    "authorization_commit_sha": authorization_commit_sha,
+                    "git_commit_sha": authorized_sha,
+                    "verification_errors": verification_errors,
+                },
+            )
+            if reservation_file.is_file():
+                check_res = json.loads(reservation_file.read_text(encoding="utf-8"))
+                if check_res.get("status") == "FAILED_UNSEALED":
+                    reservation_updated = True
+        except Exception as res_err:
+            failures.append({"file": RESERVATION_STATE_FILE, "error": str(res_err)})
+
+        try:
+            atomic_write_json(
+                artifact_dir / "coordination-failure.json",
+                {
+                    "status": "EVIDENCE_SEALING_FAILED",
+                    "error_phase": error_phase,
+                    "error_message": error_message,
+                    "verification_errors": verification_errors,
+                    "evidence_sealed": False,
+                    "timestamp": datetime.now(UTC).isoformat(),
+                    "run_label": run_label,
+                    "candidate_git_sha": candidate_sha,
+                },
+            )
+        except Exception:
+            pass
+
+    return FailureFinalizationResult(
+        sealed=is_sealed,
+        reservation_updated=reservation_updated,
+        status=final_status,
+        error_phase=error_phase,
+        verified_artifacts=verified_artifacts,
+        failure_details=failures + verification_errors,
     )
 
 
@@ -1545,6 +1817,17 @@ def execute_internal_child(args: argparse.Namespace) -> int:
     is_live = not (args.synthetic or args.dry_run)
     is_official_live = is_live and not args.allow_dirty
     reservation_file = artifact_dir / RESERVATION_STATE_FILE
+
+    # Irrevocable attempt claim check: presence of claim forbids re-entry unconditionally (H-08)
+    claim_file = artifact_dir / ATTEMPT_CLAIM_FILE
+    if claim_file.exists():
+        print(
+            f"ERROR: Irrevocable attempt claim already exists: '{claim_file}'. "
+            f"Run label '{run_label}' has already consumed its execution attempt. "
+            "Refusing re-entry and prohibiting any model invocation.",
+            file=sys.stderr,
+        )
+        return 1
 
     if is_official_live:
         canonical_out = (provenance_repo / "artifacts" / "gate-3" / run_label).resolve()
@@ -1649,6 +1932,8 @@ def execute_internal_child(args: argparse.Namespace) -> int:
                         "POST_MODEL_RESPONSE",
                         "FINALIZING",
                         "FAILED",
+                        "FAILED_UNSEALED",
+                        "COORDINATION_FAILURE",
                         "COMPLETED",
                     ):
                         print(
@@ -2080,20 +2365,46 @@ def execute_internal_child(args: argparse.Namespace) -> int:
             return 1
 
         # Preflight and claim passed: persist MODEL_INVOCATION state
-        atomic_write_json(
-            reservation_file,
-            {
-                "status": "MODEL_INVOCATION",
-                "run_label": run_label,
-                "gate": 3,
-                "timestamp": datetime.now(UTC).isoformat(),
-                "candidate_git_sha": candidate_sha,
-                "authorization_commit_sha": authorization_commit_sha,
-                "git_commit_sha": authorized_sha,
-                "requested_model": spec["requested_model"],
-                "foundry_project_fingerprint": spec["foundry_project_fingerprint"],
-            },
-        )
+        try:
+            atomic_write_json(
+                reservation_file,
+                {
+                    "status": "MODEL_INVOCATION",
+                    "run_label": run_label,
+                    "gate": 3,
+                    "timestamp": datetime.now(UTC).isoformat(),
+                    "candidate_git_sha": candidate_sha,
+                    "authorization_commit_sha": authorization_commit_sha,
+                    "git_commit_sha": authorized_sha,
+                    "requested_model": spec["requested_model"],
+                    "foundry_project_fingerprint": spec["foundry_project_fingerprint"],
+                },
+            )
+        except Exception as res_err:
+            print(
+                f"ERROR: Failed to update reservation to MODEL_INVOCATION after claim: {res_err}",
+                file=sys.stderr,
+            )
+            finalize_post_model_failure(
+                artifact_dir=artifact_dir,
+                reservation_file=reservation_file,
+                error_phase="MODEL_INVOCATION_RESERVATION",
+                error=res_err,
+                spec=spec,
+                candidate_sha=candidate_sha,
+                authorization_commit_sha=authorization_commit_sha,
+                authorized_sha=authorized_sha,
+                run_label=run_label,
+                bundle=bundle,
+                parser=parser,
+                runtime_manifest=runtime_manifest,
+                metadata=None,
+                assessment=None,
+                raw_response_content=None,
+                spec_sha=spec_sha,
+                runtime_manifest_sha=runtime_manifest_sha,
+            )
+            return 1
 
         agent = SystemAnalyzerAgent(config=cfg, reasoning_effort=spec["reasoning_effort"])
 

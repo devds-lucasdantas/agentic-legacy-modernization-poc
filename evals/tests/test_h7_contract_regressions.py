@@ -6260,3 +6260,442 @@ def test_h7_6_c_m02_record_scope_layout_atomicity() -> None:
     assert rec2.fields[0].name == "WS-ACC"
     assert rec2.fields[1].name == "WS-BAL"
     assert rec2.fields[1].usage == "COMP-3"
+
+
+# ======================================================================
+# H7.6-D: POST-CLAIM FAILURE ENVELOPE & SEALED-EVIDENCE STATE MACHINE
+# Findings: H-07, H-08
+# ======================================================================
+
+
+def _get_run_gate_3_mod_h7_6_d() -> Any:
+    import importlib.util
+
+    repo_root = Path(__file__).resolve().parent.parent.parent
+    spec = importlib.util.spec_from_file_location(
+        "run_gate_3_module", repo_root / "scripts" / "run-gate-3.py"
+    )
+    if spec and spec.loader:
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+    raise ImportError("Failed to load scripts/run-gate-3.py")
+
+
+def test_h7_6_d_h07_read_back_verification_tamper_fails_to_unsealed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """H-07: Sealed-evidence state machine & read-back verification.
+
+    1. Clean failure verifies all manifested artifacts on disk, transitions
+       reservation-state.json to FAILED, and produces NO coordination-failure.json.
+    2. Tampered artifact on disk between manifest emission and read-back verification
+       is caught by byte-for-byte SHA256 check, setting sealed=False, status=FAILED_UNSEALED,
+       and emitting coordination-failure.json with evidence_sealed=False.
+    """
+    mod = _get_run_gate_3_mod_h7_6_d()
+
+    # Case 1: Clean failure path
+    clean_dir = tmp_path / "clean_failure"
+    clean_dir.mkdir(parents=True)
+    res_file = clean_dir / mod.RESERVATION_STATE_FILE
+    mod.atomic_write_json(
+        res_file,
+        {"status": "RESERVED", "gate": 3, "run_label": "clean-label"},
+    )
+
+    clean_res = mod.finalize_post_model_failure(
+        artifact_dir=clean_dir,
+        reservation_file=res_file,
+        error_phase="RESPONSE_PARSING",
+        error=ValueError("Invalid structured output"),
+        spec={"requested_model": "gpt-5-mini", "bundle_sha256": "abc"},
+        candidate_sha="cand_sha_clean",
+        authorization_commit_sha="auth_sha_clean",
+        authorized_sha="auth_sha_clean",
+        run_label="clean-label",
+        raw_response_content='{"bogus": 1}',
+    )
+
+    assert clean_res.sealed is True
+    assert clean_res.reservation_updated is True
+    assert clean_res.status == "FAILED"
+    assert clean_res.error_phase == "RESPONSE_PARSING"
+    assert not (clean_dir / "coordination-failure.json").exists()
+
+    res_data = json.loads(res_file.read_text(encoding="utf-8"))
+    assert res_data["status"] == "FAILED"
+    assert res_data["error_phase"] == "RESPONSE_PARSING"
+
+    manifest_data = json.loads((clean_dir / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest_data["status"] == "FAILED"
+    for art_name, exp_sha in manifest_data["artifacts"].items():
+        assert hashlib.sha256((clean_dir / art_name).read_bytes()).hexdigest() == exp_sha
+
+    # Case 2: Tampered artifact path (simulating byte corruption on disk)
+    tamper_dir = tmp_path / "tamper_failure"
+    tamper_dir.mkdir(parents=True)
+    res_file_tamper = tamper_dir / mod.RESERVATION_STATE_FILE
+    mod.atomic_write_json(
+        res_file_tamper,
+        {"status": "RESERVED", "gate": 3, "run_label": "tamper-label"},
+    )
+
+    orig_atomic_write = mod.atomic_write_json
+
+    def tamper_write_hook(target_path: Path, data: Any) -> None:
+        orig_atomic_write(target_path, data)
+        # When manifest.json is written, immediately tamper raw-response.json on disk
+        if Path(target_path).name == "manifest.json":
+            raw_file = tamper_dir / "raw-response.json"
+            if raw_file.is_file():
+                raw_file.write_bytes(raw_file.read_bytes() + b"\nTAMPERED_POST_MANIFEST")
+
+    monkeypatch.setattr(mod, "atomic_write_json", tamper_write_hook)
+
+    tamper_res = mod.finalize_post_model_failure(
+        artifact_dir=tamper_dir,
+        reservation_file=res_file_tamper,
+        error_phase="RESPONSE_PARSING",
+        error=ValueError("Invalid structured output"),
+        spec={"requested_model": "gpt-5-mini", "bundle_sha256": "abc"},
+        candidate_sha="cand_sha_tamper",
+        authorization_commit_sha="auth_sha_tamper",
+        authorized_sha="auth_sha_tamper",
+        run_label="tamper-label",
+        raw_response_content='{"bogus": 2}',
+    )
+
+    assert tamper_res.sealed is False
+    assert tamper_res.status == "FAILED_UNSEALED"
+    assert any("SHA mismatch" in item.get("error", "") for item in tamper_res.failure_details)
+
+    # Reservation file must be marked FAILED_UNSEALED
+    res_tamper_data = json.loads(res_file_tamper.read_text(encoding="utf-8"))
+    assert res_tamper_data["status"] == "FAILED_UNSEALED"
+    assert "verification_errors" in res_tamper_data
+
+    # coordination-failure.json must document evidence sealing failure
+    coord_file = tamper_dir / "coordination-failure.json"
+    assert coord_file.is_file()
+    coord_data = json.loads(coord_file.read_text(encoding="utf-8"))
+    assert coord_data["status"] == "EVIDENCE_SEALING_FAILED"
+    assert coord_data["evidence_sealed"] is False
+    assert len(coord_data["verification_errors"]) > 0
+
+
+def test_h7_6_d_h07_case_a_sealed_reservation_write_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """H-07 / H-08 Case A: Evidence sealed, but writing reservation state FAILED fails.
+
+    Verifies:
+    - Evidence artifacts are verified and sealed intact (sealed=True)
+    - Reservation update fails (reservation_updated=False)
+    - Status becomes COORDINATION_FAILURE
+    - coordination-failure.json is emitted with evidence_sealed=True
+    """
+    mod = _get_run_gate_3_mod_h7_6_d()
+
+    art_dir = tmp_path / "case_a_failure"
+    art_dir.mkdir(parents=True)
+    res_file = art_dir / mod.RESERVATION_STATE_FILE
+    mod.atomic_write_json(
+        res_file,
+        {"status": "RESERVED", "gate": 3, "run_label": "case-a-label"},
+    )
+
+    orig_atomic_write = mod.atomic_write_json
+
+    def fail_reservation_final_write(target_path: Path, data: Any) -> None:
+        if (
+            Path(target_path).name == mod.RESERVATION_STATE_FILE
+            and isinstance(data, dict)
+            and data.get("status") == "FAILED"
+        ):
+            raise OSError("Simulated disk I/O failure updating reservation state to FAILED")
+        orig_atomic_write(target_path, data)
+
+    monkeypatch.setattr(mod, "atomic_write_json", fail_reservation_final_write)
+
+    res = mod.finalize_post_model_failure(
+        artifact_dir=art_dir,
+        reservation_file=res_file,
+        error_phase="RESPONSE_VALIDATION",
+        error=RuntimeError("Response schema mismatch"),
+        spec={"requested_model": "gpt-5-mini", "bundle_sha256": "def"},
+        candidate_sha="cand_sha_case_a",
+        authorization_commit_sha="auth_sha_case_a",
+        authorized_sha="auth_sha_case_a",
+        run_label="case-a-label",
+        raw_response_content='{"valid": false}',
+    )
+
+    assert res.sealed is True
+    assert res.reservation_updated is False
+    assert res.status == "COORDINATION_FAILURE"
+
+    coord_file = art_dir / "coordination-failure.json"
+    assert coord_file.is_file()
+    coord_data = json.loads(coord_file.read_text(encoding="utf-8"))
+    assert coord_data["status"] == "SEALED_RESERVATION_UPDATE_FAILED"
+    assert coord_data["evidence_sealed"] is True
+
+    # Artifacts remain sealed and verified
+    manifest_data = json.loads((art_dir / "manifest.json").read_text(encoding="utf-8"))
+    for fname, exp_sha in manifest_data["artifacts"].items():
+        assert hashlib.sha256((art_dir / fname).read_bytes()).hexdigest() == exp_sha
+
+
+def test_h7_6_d_h08_attempt_claim_reentry_refusal_across_all_reservation_states(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """H-08: Irrevocable attempt claim presence refuses re-entry unconditionally.
+
+    Tests across reservation states:
+    1. RESERVED
+    2. FAILED_UNSEALED
+    3. MODEL_INVOCATION
+    4. FAILED
+    5. Missing reservation file
+    6. Corrupt / non-JSON reservation file
+
+    In all cases, child immediately refuses execution (code 1) with 0 provider calls.
+    """
+    from unittest.mock import MagicMock
+
+    mod = _get_run_gate_3_mod_h7_6_d()
+    repo_root = Path(__file__).resolve().parent.parent.parent
+
+    mock_agent = MagicMock()
+    mock_agent.invoke_raw.side_effect = AssertionError("Provider MUST NEVER be called!")
+
+    states_to_test: list[tuple[str, Any]] = [
+        ("reserved", {"status": "RESERVED", "gate": 3}),
+        ("failed_unsealed", {"status": "FAILED_UNSEALED", "gate": 3}),
+        ("model_invocation", {"status": "MODEL_INVOCATION", "gate": 3}),
+        ("failed", {"status": "FAILED", "gate": 3}),
+        ("missing", None),
+        ("corrupt", "NOT_VALID_JSON{{{"),
+    ]
+
+    for label_suffix, state_payload in states_to_test:
+        run_label = f"reentry-{label_suffix}"
+        art_dir = tmp_path / run_label
+        art_dir.mkdir(parents=True)
+
+        # Irrevocable attempt claim exists
+        claim_file = art_dir / mod.ATTEMPT_CLAIM_FILE
+        claim_file.write_text(
+            json.dumps({"gate": 3, "run_label": run_label, "attempt": 1}),
+            encoding="utf-8",
+        )
+
+        res_file = art_dir / mod.RESERVATION_STATE_FILE
+        if state_payload is not None:
+            if isinstance(state_payload, dict):
+                res_file.write_text(json.dumps(state_payload), encoding="utf-8")
+            else:
+                res_file.write_text(state_payload, encoding="utf-8")
+
+        args = argparse.Namespace(
+            provenance_repo=str(repo_root),
+            snapshot_dir=str(repo_root),
+            artifact_dir=str(art_dir),
+            auth_spec=str(repo_root / mod.DEFAULT_AUTH_SPEC_PATH),
+            run_label=run_label,
+            authorized_git_sha="dummy_authorized_sha",
+            authorization_commit_sha="dummy_auth_commit_sha",
+            golden_path=str(repo_root / mod.DEFAULT_GOLDEN_PATH),
+            synthetic=False,
+            dry_run=False,
+            allow_dirty=False,
+        )
+
+        with monkeypatch.context() as m:
+            m.setattr(mod, "is_isolated_python", lambda: True)
+            m.setattr(mod, "is_bytecode_writing_disabled", lambda: True)
+            m.setattr(
+                "agents.legacy_analyzer.system_agent.SystemAnalyzerAgent",
+                lambda *a, **kw: mock_agent,
+            )
+
+            exit_code = mod.execute_internal_child(args)
+            assert exit_code == 1
+            assert mock_agent.invoke_raw.call_count == 0
+
+
+def test_h7_6_d_h08_post_claim_reservation_write_failure_envelope(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """H-08: Failure to write MODEL_INVOCATION after claim acquisition.
+
+    Verifies:
+    - Irrevocable attempt claim is written
+    - Failure updating reservation to MODEL_INVOCATION is caught cleanly
+    - Routes to finalize_post_model_failure with error_phase=MODEL_INVOCATION_RESERVATION
+    - Seals terminal failure evidence
+    - Zero provider calls made
+    - Subsequent re-entry is refused
+    """
+    from unittest.mock import MagicMock
+
+    mod = _get_run_gate_3_mod_h7_6_d()
+    repo_root = Path(__file__).resolve().parent.parent.parent
+
+    run_label = "post-claim-fail"
+    art_dir = tmp_path / run_label
+    art_dir.mkdir(parents=True)
+    res_file = art_dir / mod.RESERVATION_STATE_FILE
+
+    # Initial state is RESERVED
+    mod.atomic_write_json(
+        res_file,
+        {
+            "status": "RESERVED",
+            "gate": 3,
+            "run_label": run_label,
+            "timestamp": "2026-09-14T00:00:00Z",
+            "candidate_git_sha": "cand_sha_pcf",
+            "authorization_commit_sha": "auth_sha_pcf",
+            "git_commit_sha": "cand_sha_pcf",
+        },
+    )
+
+    mock_agent = MagicMock()
+    mock_agent.invoke_raw.side_effect = AssertionError("Provider must NOT be called!")
+
+    mock_cfg = MagicMock()
+    mock_cfg.foundry_model = "gpt-5-mini"
+    mock_cfg.foundry_project_endpoint = "https://mock.foundry.endpoint"
+
+    golden_file = repo_root / mod.DEFAULT_GOLDEN_PATH
+    golden_sha = hashlib.sha256(golden_file.read_bytes()).hexdigest()
+
+    mock_spec = {
+        "gate": 3,
+        "spec_version": mod.SPEC_VERSION,
+        "schema_version": mod.SCHEMA_VERSION,
+        "prompt_version": mod.PROMPT_VERSION,
+        "evaluator_version": mod.EVALUATOR_VERSION,
+        "golden_dataset_version": mod.GOLDEN_DATASET_VERSION,
+        "requested_model": "gpt-5-mini",
+        "reasoning_effort": "low",
+        "max_attempts": 1,
+        "maximum_model_attempts": 1,
+        "openai_client_max_retries": 0,
+        "run_label": run_label,
+        "candidate_git_sha": "cand_sha_pcf",
+        "golden_dataset_sha256": golden_sha,
+        "bundle_sha256": "fake_bundle_sha",
+        "bundle_manifest_sha256": "fake_manifest_sha",
+        "foundry_project_fingerprint": "fake_fp_pcf",
+        "target_bundle_files": [
+            "legacy/core-banking-system/BANK-MAIN.CBL",
+            "legacy/core-banking-system/INIT-DB.CBL",
+            "legacy/core-banking-system/TRANS-PROC.CBL",
+            "legacy/core-banking-system/REPORT-GEN.CBL",
+            "legacy/core-banking-system/ACCOUNTS.CPY",
+            "legacy/core-banking-system/ACCOUNTS.DAT",
+        ],
+    }
+
+    orig_atomic_write = mod.atomic_write_json
+
+    def fail_model_invocation_write(target_path: Path, data: Any) -> None:
+        if (
+            Path(target_path).name == mod.RESERVATION_STATE_FILE
+            and isinstance(data, dict)
+            and data.get("status") == "MODEL_INVOCATION"
+        ):
+            raise OSError("Simulated atomic write failure for MODEL_INVOCATION")
+        orig_atomic_write(target_path, data)
+
+    args = argparse.Namespace(
+        provenance_repo=str(repo_root),
+        snapshot_dir=str(repo_root),
+        artifact_dir=str(art_dir),
+        auth_spec=str(repo_root / mod.DEFAULT_AUTH_SPEC_PATH),
+        run_label=run_label,
+        authorized_git_sha="cand_sha_pcf",
+        authorization_commit_sha="dummy_auth_sha",
+        golden_path=str(golden_file),
+        synthetic=False,
+        dry_run=False,
+        allow_dirty=True,
+    )
+
+    with monkeypatch.context() as m:
+        m.setattr(mod, "is_isolated_python", lambda: True)
+        m.setattr(mod, "is_bytecode_writing_disabled", lambda: True)
+        m.setattr(mod, "verify_trusted_runner_bootstrap", lambda *a, **kw: None)
+        m.setattr(mod, "verify_snapshot_against_git_objects", lambda *a, **kw: None)
+        m.setattr(mod, "validate_authorization_contract", lambda *a, **kw: None)
+        m.setattr(mod, "verify_clean_worktree", lambda *a, **kw: None)
+        m.setattr(mod, "verify_no_executable_overlays", lambda *a, **kw: None)
+        m.setattr(
+            mod,
+            "verify_bundle_integrity",
+            lambda *a, **kw: ([], "fake_bundle_sha", "fake_manifest_sha"),
+        )
+        m.setattr(mod, "verify_schema_and_prompt_hashes", lambda *a, **kw: None)
+        m.setattr(
+            mod,
+            "verify_runtime_environment",
+            lambda *a, **kw: ({"pkg": "1.0"}, "fake_runtime_sha"),
+        )
+        m.setattr(
+            mod,
+            "load_authorization_spec_from_git",
+            lambda *a, **kw: (mock_spec, "fake_spec_sha"),
+        )
+        m.setattr(
+            mod,
+            "load_authorization_spec",
+            lambda *a, **kw: (mock_spec, "fake_spec_sha"),
+        )
+        m.setattr("agents.legacy_analyzer.config.load_config", lambda: mock_cfg)
+        m.setattr(
+            "agents.legacy_analyzer.config.compute_foundry_project_fingerprint",
+            lambda *a, **kw: "fake_fp_pcf",
+        )
+        m.setattr(
+            "agents.legacy_analyzer.system_agent.SystemAnalyzerAgent",
+            lambda *a, **kw: mock_agent,
+        )
+        m.setattr(mod, "atomic_write_json", fail_model_invocation_write)
+
+        exit_code = mod.execute_internal_child(args)
+        assert exit_code == 1
+
+    # 1. Zero provider calls
+    assert mock_agent.invoke_raw.call_count == 0
+
+    # 2. Irrevocable claim exists
+    claim_file = art_dir / mod.ATTEMPT_CLAIM_FILE
+    assert claim_file.is_file()
+
+    # 3. Terminal result exists with error_phase MODEL_INVOCATION_RESERVATION
+    term_file = art_dir / mod.TERMINAL_RESULT_FILE
+    assert term_file.is_file()
+    term_data = json.loads(term_file.read_text(encoding="utf-8"))
+    assert term_data["status"] == "FAILED"
+    assert term_data["error_phase"] == "MODEL_INVOCATION_RESERVATION"
+    assert "Simulated atomic write failure" in term_data["error_message"]
+
+    # 4. Manifest exists and hashes match
+    manifest_file = art_dir / "manifest.json"
+    assert manifest_file.is_file()
+    man_data = json.loads(manifest_file.read_text(encoding="utf-8"))
+    assert man_data["status"] == "FAILED"
+    assert mod.TERMINAL_RESULT_FILE in man_data["artifacts"]
+    for art_name, exp_sha in man_data["artifacts"].items():
+        assert hashlib.sha256((art_dir / art_name).read_bytes()).hexdigest() == exp_sha
+
+    # 5. Subsequent re-entry refused by attempt claim check
+    with monkeypatch.context() as m:
+        m.setattr(mod, "is_isolated_python", lambda: True)
+        m.setattr(mod, "is_bytecode_writing_disabled", lambda: True)
+        reentry_exit = mod.execute_internal_child(args)
+        assert reentry_exit == 1
+        assert mock_agent.invoke_raw.call_count == 0
