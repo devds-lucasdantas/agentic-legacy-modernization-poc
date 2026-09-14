@@ -154,6 +154,7 @@ class ASTRecordDeclaration:
     line_end: int
     fields: list[ASTDataField] = field(default_factory=list)
     owning_fd: str | None = None
+    is_unsupported: bool = False
 
 
 @dataclass
@@ -495,31 +496,71 @@ class MutationCommandResult:
 
 
 class CommandDialect(StrEnum):
-    WINDOWS_CMD = "WINDOWS_CMD"
-    POSIX_SHELL = "POSIX_SHELL"
-    BARE_OR_OTHER = "BARE_OR_OTHER"
+    SUPPORTED_WINDOWS_CMD = "SUPPORTED_WINDOWS_CMD"
+    UNSUPPORTED_WRAPPER = "UNSUPPORTED_WRAPPER"
+    OTHER_COMMAND = "OTHER_COMMAND"
 
 
-def classify_command_dialect(cmd_text: str) -> tuple[CommandDialect, str]:
-    """Classify the command dialect and return (dialect, unwrapped_command)."""
+def classify_command_dialect(cmd_text: str) -> tuple[CommandDialect, str, str | None]:
+    """Classify the command dialect and return (dialect, unwrapped_command, error_reason)."""
     clean = cmd_text.strip()
-    m_win = re.match(r"^cmd(?:\.exe)?\s+/c\s+", clean, flags=re.IGNORECASE)
-    if m_win:
-        return CommandDialect.WINDOWS_CMD, clean[m_win.end() :].strip()
 
+    # 1. Lexical recognition of POSIX shell wrapper families (quoted, unquoted, bare, path-based)
     m_posix = re.match(
-        r"^(?:/(?:usr/)?bin/(?:ba)?sh|(?:ba)?sh)\s+-c\s+",
+        r'^(?:/(?:usr/)?bin/(?:ba)?sh|(?:ba)?sh|"(?:/(?:usr/)?bin/)?(?:ba)?sh"|\'(?:/(?:usr/)?bin/)?(?:ba)?sh\')(?:\s+(.*))?$',
         clean,
         flags=re.IGNORECASE,
     )
     if m_posix:
-        return CommandDialect.POSIX_SHELL, clean[m_posix.end() :].strip()
+        return (
+            CommandDialect.UNSUPPORTED_WRAPPER,
+            clean,
+            (
+                "POSIX shell wrapper establishes an unrepresentable "
+                "platform dependency outside Contract 3.5.3 frozen schema"
+            ),
+        )
 
-    return CommandDialect.BARE_OR_OTHER, clean
+    # 2. cmd.exe wrapper family
+    m_cmd = re.match(
+        r'^(?:cmd(?:\.exe)?|"cmd(?:\.exe)?"|\'cmd(?:\.exe)?\')(?:\s+(.*))?$',
+        clean,
+        flags=re.IGNORECASE,
+    )
+    if m_cmd:
+        args = (m_cmd.group(1) or "").strip()
+        if not args:
+            return (
+                CommandDialect.UNSUPPORTED_WRAPPER,
+                clean,
+                "Incomplete cmd.exe wrapper syntax (no arguments)",
+            )
+        m_c = re.match(r"^/c(?:\s+(.*))?$", args, flags=re.IGNORECASE)
+        if m_c:
+            inner = (m_c.group(1) or "").strip()
+            if not inner:
+                return (
+                    CommandDialect.UNSUPPORTED_WRAPPER,
+                    clean,
+                    "Incomplete cmd.exe wrapper syntax (/c without command)",
+                )
+            return (CommandDialect.SUPPORTED_WINDOWS_CMD, inner, None)
+        else:
+            return (
+                CommandDialect.UNSUPPORTED_WRAPPER,
+                clean,
+                f"Unsupported cmd.exe wrapper options: '{args}'",
+            )
+
+    return (CommandDialect.OTHER_COMMAND, clean, None)
 
 
 SHELL_METACHARACTERS: frozenset[str] = frozenset(
     {">", "<", "|", "&", "^", "%", "!", "*", "?", "(", ")"}
+)
+
+ALL_MUTATION_VERBS: frozenset[str] = frozenset(
+    {"del", "delete", "erase", "rm", "ren", "rename", "mv", "move", "copy", "cp"}
 )
 
 
@@ -529,10 +570,14 @@ def tokenize_windows_mutation_operands(text: str) -> tuple[bool, list[str], str 
     Supports unquoted operands and double-quote grouped operands ("...").
     Does NOT treat single quotes as Windows grouping quotes.
     Rejects shell metacharacters and wildcards (><|&^%!*?()).
-    Rejects lossy whitespace (consecutive spaces, boundary spaces).
+    Rejects non-ASCII characters, Unicode whitespace (NBSP, tabs, etc.),
+    consecutive spaces, and boundary whitespace.
     Returns (True, operands, None) on success.
     Returns (False, [], reason) on malformed quoting, invalid syntax, or metacharacters.
     """
+    if any(ord(c) >= 128 for c in text):
+        return False, [], "Non-ASCII character in mutation command text"
+
     for c in text:
         if c in SHELL_METACHARACTERS:
             return False, [], f"Shell metacharacter or wildcard '{c}' in mutation command text"
@@ -553,27 +598,24 @@ def tokenize_windows_mutation_operands(text: str) -> tuple[bool, list[str], str 
             while i < n and text[i] != '"':
                 i += 1
             if i >= n:
-                # Unclosed double quote
                 return False, [], "Unclosed double quote in mutation operand"
-            # Closing double quote at i
             i += 1
-            # Check trailing character after closing quote
             if i < n and not text[i].isspace():
-                # Attached unseparated characters, e.g. "file"xyz
                 return False, [], "Attached character after closing quote in mutation operand"
             raw = text[start:i]
             semantic = raw[1:-1]
             if not semantic:
-                # Empty filename operand
                 return False, [], "Empty filename operand in mutation command"
-            if re.search(r"\s{2,}", semantic):
+            if any(ord(c) >= 128 for c in semantic):
+                return False, [], "Non-ASCII character in mutation operand"
+            if any(c in "\t\r\n\u00a0" for c in semantic):
+                return False, [], "Unsupported whitespace in mutation operand"
+            if "  " in semantic:
                 return False, [], "Lossy whitespace in mutation operand: consecutive whitespace"
             if semantic != semantic.strip():
                 return False, [], "Lossy whitespace in mutation operand: boundary whitespace"
             operands.append(semantic)
         elif char == "'":
-            # Single quote in Windows cmd is not grouping syntax;
-            # Reject as unsupported mutation operand syntax
             return (
                 False,
                 [],
@@ -584,10 +626,19 @@ def tokenize_windows_mutation_operands(text: str) -> tuple[bool, list[str], str 
             start = i
             while i < n and not text[i].isspace():
                 if text[i] in ('"', "'"):
-                    # Stray quote inside word
                     return False, [], "Stray quote inside unquoted mutation operand"
                 i += 1
             raw = text[start:i]
+            if not raw:
+                return False, [], "Empty filename operand in mutation command"
+            if any(ord(c) >= 128 for c in raw):
+                return False, [], "Non-ASCII character in mutation operand"
+            if any(c in "\t\r\n\u00a0" for c in raw):
+                return False, [], "Unsupported whitespace in mutation operand"
+            if "  " in raw:
+                return False, [], "Lossy whitespace in mutation operand: consecutive whitespace"
+            if raw != raw.strip():
+                return False, [], "Lossy whitespace in mutation operand: boundary whitespace"
             operands.append(raw)
     return True, operands, None
 
@@ -600,60 +651,85 @@ def classify_mutation_command(cmd_text: str) -> MutationCommandResult:
     - MUTATION_PARSED: command successfully tokenized into deterministic operation and operands.
     - MUTATION_UNSUPPORTED: command belongs to mutation family but has malformed/unsupported syntax.
     """
-    dialect, unwrapped = classify_command_dialect(cmd_text)
-    if dialect == CommandDialect.POSIX_SHELL:
-        inner = unwrapped
-        if (inner.startswith("'") and inner.endswith("'")) or (
-            inner.startswith('"') and inner.endswith('"')
-        ):
-            inner = inner[1:-1].strip()
-        words = inner.split()
-    else:
-        words = unwrapped.split()
+    dialect, unwrapped, wrapper_err = classify_command_dialect(cmd_text)
+
+    if dialect == CommandDialect.UNSUPPORTED_WRAPPER:
+        words = [w.strip("()") for w in cmd_text.split()]
+        if any(w.lower() in ALL_MUTATION_VERBS for w in words):
+            return MutationCommandResult(
+                status="MUTATION_UNSUPPORTED",
+                reason=wrapper_err or "Unsupported shell mutation wrapper",
+            )
+        return MutationCommandResult(
+            status="MUTATION_UNSUPPORTED",
+            reason=wrapper_err or "Unsupported shell command wrapper",
+        )
+
+    if dialect == CommandDialect.OTHER_COMMAND:
+        words = [w.strip("()") for w in unwrapped.split()]
+        if words and words[0].lower() in ALL_MUTATION_VERBS:
+            return MutationCommandResult(
+                status="MUTATION_UNSUPPORTED",
+                reason=(
+                    "Bare mutation commands without explicit supported "
+                    "Windows shell wrapper are unsupported"
+                ),
+            )
+        return MutationCommandResult(status="NOT_MUTATION")
+
+    # dialect == CommandDialect.SUPPORTED_WINDOWS_CMD
+    # Check for lossy whitespace in unwrapped command string
+    if any(c in "\t\r\n\u00a0" for c in unwrapped):
+        return MutationCommandResult(
+            status="MUTATION_UNSUPPORTED",
+            reason="Unsupported whitespace in Windows mutation command text",
+        )
+    if "  " in unwrapped:
+        words_check = unwrapped.split()
+        if any(w.strip("()").lower() in ALL_MUTATION_VERBS for w in words_check):
+            return MutationCommandResult(
+                status="MUTATION_UNSUPPORTED",
+                reason="Lossy whitespace in mutation command: consecutive whitespace",
+            )
+
+    # Check grouping/parens BEFORE early NOT_MUTATION classification
+    if "(" in unwrapped or ")" in unwrapped:
+        words_parens = [w.strip("()") for w in unwrapped.split()]
+        if any(w.lower() in ALL_MUTATION_VERBS for w in words_parens):
+            return MutationCommandResult(
+                status="MUTATION_UNSUPPORTED",
+                reason="Parentheses or grouping syntax unsupported in Windows mutation commands",
+            )
+
+    words = unwrapped.split()
     if not words:
         return MutationCommandResult(status="NOT_MUTATION")
 
-    verb = words[0].lower()
-    mutation_verbs = {
-        "del": "DELETE",
-        "delete": "DELETE",
-        "erase": "DELETE",
-        "rm": "DELETE",
-        "ren": "RENAME",
-        "rename": "RENAME",
-        "mv": "RENAME",
-        "move": "RENAME",
-        "copy": "COPY",
-        "cp": "COPY",
-    }
-    if verb not in mutation_verbs:
+    first_word = words[0]
+    if first_word.startswith("(") or first_word.endswith(")"):
+        clean_verb = first_word.strip("()").lower()
+        if clean_verb in ALL_MUTATION_VERBS:
+            return MutationCommandResult(
+                status="MUTATION_UNSUPPORTED",
+                reason="Parentheses or grouping syntax unsupported in Windows mutation commands",
+            )
+
+    verb = first_word.lower()
+    # Explicitly reject POSIX or non-minimal verbs
+    if verb in ALL_MUTATION_VERBS and verb not in ("del", "ren"):
+        return MutationCommandResult(
+            status="MUTATION_UNSUPPORTED",
+            reason=(
+                f"Unsupported mutation verb '{verb}' for Windows dialect "
+                "(only minimal del/ren supported)"
+            ),
+        )
+
+    if verb not in ("del", "ren"):
         return MutationCommandResult(status="NOT_MUTATION")
 
-    op_type = mutation_verbs[verb]
-
-    # B-04: POSIX -c shell wrappers are outside Contract 3.5.3 mutation interpretation
-    if dialect == CommandDialect.POSIX_SHELL:
-        return MutationCommandResult(
-            status="MUTATION_UNSUPPORTED",
-            operation=op_type,
-            reason=(
-                "POSIX shell mutation wrappers are unsupported for deterministic "
-                "resource mutation analysis"
-            ),
-        )
-
-    # B-04 / B-03: Bare mutation commands without supported shell wrapper
-    if dialect == CommandDialect.BARE_OR_OTHER:
-        return MutationCommandResult(
-            status="MUTATION_UNSUPPORTED",
-            operation=op_type,
-            reason=(
-                "Bare mutation commands without explicit supported Windows shell "
-                "wrapper are unsupported"
-            ),
-        )
-
-    rem_text = unwrapped[len(words[0]) :].strip()
+    op_type = "DELETE" if verb == "del" else "RENAME"
+    rem_text = unwrapped[len(first_word) :].strip()
 
     valid, operands, err_reason = tokenize_windows_mutation_operands(rem_text)
     if not valid:
@@ -662,6 +738,15 @@ def classify_mutation_command(cmd_text: str) -> MutationCommandResult:
             operation=op_type,
             reason=err_reason or f"Malformed or unsupported operand syntax for {op_type}",
         )
+
+    # Check for switches: operands starting with / or -
+    for op in operands:
+        if op.startswith("/") or op.startswith("-"):
+            return MutationCommandResult(
+                status="MUTATION_UNSUPPORTED",
+                operation=op_type,
+                reason=f"Unsupported switch '{op}' in {op_type} command",
+            )
 
     if op_type == "DELETE":
         if len(operands) != 1:
@@ -685,19 +770,6 @@ def classify_mutation_command(cmd_text: str) -> MutationCommandResult:
         return MutationCommandResult(
             status="MUTATION_PARSED",
             operation="RENAME",
-            source_operand=operands[0],
-            target_operand=operands[1],
-        )
-    elif op_type == "COPY":
-        if len(operands) != 2:
-            return MutationCommandResult(
-                status="MUTATION_UNSUPPORTED",
-                operation=op_type,
-                reason=f"COPY expects exactly 2 operands (source, target), got {len(operands)}",
-            )
-        return MutationCommandResult(
-            status="MUTATION_PARSED",
-            operation="COPY",
             source_operand=operands[0],
             target_operand=operands[1],
         )
@@ -991,109 +1063,131 @@ class SystemCobolParser:
 
             # SELECT ... ASSIGN TO ...
             if first == "SELECT":
-                internal_name = tokens[1] if len(tokens) > 1 else ""
                 start_l = line_num
-                clause_text = raw_line
+                clause_lines = [raw_line]
+                curr_i = i
+
+                # Slurp continuation lines until period or structural boundary
+                while curr_i + 1 < n:
+                    if "." in tokenize_cobol_line(lines[curr_i]):
+                        break
+                    next_line = lines[curr_i + 1]
+                    if is_cobol_structural_boundary(next_line):
+                        break
+                    curr_i += 1
+                    clause_lines.append(next_line)
+
+                end_l = curr_i + 1
+                clause_text = " ".join(clause_lines)
+
+                # Quote-preserving tokenization
+                c_toks = tokenize_cobol_line(clause_text)
+                sel_valid = True
+                sel_reason = ""
+                idx = 0
+                internal_name = ""
                 assign_target = ""
-                org_val = "SEQUENTIAL"
                 has_status = False
 
-                # Slurp continuation lines until period
-                while not clause_text.rstrip().endswith(".") and (i + 1) < n:
-                    i += 1
-                    clause_text += " " + lines[i].strip()
+                if idx < len(c_toks) and c_toks[idx].upper() == "SELECT":
+                    idx += 1
+                else:
+                    sel_valid = False
+                    sel_reason = "Missing SELECT keyword"
 
-                end_l = i + 1
+                if sel_valid:
+                    if idx < len(c_toks) and is_canonical_cobol_identifier(c_toks[idx]):
+                        internal_name = c_toks[idx]
+                        idx += 1
+                    else:
+                        sel_valid = False
+                        sel_reason = "Invalid internal file identifier in SELECT"
 
-                if not is_canonical_cobol_identifier(internal_name):
-                    self.statements.append(
-                        ClassifiedStatement(
-                            target_file.relative_path,
-                            start_l,
-                            end_l,
-                            "SELECT",
-                            clause_text,
-                            StatementClassification.UNSUPPORTED_RELEVANT,
-                            f"Invalid internal file identifier in SELECT: {internal_name}",
-                        )
-                    )
-                    i += 1
-                    continue
+                if sel_valid:
+                    if idx < len(c_toks) and c_toks[idx].upper() == "ASSIGN":
+                        idx += 1
+                        if idx < len(c_toks) and c_toks[idx].upper() == "TO":
+                            idx += 1
+                    else:
+                        sel_valid = False
+                        sel_reason = "Missing ASSIGN [TO] clause in SELECT"
 
-                # Check for unsupported file organizations: INDEXED, RELATIVE
-                if re.search(
-                    r"\bORGANIZATION\s+(?:IS\s+)?(?:INDEXED|RELATIVE)\b", clause_text, re.I
-                ):
-                    self.statements.append(
-                        ClassifiedStatement(
-                            target_file.relative_path,
-                            start_l,
-                            end_l,
-                            "SELECT",
-                            clause_text,
-                            StatementClassification.UNSUPPORTED_RELEVANT,
-                            "Unsupported file organization (INDEXED/RELATIVE)",
-                        )
-                    )
-                    i += 1
-                    continue
-
-                # Robust quote-aware parsing of ASSIGN target with fail-closed semantics
-                # on unsupported quoting
-                m_kw = re.search(r"\bASSIGN(?:\s+TO)?\b", clause_text, re.I)
-                assign_target = ""
-                assign_valid = False
-                if m_kw:
-                    rem = clause_text[m_kw.end() :].lstrip()
-                    if rem:
-                        if rem[0] in ("'", '"'):
-                            q_char = rem[0]
-                            # Check for unsupported doubled-quote escapes or backslashes
-                            if (q_char * 2) in rem or "\\" in rem:
-                                assign_valid = False
-                            else:
-                                close_idx = rem.find(q_char, 1)
-                                if close_idx == -1:
-                                    # Unclosed quote
-                                    assign_valid = False
+                if sel_valid:
+                    if idx < len(c_toks):
+                        raw_lit = c_toks[idx]
+                        if (
+                            raw_lit.startswith("'") and raw_lit.endswith("'") and len(raw_lit) >= 2
+                        ) or (
+                            raw_lit.startswith('"') and raw_lit.endswith('"') and len(raw_lit) >= 2
+                        ):
+                            try:
+                                unquoted = exact_syntactic_unquote(raw_lit)
+                                if not unquoted or raw_lit[0] in unquoted:
+                                    sel_valid = False
+                                    sel_reason = "Invalid quoted literal in ASSIGN TO"
                                 else:
-                                    raw_target = rem[: close_idx + 1]
-                                    char_after = (
-                                        rem[close_idx + 1] if close_idx + 1 < len(rem) else ""
-                                    )
-                                    after_target = rem[close_idx + 1 :].strip()
-                                    if char_after and not (
-                                        char_after.isspace() or char_after == "."
-                                    ):
-                                        # e.g. 'accounts.dat'xyz
-                                        assign_valid = False
-                                    elif "'" in after_target or '"' in after_target:
-                                        # Stray unconsumed quotes in remaining clause
-                                        assign_valid = False
-                                    else:
-                                        try:
-                                            unquoted = exact_syntactic_unquote(raw_target)
-                                            if q_char in unquoted:
-                                                assign_valid = False
-                                            elif not unquoted:
-                                                # Empty file name is domain-invalid
-                                                assign_valid = False
-                                            else:
-                                                assign_target = unquoted
-                                                assign_valid = True
-                                        except ValueError:
-                                            assign_valid = False
+                                    assign_target = unquoted
+                                    idx += 1
+                            except ValueError:
+                                sel_valid = False
+                                sel_reason = "Malformed quotes in ASSIGN TO literal"
                         else:
-                            # Unquoted identifier
-                            toks = rem.split()
-                            first_tok = toks[0].rstrip(".")
-                            if "'" in first_tok or '"' in first_tok or not first_tok:
-                                assign_valid = False
-                            else:
-                                assign_target = first_tok
-                                assign_valid = True
+                            sel_valid = False
+                            sel_reason = "ASSIGN target must be a quoted string literal"
+                    else:
+                        sel_valid = False
+                        sel_reason = "Missing target literal after ASSIGN"
 
-                if not assign_valid or not assign_target:
+                # ORGANIZATION [IS] LINE SEQUENTIAL is MANDATORY
+                if sel_valid:
+                    if idx < len(c_toks) and c_toks[idx].upper() == "ORGANIZATION":
+                        idx += 1
+                        if idx < len(c_toks) and c_toks[idx].upper() == "IS":
+                            idx += 1
+                        if (
+                            idx + 1 < len(c_toks)
+                            and c_toks[idx].upper() == "LINE"
+                            and c_toks[idx + 1].upper() == "SEQUENTIAL"
+                        ):
+                            idx += 2
+                        else:
+                            sel_valid = False
+                            sel_reason = (
+                                "Unsupported file organization (only LINE SEQUENTIAL supported)"
+                            )
+                    else:
+                        sel_valid = False
+                        sel_reason = "Missing mandatory ORGANIZATION IS LINE SEQUENTIAL clause"
+
+                # Optional FILE STATUS [IS] <identifier>
+                if sel_valid and idx < len(c_toks) and c_toks[idx].upper() == "FILE":
+                    idx += 1
+                    if idx < len(c_toks) and c_toks[idx].upper() == "STATUS":
+                        idx += 1
+                        if idx < len(c_toks) and c_toks[idx].upper() == "IS":
+                            idx += 1
+                        if idx < len(c_toks) and is_canonical_cobol_identifier(c_toks[idx]):
+                            has_status = True
+                            idx += 1
+                        else:
+                            sel_valid = False
+                            sel_reason = "Invalid or missing FILE STATUS identifier"
+                    else:
+                        sel_valid = False
+                        sel_reason = "Invalid FILE STATUS syntax"
+
+                # Optional terminal period
+                if sel_valid and idx < len(c_toks) and c_toks[idx] == ".":
+                    idx += 1
+
+                # Complete consumption check
+                if sel_valid and idx != len(c_toks):
+                    sel_valid = False
+                    sel_reason = (
+                        f"Unconsumed trailing tokens in SELECT clause: {' '.join(c_toks[idx:])}"
+                    )
+
+                if not sel_valid:
                     self.statements.append(
                         ClassifiedStatement(
                             target_file.relative_path,
@@ -1102,24 +1196,17 @@ class SystemCobolParser:
                             "SELECT",
                             clause_text,
                             StatementClassification.UNSUPPORTED_RELEVANT,
-                            f"Unsupported or malformed file assignment syntax in SELECT: "
-                            f"{clause_text}",
+                            sel_reason or "Unsupported or malformed SELECT clause",
                         )
                     )
-                    i += 1
+                    i = curr_i + 1
                     continue
-
-                if re.search(r"LINE\s+SEQUENTIAL", clause_text, re.I):
-                    org_val = "LINE_SEQUENTIAL"
-
-                if re.search(r"FILE\s+STATUS", clause_text, re.I):
-                    has_status = True
 
                 unit.file_bindings.append(
                     ASTFileBinding(
                         internal_file_name=internal_name,
                         external_file_name=assign_target,
-                        organization=org_val,
+                        organization="LINE_SEQUENTIAL",
                         has_file_status=has_status,
                         line_start=start_l,
                         line_end=end_l,
@@ -1133,10 +1220,10 @@ class SystemCobolParser:
                         "SELECT",
                         clause_text,
                         StatementClassification.PARSED_AND_SCORED,
-                        "File binding clause",
+                        "File control binding SELECT ... ASSIGN TO",
                     )
                 )
-                i += 1
+                i = curr_i + 1
                 continue
 
             # DATA DIVISION / SECTIONS / FD / COPY
@@ -1255,22 +1342,113 @@ class SystemCobolParser:
                             f"Invalid 05 field identifier: {f_name}",
                         )
                     )
+                    if current_record:
+                        current_record.is_unsupported = True
                     i += 1
                     continue
+
+                consumed_indices = {0, 1}
                 pic_val = None
+                explicit_usage = None
                 usage_val = "DISPLAY"
-                for pic_kw in ("PIC", "PICTURE"):
-                    if pic_kw in [t.upper() for t in tokens]:
-                        idx = [t.upper() for t in tokens].index(pic_kw)
-                        if idx + 1 < len(tokens):
-                            pic_val = canonicalize_picture(tokens[idx + 1])
+                field_valid = True
+                field_err = ""
+
+                # 1. Look for PIC / PICTURE
+                toks_upper = [t.upper() for t in tokens]
+                for p_kw in ("PIC", "PICTURE"):
+                    if p_kw in toks_upper:
+                        idx_p = toks_upper.index(p_kw)
+                        consumed_indices.add(idx_p)
+                        next_i = idx_p + 1
+                        if next_i < len(tokens) and toks_upper[next_i] == "IS":
+                            consumed_indices.add(next_i)
+                            next_i += 1
+                        if next_i < len(tokens):
+                            pic_raw = tokens[next_i].rstrip(".")
+                            pic_val = canonicalize_picture(pic_raw)
+                            if pic_val is None:
+                                field_valid = False
+                                field_err = f"Invalid PICTURE clause: {pic_raw}"
+                            consumed_indices.add(next_i)
+                        else:
+                            field_valid = False
+                            field_err = "Missing PICTURE string after PIC"
                         break
-                if "COMP-3" in [t.upper() for t in tokens]:
-                    usage_val = "COMP-3"
-                elif "COMP" in [t.upper() for t in tokens] or "BINARY" in [
-                    t.upper() for t in tokens
-                ]:
-                    usage_val = "BINARY"
+
+                # 2. Look for explicit USAGE keyword or explicit usage token
+                if "USAGE" in toks_upper:
+                    idx_u = toks_upper.index("USAGE")
+                    consumed_indices.add(idx_u)
+                    next_u = idx_u + 1
+                    if next_u < len(tokens) and toks_upper[next_u] == "IS":
+                        consumed_indices.add(next_u)
+                        next_u += 1
+                    if next_u < len(tokens):
+                        explicit_usage = toks_upper[next_u].rstrip(".")
+                        consumed_indices.add(next_u)
+                    else:
+                        field_valid = False
+                        field_err = "Missing USAGE value after USAGE keyword"
+                else:
+                    # Check for unconsumed explicit usage token
+                    for idx_tok, tok_u in enumerate(toks_upper):
+                        if idx_tok in consumed_indices:
+                            continue
+                        clean_tok = tok_u.rstrip(".")
+                        if clean_tok in ("PACKED-DECIMAL", "COMP-3", "COMP", "BINARY", "DISPLAY"):
+                            explicit_usage = clean_tok
+                            consumed_indices.add(idx_tok)
+                            break
+
+                # Validate explicit USAGE
+                if field_valid and explicit_usage is not None:
+                    if explicit_usage == "PACKED-DECIMAL":
+                        usage_val = "COMP-3"
+                    elif explicit_usage == "COMP-3":
+                        usage_val = "COMP-3"
+                    elif explicit_usage in ("COMP", "BINARY"):
+                        usage_val = "BINARY"
+                    elif explicit_usage == "DISPLAY":
+                        usage_val = "DISPLAY"
+                    else:
+                        field_valid = False
+                        field_err = f"Unsupported explicit USAGE: {explicit_usage}"
+                elif field_valid:
+                    # Implicit missing USAGE defaults to DISPLAY
+                    usage_val = "DISPLAY"
+
+                # Check terminal period
+                if tokens and tokens[-1] == ".":
+                    consumed_indices.add(len(tokens) - 1)
+
+                # Complete consumption check
+                unconsumed = [
+                    tokens[j]
+                    for j in range(len(tokens))
+                    if j not in consumed_indices and tokens[j] != "."
+                ]
+                if field_valid and unconsumed:
+                    field_valid = False
+                    uncons_str = " ".join(unconsumed)
+                    field_err = f"Unconsumed trailing tokens in 05 field declaration: {uncons_str}"
+
+                if not field_valid:
+                    self.statements.append(
+                        ClassifiedStatement(
+                            target_file.relative_path,
+                            line_num,
+                            line_num,
+                            "FIELD_05",
+                            raw_line,
+                            StatementClassification.UNSUPPORTED_RELEVANT,
+                            field_err or "Unsupported 05 field syntax",
+                        )
+                    )
+                    if current_record:
+                        current_record.is_unsupported = True
+                    i += 1
+                    continue
 
                 ast_field = ASTDataField(
                     level=5,
@@ -1313,10 +1491,8 @@ class SystemCobolParser:
 
                 while not is_safely_terminated and (curr_i + 1) < n:
                     next_line = lines[curr_i + 1]
-                    # Check if next line is an obvious structural boundary
                     if is_cobol_structural_boundary(next_line):
                         break
-                    # Slurp continuation line
                     curr_i += 1
                     combined_clause_lines.append(next_line)
                     combined_text = " ".join(combined_clause_lines)
@@ -1333,72 +1509,79 @@ class SystemCobolParser:
 
                 if is_supported:
                     c_tokens = tokenize_cobol_line(clause_text)
-                    no_dot_tokens = [t for t in c_tokens if t != "."]
-                    if len(no_dot_tokens) > 1 and no_dot_tokens[0] == "88":
-                        cond_name = no_dot_tokens[1]
-                        if not is_canonical_cobol_identifier(cond_name):
+
+                    # F-09: Premature period terminates 88 clause; trailing tokens are unsupported.
+                    if "." in c_tokens[:-1]:
+                        is_supported = False
+                    else:
+                        no_dot_tokens = [t for t in c_tokens if t != "."]
+                        if len(no_dot_tokens) > 1 and no_dot_tokens[0] == "88":
+                            cond_name = no_dot_tokens[1]
+                            if not is_canonical_cobol_identifier(cond_name):
+                                is_supported = False
+                        else:
                             is_supported = False
-                    else:
-                        is_supported = False
 
-                    val_tokens_upper = [t.upper() for t in no_dot_tokens]
-                    start_idx = -1
-                    for v_key in ("VALUE", "VALUES"):
-                        if v_key in val_tokens_upper:
-                            start_idx = val_tokens_upper.index(v_key) + 1
-                            if start_idx < len(no_dot_tokens) and val_tokens_upper[start_idx] in (
-                                "IS",
-                                "ARE",
-                            ):
-                                start_idx += 1
-                            break
-
-                    if not cond_name or start_idx == -1 or start_idx >= len(no_dot_tokens):
-                        is_supported = False
-                    else:
-                        for t in no_dot_tokens[start_idx:]:
-                            if t in (",", ";"):
-                                continue
-                            t_upper = t.upper()
-                            if t_upper in (
-                                "THRU",
-                                "THROUGH",
-                                "OR",
-                                "AND",
-                                "TO",
-                                "WHEN",
-                                "ALSO",
-                            ):
-                                is_supported = False
-                                break
-                            if ".." in t:
-                                is_supported = False
-                                break
-                            if "\\" in t:
-                                is_supported = False
+                        val_tokens_upper = [t.upper() for t in no_dot_tokens]
+                        start_idx = -1
+                        for v_key in ("VALUE", "VALUES"):
+                            if v_key in val_tokens_upper:
+                                start_idx = val_tokens_upper.index(v_key) + 1
+                                if start_idx < len(no_dot_tokens) and val_tokens_upper[
+                                    start_idx
+                                ] in (
+                                    "IS",
+                                    "ARE",
+                                ):
+                                    start_idx += 1
                                 break
 
-                            if (t.startswith("'") and t.endswith("'") and len(t) >= 2) or (
-                                t.startswith('"') and t.endswith('"') and len(t) >= 2
-                            ):
-                                try:
-                                    inner = exact_syntactic_unquote(t)
-                                except ValueError:
+                        if not cond_name or start_idx == -1 or start_idx >= len(no_dot_tokens):
+                            is_supported = False
+                        else:
+                            for t in no_dot_tokens[start_idx:]:
+                                if t in (",", ";"):
+                                    continue
+                                t_upper = t.upper()
+                                if t_upper in (
+                                    "THRU",
+                                    "THROUGH",
+                                    "OR",
+                                    "AND",
+                                    "TO",
+                                    "WHEN",
+                                    "ALSO",
+                                ):
                                     is_supported = False
                                     break
-                                if t[0] in inner:
+                                if ".." in t:
                                     is_supported = False
                                     break
-                                cond_vals.append(inner)
-                            else:
-                                if re.match(r"^[+-]?\d+(?:\.\d+)?$", t):
-                                    cond_vals.append(t)
+                                if "\\" in t:
+                                    is_supported = False
+                                    break
+
+                                if (t.startswith("'") and t.endswith("'") and len(t) >= 2) or (
+                                    t.startswith('"') and t.endswith('"') and len(t) >= 2
+                                ):
+                                    try:
+                                        inner = exact_syntactic_unquote(t)
+                                    except ValueError:
+                                        is_supported = False
+                                        break
+                                    if t[0] in inner:
+                                        is_supported = False
+                                        break
+                                    cond_vals.append(inner)
                                 else:
-                                    is_supported = False
-                                    break
+                                    if re.match(r"^[+-]?\d+(?:\.\d+)?$", t):
+                                        cond_vals.append(t)
+                                    else:
+                                        is_supported = False
+                                        break
 
-                        if not cond_vals:
-                            is_supported = False
+                            if not cond_vals:
+                                is_supported = False
 
                 if is_supported:
                     ast_cond = ASTDataField(
@@ -1435,9 +1618,11 @@ class SystemCobolParser:
                             "CONDITION_88",
                             clause_text,
                             StatementClassification.UNSUPPORTED_RELEVANT,
-                            "Unsupported condition level 88 syntax",
+                            "Unsupported condition level 88 syntax or trailing fragment",
                         )
                     )
+                    if current_record:
+                        current_record.is_unsupported = True
                 i = curr_i + 1
                 continue
 
@@ -1894,68 +2079,41 @@ class SystemCobolParser:
                 continue
 
             if first in ("COMPUTE", "MULTIPLY", "DIVIDE"):
-                arith_valid = True
-                op = ""
-                tgt = ""
-                if any(is_unquoted_procedural_starter(t) for t in tokens[1:]):
-                    arith_valid = False
-                elif first == "COMPUTE":
-                    if len(tokens) == 4 and tokens[2] == "=":
-                        tgt = tokens[1]
-                        op = tokens[3]
-                        if not is_canonical_cobol_identifier(tgt) or not is_computation_operand(op):
-                            arith_valid = False
-                    else:
-                        arith_valid = False
-                elif first == "MULTIPLY":
-                    if len(tokens) == 4 and tokens[2].upper() == "BY":
-                        op = tokens[1]
-                        tgt = tokens[3]
-                        if not is_canonical_cobol_identifier(tgt) or not is_computation_operand(op):
-                            arith_valid = False
-                    else:
-                        arith_valid = False
-                elif first == "DIVIDE":
-                    if len(tokens) == 4 and tokens[2].upper() == "INTO":
-                        op = tokens[1]
-                        tgt = tokens[3]
-                        if not is_canonical_cobol_identifier(tgt) or not is_computation_operand(op):
-                            arith_valid = False
-                    else:
-                        arith_valid = False
-
-                if not arith_valid:
-                    self.statements.append(
-                        ClassifiedStatement(
-                            target_file.relative_path,
-                            line_num,
-                            line_num,
-                            first,
-                            raw_line,
-                            StatementClassification.UNSUPPORTED_RELEVANT,
-                            f"Unsupported or compound {first} statement",
-                        )
+                start_l = i + 1
+                cur_valid, cur_toks, has_sentence_ended = consume_optional_terminal_period(tokens)
+                full_text = raw_line
+                while (
+                    not has_sentence_ended
+                    and not any(
+                        is_cobol_structural_boundary(lines[i + 1]) for _ in [1] if (i + 1) < n
                     )
+                    and (i + 1) < n
+                ):
+                    if has_sentence_ended:
+                        break
                     i += 1
-                    continue
+                    full_text += " " + lines[i].strip()
+                    next_valid, next_toks, next_term = consume_optional_terminal_period(
+                        tokenize_cobol_line(lines[i])
+                    )
+                    if not next_valid:
+                        break
+                    cur_toks.extend(next_toks)
+                    has_sentence_ended = next_term
+                end_l = i + 1
 
-                arith_node = ASTArithmetic(
-                    verb=first,
-                    operand=op,
-                    target=tgt,
-                    line_start=line_num,
-                    line_end=line_num,
-                )
-                unit.statements.append(arith_node)
                 self.statements.append(
                     ClassifiedStatement(
                         target_file.relative_path,
-                        line_num,
-                        line_num,
+                        start_l,
+                        end_l,
                         first,
-                        raw_line,
-                        StatementClassification.PARSED_AND_SCORED,
-                        f"Arithmetic {first} statement",
+                        full_text,
+                        StatementClassification.UNSUPPORTED_RELEVANT,
+                        (
+                            f"Unrepresentable arithmetic {first} statement "
+                            "in Contract 3.5.3 frozen wire schema"
+                        ),
                     )
                 )
                 i += 1
@@ -2754,6 +2912,14 @@ class SystemCobolParser:
             for rec in unit.record_declarations:
                 if not rec.fields:
                     continue
+                has_unsupported_stmt = any(
+                    s.file_path == unit.file_path
+                    and s.classification == StatementClassification.UNSUPPORTED_RELEVANT
+                    and rec.line_start <= s.line_start <= rec.line_end
+                    for s in self.statements
+                )
+                if rec.is_unsupported or has_unsupported_stmt:
+                    continue
                 all_records.append((unit, rec))
                 field_facts = tuple(
                     RecordFieldFact(
@@ -2862,8 +3028,8 @@ class SystemCobolParser:
                         )
 
                         # Platform dependency (Contract 3.5.3 wire schema permits only WINDOWS)
-                        dialect, _ = classify_command_dialect(cmd_clean)
-                        if dialect == CommandDialect.WINDOWS_CMD:
+                        dialect, unwrapped_cmd, dialect_reason = classify_command_dialect(cmd_clean)
+                        if dialect == CommandDialect.SUPPORTED_WINDOWS_CMD:
                             self.supported_facts.append(
                                 SupportedSystemFact(
                                     fact=PlatformDependencyFact(
@@ -2879,11 +3045,7 @@ class SystemCobolParser:
                                     },
                                 )
                             )
-                        elif dialect == CommandDialect.POSIX_SHELL:
-                            # POSIX is deterministically recognized, but PLATFORM_DEPENDENCY is
-                            # REQUIRED_EXHAUSTIVE and Contract 3.5.3 wire schema exposes ONLY
-                            # WINDOWS. Therefore, unrepresentable platform semantics must fail
-                            # closed with UNSUPPORTED_RELEVANT, emitting 0 PlatformDependencyFact.
+                        elif dialect == CommandDialect.UNSUPPORTED_WRAPPER:
                             for idx_s, s in enumerate(self.statements):
                                 if s.file_path == unit.file_path and s.line_start in (
                                     s1.line_start,
@@ -2897,9 +3059,9 @@ class SystemCobolParser:
                                         s.raw_text,
                                         StatementClassification.UNSUPPORTED_RELEVANT,
                                         (
-                                            "POSIX shell command establishes an unrepresentable "
-                                            "platform dependency outside Contract 3.5.3 frozen "
-                                            "schema (PlatformFamily exposes ONLY WINDOWS)"
+                                            "Unsupported shell wrapper establishes an "
+                                            "unrepresentable platform dependency outside "
+                                            f"Contract 3.5.3 frozen schema: {dialect_reason}"
                                         ),
                                     )
                             continue
@@ -3003,6 +3165,28 @@ class SystemCobolParser:
                                         },
                                     )
                                 )
+                        else:
+                            # F-06: Same proven linear segment + two known mutations + pair outside
+                            # frozen representable OperationSequence domain -> UNSUPPORTED_RELEVANT
+                            for s_target in (m1, c1, m2, c2):
+                                for idx_s, s in enumerate(self.statements):
+                                    if (
+                                        s.file_path == unit.file_path
+                                        and s.line_start == s_target.line_start
+                                    ):
+                                        self.statements[idx_s] = ClassifiedStatement(
+                                            s.file_path,
+                                            s.line_start,
+                                            s.line_end,
+                                            s.verb,
+                                            s.raw_text,
+                                            StatementClassification.UNSUPPORTED_RELEVANT,
+                                            (
+                                                f"Unrepresentable mutation sequence "
+                                                f"{mut1.operation}->{mut2.operation} "
+                                                "in Contract 3.5.3 frozen wire contract"
+                                            ),
+                                        )
 
         # 7. Record-to-Record Data Transfer Relations
         for unit in self.compilation_units:
