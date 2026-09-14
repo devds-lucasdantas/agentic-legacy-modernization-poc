@@ -6772,8 +6772,7 @@ def test_h7_7_a_lossless_grammar_and_record_atomicity():
     if_node = next(n for n in cf_nodes if isinstance(n, tuple) and n[0] == "IF")
     then_nodes = if_node[2]
     then_verbs = [
-        n[1].verb if isinstance(n, tuple) and n[0] == "STMT" else n[0]
-        for n in then_nodes
+        n[1].verb if isinstance(n, tuple) and n[0] == "STMT" else n[0] for n in then_nodes
     ]
     assert "MOVE" in then_verbs
     assert "GOBACK" not in then_verbs
@@ -6851,7 +6850,8 @@ def test_h7_7_a_lossless_grammar_and_record_atomicity():
     parser_o = SystemCobolParser(bundle_o)
     parser_o.parse_system()
     unsupp = [
-        s for s in parser_o.statements
+        s
+        for s in parser_o.statements
         if s.classification == StatementClassification.UNSUPPORTED_RELEVANT
     ]
     assert len(unsupp) > 0
@@ -6874,7 +6874,8 @@ def test_h7_7_a_lossless_grammar_and_record_atomicity():
     parser_red = SystemCobolParser(bundle_red)
     parser_red.parse_system()
     unsupp_red = [
-        s for s in parser_red.statements
+        s
+        for s in parser_red.statements
         if s.classification == StatementClassification.UNSUPPORTED_RELEVANT
     ]
     assert len(unsupp_red) > 0
@@ -6943,15 +6944,22 @@ def test_h7_7_b_aud_01_finite_loop_progress_theorem() -> None:
                        MOVE 'N' TO WS-EOF-FLAG
                END-READ
            END-PERFORM."""
-    p1 = SystemCobolParser(_make_multi_file_bundle({
-        "CALLER.CBL": caller_src,
-        "LOOPPROG.CBL": base_src.format(loop_body=p1_loop),
-    }))
+    p1 = SystemCobolParser(
+        _make_multi_file_bundle(
+            {
+                "CALLER.CBL": caller_src,
+                "LOOPPROG.CBL": base_src.format(loop_body=p1_loop),
+            }
+        )
+    )
     cert1 = p1.parse_system()
     assert cert1.unsupported_relevant_count >= 1
     assert cert1.is_evaluation_blocked is True
-    assert any("progress" in s.description.lower() for s in p1.statements
-               if s.classification == StatementClassification.UNSUPPORTED_RELEVANT)
+    assert any(
+        "progress" in s.description.lower()
+        for s in p1.statements
+        if s.classification == StatementClassification.UNSUPPORTED_RELEVANT
+    )
 
     # 2. AT END clobbers EOF flag subsequently -> fails closed
     p2_loop = """           PERFORM UNTIL WS-EOF-FLAG = 'Y'
@@ -6963,10 +6971,14 @@ def test_h7_7_b_aud_01_finite_loop_progress_theorem() -> None:
                        DISPLAY 'REC'
                END-READ
            END-PERFORM."""
-    p2 = SystemCobolParser(_make_multi_file_bundle({
-        "CALLER.CBL": caller_src,
-        "LOOPPROG.CBL": base_src.format(loop_body=p2_loop),
-    }))
+    p2 = SystemCobolParser(
+        _make_multi_file_bundle(
+            {
+                "CALLER.CBL": caller_src,
+                "LOOPPROG.CBL": base_src.format(loop_body=p2_loop),
+            }
+        )
+    )
     cert2 = p2.parse_system()
     assert cert2.unsupported_relevant_count >= 1
     assert cert2.is_evaluation_blocked is True
@@ -6980,10 +6992,14 @@ def test_h7_7_b_aud_01_finite_loop_progress_theorem() -> None:
                        DISPLAY 'REC'
                END-READ
            END-PERFORM."""
-    p3 = SystemCobolParser(_make_multi_file_bundle({
-        "CALLER.CBL": caller_src,
-        "LOOPPROG.CBL": base_src.format(loop_body=p3_loop),
-    }))
+    p3 = SystemCobolParser(
+        _make_multi_file_bundle(
+            {
+                "CALLER.CBL": caller_src,
+                "LOOPPROG.CBL": base_src.format(loop_body=p3_loop),
+            }
+        )
+    )
     cert3 = p3.parse_system()
     assert cert3.unsupported_relevant_count >= 1
     assert cert3.is_evaluation_blocked is True
@@ -7020,16 +7036,19 @@ def test_h7_7_b_aud_03_reaching_definition_system_binding() -> None:
            CALL 'SYSTEM' USING WS-CMD.
            GOBACK.
 """
-    p1 = SystemCobolParser(_make_multi_file_bundle({
-        "CALLER.CBL": caller_src,
-        "CALLEE.CBL": callee_branch,
-    }))
+    p1 = SystemCobolParser(
+        _make_multi_file_bundle(
+            {
+                "CALLER.CBL": caller_src,
+                "CALLEE.CBL": callee_branch,
+            }
+        )
+    )
     cert1 = p1.parse_system()
     assert cert1.unsupported_relevant_count >= 1
     assert cert1.is_evaluation_blocked is True
     unsupp1 = [
-        s for s in p1.statements
-        if s.classification == StatementClassification.UNSUPPORTED_RELEVANT
+        s for s in p1.statements if s.classification == StatementClassification.UNSUPPORTED_RELEVANT
     ]
     assert any("conflicting" in s.description.lower() for s in unsupp1)
 
@@ -7045,10 +7064,14 @@ def test_h7_7_b_aud_03_reaching_definition_system_binding() -> None:
            CALL 'SYSTEM' USING WS-CMD.
            GOBACK.
 """
-    p2 = SystemCobolParser(_make_multi_file_bundle({
-        "CALLER.CBL": caller_src,
-        "CALLEE.CBL": callee_clobber,
-    }))
+    p2 = SystemCobolParser(
+        _make_multi_file_bundle(
+            {
+                "CALLER.CBL": caller_src,
+                "CALLEE.CBL": callee_clobber,
+            }
+        )
+    )
     cert2 = p2.parse_system()
     assert cert2.unsupported_relevant_count >= 1
     assert cert2.is_evaluation_blocked is True
@@ -7094,3 +7117,250 @@ def test_h7_7_b_aud_05_unreachable_operation_sequences_and_risks() -> None:
     assert len(risks) == 0, "Single reachable echo command does not form risk sequence"
 
 
+def test_h7_7_c_aud_07_durable_atomic_write_and_read_back(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """AUD-07: Durable atomic writes with directory fsync and read-back verification."""
+    import os
+
+    mod = _get_run_gate_3_mod_h7_6_d()
+    target_json = tmp_path / "sub" / "test.json"
+    data = {"hello": "world", "num": 42}
+    mod.durable_atomic_write_json(target_json, data)
+    assert target_json.is_file()
+    loaded = json.loads(target_json.read_text(encoding="utf-8"))
+    assert loaded == data
+
+    # Read-back mismatch raises IOError
+    orig_replace = os.replace
+
+    def corrupt_replace(src: str | os.PathLike[str], dst: str | os.PathLike[str]) -> None:
+        orig_replace(src, dst)
+        Path(dst).write_bytes(b"CORRUPTED_BYTES")
+
+    monkeypatch.setattr(os, "replace", corrupt_replace)
+    corrupt_target = tmp_path / "corrupt.json"
+    with pytest.raises(IOError, match="Read-back integrity verification failed"):
+        mod.durable_atomic_write_json(corrupt_target, {"clean": True})
+
+
+def test_h7_7_c_aud_07_required_failure_artifacts_and_omission_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """AUD-07 / AUD-10: Phase-derived required failure artifacts and omission sealing failures."""
+    mod = _get_run_gate_3_mod_h7_6_d()
+
+    # 1. Check required_failure_artifacts function contract
+    req_invoc = mod.required_failure_artifacts("MODEL_INVOCATION")
+    assert "raw-response.json" not in req_invoc
+    assert mod.TERMINAL_RESULT_FILE in req_invoc
+    assert "authorization-spec.json" in req_invoc
+
+    req_eval = mod.required_failure_artifacts("EVALUATION")
+    assert "raw-response.json" in req_eval
+    assert "model-assessment.json" in req_eval
+    assert "enriched-assessment.json" in req_eval
+
+    # 2. Omitting a required artifact fails sealing to FAILED_UNSEALED
+    art_dir = tmp_path / "omission_test"
+    art_dir.mkdir(parents=True)
+    res_file = art_dir / mod.RESERVATION_STATE_FILE
+    mod.atomic_write_json(
+        res_file,
+        {"status": "RESERVED", "gate": 3, "run_label": "omission-label"},
+    )
+
+    orig_atomic_write = mod.atomic_write_json
+
+    def omit_raw_response_write(target_path: Path, data: Any) -> None:
+        if Path(target_path).name == "manifest.json" and isinstance(data, dict):
+            # Strip raw-response.json from manifest to simulate missing required artifact
+            arts = data.get("artifacts", {})
+            arts.pop("raw-response.json", None)
+        orig_atomic_write(target_path, data)
+
+    monkeypatch.setattr(mod, "atomic_write_json", omit_raw_response_write)
+
+    res = mod.finalize_post_model_failure(
+        artifact_dir=art_dir,
+        reservation_file=res_file,
+        error_phase="RESPONSE_PARSING",
+        error=ValueError("Invalid output"),
+        spec={"requested_model": "gpt-5-mini", "bundle_sha256": "abc"},
+        candidate_sha="cand_sha",
+        authorization_commit_sha="auth_sha",
+        authorized_sha="auth_sha",
+        run_label="omission-label",
+        raw_response_content='{"raw": true}',
+    )
+
+    assert res.sealed is False
+    assert res.status == "FAILED_UNSEALED"
+    assert any("raw-response.json" in item.get("error", "") for item in res.failure_details)
+
+
+def test_h7_7_c_aud_08_precheck_rejection_terminal_state(tmp_path: Path) -> None:
+    """AUD-08: Precheck rejection state machine semantics and zero attempts consumed."""
+    mod = _get_run_gate_3_mod_h7_6_d()
+
+    art_dir = tmp_path / "precheck_rej"
+    art_dir.mkdir(parents=True)
+    res_file = art_dir / mod.RESERVATION_STATE_FILE
+
+    mod.record_precheck_rejection(
+        reservation_file=res_file,
+        run_label="precheck-label",
+        error_phase="FAIL_CLOSED_PARSER_CHECK",
+        error_message="Unsupported relevant statements: 1",
+        candidate_sha="cand_sha",
+        authorization_commit_sha="auth_sha",
+        authorized_sha="auth_sha",
+    )
+
+    assert res_file.is_file()
+    data = json.loads(res_file.read_text(encoding="utf-8"))
+    assert data["status"] == "PRECHECK_REJECTED"
+    assert data["attempts_consumed"] == 0
+    assert data["error_phase"] == "FAIL_CLOSED_PARSER_CHECK"
+
+    # Attempt claim must NOT exist
+    assert not (art_dir / mod.ATTEMPT_CLAIM_FILE).exists()
+
+    # check_existing_reservation does not raise on PRECHECK_REJECTED
+    mod.check_existing_reservation(art_dir, "precheck-label")
+
+
+def test_h7_7_c_aud_09_agent_initialization_failure_envelope(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """AUD-09: Agent initialization failure post-claim seals terminal failure envelope."""
+    from unittest.mock import MagicMock
+
+    mod = _get_run_gate_3_mod_h7_6_d()
+    repo_root = Path(__file__).resolve().parent.parent.parent
+
+    run_label = "agent-init-fail"
+    art_dir = tmp_path / run_label
+    art_dir.mkdir(parents=True)
+    res_file = art_dir / mod.RESERVATION_STATE_FILE
+
+    mod.atomic_write_json(
+        res_file,
+        {
+            "status": "RESERVED",
+            "gate": 3,
+            "run_label": run_label,
+            "timestamp": "2026-09-14T00:00:00Z",
+            "candidate_git_sha": "cand_sha_aif",
+            "authorization_commit_sha": "auth_sha_aif",
+            "git_commit_sha": "cand_sha_aif",
+        },
+    )
+
+    mock_cfg = MagicMock()
+    mock_cfg.foundry_model = "gpt-5-mini"
+    mock_cfg.foundry_project_endpoint = "https://mock.foundry.endpoint"
+
+    golden_file = repo_root / mod.DEFAULT_GOLDEN_PATH
+    golden_sha = hashlib.sha256(golden_file.read_bytes()).hexdigest()
+
+    mock_spec = {
+        "gate": 3,
+        "spec_version": mod.SPEC_VERSION,
+        "schema_version": mod.SCHEMA_VERSION,
+        "prompt_version": mod.PROMPT_VERSION,
+        "evaluator_version": mod.EVALUATOR_VERSION,
+        "golden_dataset_version": mod.GOLDEN_DATASET_VERSION,
+        "requested_model": "gpt-5-mini",
+        "reasoning_effort": "low",
+        "max_attempts": 1,
+        "maximum_model_attempts": 1,
+        "openai_client_max_retries": 0,
+        "run_label": run_label,
+        "candidate_git_sha": "cand_sha_aif",
+        "golden_dataset_sha256": golden_sha,
+        "bundle_sha256": "fake_bundle_sha",
+        "bundle_manifest_sha256": "fake_manifest_sha",
+        "foundry_project_fingerprint": "fake_fp_aif",
+        "target_bundle_files": [
+            "legacy/core-banking-system/BANK-MAIN.CBL",
+            "legacy/core-banking-system/INIT-DB.CBL",
+            "legacy/core-banking-system/TRANS-PROC.CBL",
+            "legacy/core-banking-system/REPORT-GEN.CBL",
+            "legacy/core-banking-system/ACCOUNTS.CPY",
+            "legacy/core-banking-system/ACCOUNTS.DAT",
+        ],
+    }
+
+    mod.atomic_write_json(art_dir / "auth-spec.json", mock_spec)
+
+    class MockAgentInitFail:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            raise RuntimeError("Agent construction network timeout")
+
+    args = argparse.Namespace(
+        provenance_repo=str(repo_root),
+        snapshot_dir=str(repo_root),
+        artifact_dir=str(art_dir),
+        auth_spec=str(repo_root / mod.DEFAULT_AUTH_SPEC_PATH),
+        run_label=run_label,
+        authorized_git_sha="cand_sha_aif",
+        authorization_commit_sha="auth_sha_aif",
+        golden_path=str(golden_file),
+        synthetic=False,
+        dry_run=False,
+        allow_dirty=True,
+    )
+
+    monkeypatch.setattr(mod, "is_isolated_python", lambda: True)
+    monkeypatch.setattr(mod, "is_bytecode_writing_disabled", lambda: True)
+    monkeypatch.setattr(mod, "verify_clean_worktree", lambda repo: None)
+    monkeypatch.setattr(mod, "verify_trusted_runner_bootstrap", lambda *a, **kw: None)
+    monkeypatch.setattr(mod, "verify_snapshot_against_git_objects", lambda *a, **kw: None)
+    monkeypatch.setattr(mod, "validate_authorization_contract", lambda *a, **kw: None)
+    monkeypatch.setattr(mod, "verify_no_executable_overlays", lambda *a, **kw: None)
+    monkeypatch.setattr(
+        mod,
+        "verify_bundle_integrity",
+        lambda *a, **kw: ([], "fake_bundle_sha", "fake_manifest_sha"),
+    )
+    monkeypatch.setattr(mod, "verify_schema_and_prompt_hashes", lambda *a, **kw: None)
+    monkeypatch.setattr(
+        mod,
+        "verify_runtime_environment",
+        lambda *a, **kw: ({"pkg": "1.0"}, "fake_runtime_sha"),
+    )
+    monkeypatch.setattr(
+        mod,
+        "load_authorization_spec_from_git",
+        lambda *a, **kw: (mock_spec, "fake_spec_sha"),
+    )
+    monkeypatch.setattr(
+        mod,
+        "load_authorization_spec",
+        lambda *a, **kw: (mock_spec, "fake_spec_sha"),
+    )
+    monkeypatch.setattr("agents.legacy_analyzer.config.load_config", lambda: mock_cfg)
+    monkeypatch.setattr(
+        "agents.legacy_analyzer.config.compute_foundry_project_fingerprint",
+        lambda *a, **kw: "fake_fp_aif",
+    )
+    monkeypatch.setattr(
+        "agents.legacy_analyzer.system_agent.SystemAnalyzerAgent",
+        MockAgentInitFail,
+    )
+
+    rc = mod.execute_internal_child(args)
+    assert rc == 1
+
+    # Claim was consumed
+    assert (art_dir / mod.ATTEMPT_CLAIM_FILE).is_file()
+
+    # Evidence sealed with error_phase=AGENT_INITIALIZATION
+    res_data = json.loads(res_file.read_text(encoding="utf-8"))
+    assert res_data["status"] == "FAILED"
+    assert res_data["error_phase"] == "AGENT_INITIALIZATION"
+
+    term_data = json.loads((art_dir / mod.TERMINAL_RESULT_FILE).read_text(encoding="utf-8"))
+    assert term_data["status"] == "FAILED"
+    assert term_data["error_phase"] == "AGENT_INITIALIZATION"

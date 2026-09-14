@@ -259,10 +259,7 @@ def safe_preserve_artifact(
         if is_json:
             atomic_write_json(artifact_path, data)
         else:
-            artifact_path.parent.mkdir(parents=True, exist_ok=True)
-            temp_file = artifact_path.with_suffix(f".tmp.{os.getpid()}")
-            temp_file.write_text(str(data), encoding="utf-8")
-            temp_file.replace(artifact_path)
+            durable_atomic_write_text(artifact_path, str(data))
         return True
     except Exception as e:
         if failures is not None:
@@ -1039,12 +1036,86 @@ def verify_schema_and_prompt_hashes(snapshot_dir: Path, spec: dict[str, Any]) ->
         )
 
 
-def atomic_write_json(destination: Path, data: Any) -> None:
-    """Atomically write JSON data to destination file."""
+def durable_atomic_write_bytes(destination: Path, data_bytes: bytes) -> None:
+    """Durably write bytes to destination file with flush, fsync, atomic rename, and read-back."""
     destination.parent.mkdir(parents=True, exist_ok=True)
-    temp_file = destination.with_suffix(f".tmp.{os.getpid()}")
-    temp_file.write_text(json.dumps(data, indent=2, sort_keys=True), encoding="utf-8")
-    temp_file.replace(destination)
+    digest_prefix = hashlib.sha256(data_bytes).hexdigest()[:8]
+    temp_file = destination.with_suffix(f".tmp.{os.getpid()}.{digest_prefix}")
+    expected_sha = hashlib.sha256(data_bytes).hexdigest()
+
+    with open(temp_file, "wb") as f:
+        f.write(data_bytes)
+        f.flush()
+        os.fsync(f.fileno())
+
+    os.replace(temp_file, destination)
+
+    # Directory durability on platforms supporting directory fd fsync
+    if hasattr(os, "O_DIRECTORY") or os.name != "nt":
+        try:
+            dir_fd = os.open(str(destination.parent), os.O_RDONLY)
+            try:
+                os.fsync(dir_fd)
+            finally:
+                os.close(dir_fd)
+        except OSError:
+            pass
+
+    # Read-back byte identity verification (H-07 / AUD-07)
+    read_back = destination.read_bytes()
+    read_sha = hashlib.sha256(read_back).hexdigest()
+    if read_sha != expected_sha:
+        raise OSError(
+            f"Read-back integrity verification failed for '{destination}': "
+            f"expected={expected_sha}, actual={read_sha}"
+        )
+
+
+def durable_atomic_write_text(destination: Path, text: str, encoding: str = "utf-8") -> None:
+    """Durably write text to destination file with durability guarantees."""
+    durable_atomic_write_bytes(destination, text.encode(encoding))
+
+
+def durable_atomic_write_json(destination: Path, data: Any) -> None:
+    """Durably write JSON to destination file with durability guarantees."""
+    json_bytes = json.dumps(data, indent=2, sort_keys=True).encode("utf-8")
+    durable_atomic_write_bytes(destination, json_bytes)
+
+
+def atomic_write_json(destination: Path, data: Any) -> None:
+    """Atomically and durably write JSON data to destination file."""
+    durable_atomic_write_json(destination, data)
+
+
+def record_precheck_rejection(
+    reservation_file: Path,
+    run_label: str,
+    error_phase: str,
+    error_message: str,
+    candidate_sha: str,
+    authorization_commit_sha: str,
+    authorized_sha: str,
+    details: dict[str, Any] | None = None,
+) -> None:
+    """Record terminal precheck rejection with zero attempts consumed."""
+    data: dict[str, Any] = {
+        "status": "PRECHECK_REJECTED",
+        "gate": 3,
+        "run_label": run_label,
+        "error_phase": error_phase,
+        "error_message": error_message,
+        "attempts_consumed": 0,
+        "timestamp": datetime.now(UTC).isoformat(),
+        "candidate_git_sha": candidate_sha,
+        "authorization_commit_sha": authorization_commit_sha,
+        "git_commit_sha": authorized_sha,
+    }
+    if details:
+        data.update(details)
+    try:
+        atomic_write_json(reservation_file, data)
+    except Exception as e:
+        print(f"WARNING: Failed to record precheck rejection: {e}", file=sys.stderr)
 
 
 def check_existing_reservation(out_dir: Path, run_label: str) -> None:
@@ -1070,6 +1141,9 @@ def check_existing_reservation(out_dir: Path, run_label: str) -> None:
                 )
             except Exception:
                 st = "CORRUPTED"
+            if st == "PRECHECK_REJECTED":
+                # Precheck rejection without attempt claim does NOT consume attempt quota
+                continue
             raise RuntimeError(
                 f"Irrevocable reservation error: State file '{state_file}' already exists "
                 f"with status '{st}'. Run label '{run_label}' in '{out_dir}' has consumed its "
@@ -1223,6 +1297,50 @@ def execute_gate_3(
             print(child_proc.stderr, file=sys.stderr)
 
         return child_proc.returncode
+
+
+def required_failure_artifacts(
+    error_phase: str,
+    has_bundle: bool = True,
+    has_parser: bool = True,
+    has_runtime_manifest: bool = True,
+    has_raw_response: bool = False,
+    has_assessment: bool = False,
+) -> set[str]:
+    """Derive mandatory failure evidence artifacts based on phase and available context."""
+    req = {
+        TERMINAL_RESULT_FILE,
+        "run-metadata.json",
+        "authorization-spec.json",
+        "production-prompt.md",
+        "wire-schema.json",
+    }
+    if has_bundle:
+        req.add("source-manifest.json")
+        req.add("canonical-input-bundle.txt")
+    if has_parser:
+        req.add("parser-coverage-certificate.json")
+    if has_runtime_manifest:
+        req.add("runtime-manifest.json")
+    if has_raw_response or error_phase in {
+        "RESPONSE_PROCESSING",
+        "RESPONSE_STATUS",
+        "RESPONSE_REFUSAL",
+        "RESPONSE_MODEL_MISMATCH",
+        "MALFORMED_OUTPUT",
+        "RESPONSE_PARSING",
+        "RESPONSE_VALIDATION",
+        "EVALUATION",
+        "POST_INVOCATION_EVALUATION",
+    }:
+        req.add("raw-response.json")
+    if has_assessment or error_phase in {
+        "EVALUATION",
+        "POST_INVOCATION_EVALUATION",
+    }:
+        req.add("model-assessment.json")
+        req.add("enriched-assessment.json")
+    return req
 
 
 def finalize_post_model_failure(
@@ -1577,6 +1695,18 @@ def finalize_post_model_failure(
                     verification_errors.append(
                         {"file": TERMINAL_RESULT_FILE, "error": "candidate_git_sha mismatch"}
                     )
+                if term_data.get("authorization_commit_sha") != authorization_commit_sha:
+                    verification_errors.append(
+                        {"file": TERMINAL_RESULT_FILE, "error": "authorization_commit_sha mismatch"}
+                    )
+                if term_data.get("git_commit_sha") != authorized_sha:
+                    verification_errors.append(
+                        {"file": TERMINAL_RESULT_FILE, "error": "git_commit_sha mismatch"}
+                    )
+                if term_data.get("gate") != 3:
+                    verification_errors.append(
+                        {"file": TERMINAL_RESULT_FILE, "error": "gate mismatch"}
+                    )
                 if term_data.get("error_phase") != error_phase:
                     verification_errors.append(
                         {
@@ -1617,6 +1747,16 @@ def finalize_post_model_failure(
                     verification_errors.append(
                         {"file": "manifest.json", "error": "candidate_git_sha mismatch"}
                     )
+                if man_data.get("authorization_commit_sha") != authorization_commit_sha:
+                    verification_errors.append(
+                        {"file": "manifest.json", "error": "authorization_commit_sha mismatch"}
+                    )
+                if man_data.get("git_commit_sha") != authorized_sha:
+                    verification_errors.append(
+                        {"file": "manifest.json", "error": "git_commit_sha mismatch"}
+                    )
+                if man_data.get("gate") != 3:
+                    verification_errors.append({"file": "manifest.json", "error": "gate mismatch"})
 
                 man_arts = man_data.get("artifacts")
                 if not isinstance(man_arts, dict):
@@ -1624,30 +1764,43 @@ def finalize_post_model_failure(
                         {"file": "manifest.json", "error": "manifest.artifacts is not a dictionary"}
                     )
                 else:
-                    if TERMINAL_RESULT_FILE not in man_arts:
-                        verification_errors.append(
-                            {
-                                "file": "manifest.json",
-                                "error": f"Missing {TERMINAL_RESULT_FILE} in manifest artifacts",
-                            }
-                        )
-                    # Check required artifacts by failure phase
-                    if raw_response_content is not None and "raw-response.json" not in man_arts:
-                        verification_errors.append(
-                            {
-                                "file": "manifest.json",
-                                "error": "Missing raw-response.json for post-model failure",
-                            }
-                        )
-                    if (
-                        metadata is not None or (artifact_dir / "run-metadata.json").is_file()
-                    ) and "run-metadata.json" not in man_arts:
-                        verification_errors.append(
-                            {
-                                "file": "manifest.json",
-                                "error": "Missing run-metadata.json in manifest artifacts",
-                            }
-                        )
+                    has_bundle_art = (
+                        bundle is not None or (artifact_dir / "source-manifest.json").is_file()
+                    )
+                    has_parser_art = (
+                        parser is not None
+                        or (artifact_dir / "parser-coverage-certificate.json").is_file()
+                    )
+                    has_runtime_art = (
+                        runtime_manifest is not None
+                        or (artifact_dir / "runtime-manifest.json").is_file()
+                    )
+                    has_raw_art = (
+                        raw_response_content is not None
+                        or (artifact_dir / "raw-response.json").is_file()
+                    )
+                    has_assess_art = (
+                        assessment is not None or (artifact_dir / "model-assessment.json").is_file()
+                    )
+                    req_arts = required_failure_artifacts(
+                        error_phase=error_phase,
+                        has_bundle=has_bundle_art,
+                        has_parser=has_parser_art,
+                        has_runtime_manifest=has_runtime_art,
+                        has_raw_response=has_raw_art,
+                        has_assessment=has_assess_art,
+                    )
+                    for req_file in sorted(req_arts):
+                        if req_file not in man_arts:
+                            verification_errors.append(
+                                {
+                                    "file": "manifest.json",
+                                    "error": (
+                                        f"Missing required failure artifact '{req_file}' "
+                                        f"for failure phase '{error_phase}'"
+                                    ),
+                                }
+                            )
 
                     # Verify actual bytes on disk against recorded SHA-256
                     for art_name, expected_sha in man_arts.items():
@@ -2167,19 +2320,16 @@ def execute_internal_child(args: argparse.Namespace) -> int:
             f"unsupported relevant statement(s) detected. Execution strictly aborted.",
             file=sys.stderr,
         )
-        atomic_write_json(
-            reservation_file,
-            {
-                "status": "FAILED",
-                "error_phase": "FAIL_CLOSED_PARSER_CHECK",
-                "error_message": (
-                    f"Unsupported relevant statements: {coverage_cert.unsupported_relevant_count}"
-                ),
-                "timestamp": datetime.now(UTC).isoformat(),
-                "candidate_git_sha": candidate_sha,
-                "authorization_commit_sha": authorization_commit_sha,
-                "git_commit_sha": authorized_sha,
-            },
+        record_precheck_rejection(
+            reservation_file=reservation_file,
+            run_label=run_label,
+            error_phase="FAIL_CLOSED_PARSER_CHECK",
+            error_message=(
+                f"Unsupported relevant statements: {coverage_cert.unsupported_relevant_count}"
+            ),
+            candidate_sha=candidate_sha,
+            authorization_commit_sha=authorization_commit_sha,
+            authorized_sha=authorized_sha,
         )
         return 1
 
@@ -2208,32 +2358,26 @@ def execute_internal_child(args: argparse.Namespace) -> int:
                 f"golden_missing_in_host={len(diff_extra)}"
             )
             print(f"ERROR: {err_msg}", file=sys.stderr)
-            atomic_write_json(
-                reservation_file,
-                {
-                    "status": "FAILED",
-                    "error_phase": "REQUIRED_EXHAUSTIVE_PREFLIGHT_DRIFT",
-                    "error_message": err_msg,
-                    "timestamp": datetime.now(UTC).isoformat(),
-                    "candidate_git_sha": candidate_sha,
-                    "authorization_commit_sha": authorization_commit_sha,
-                    "git_commit_sha": authorized_sha,
-                },
+            record_precheck_rejection(
+                reservation_file=reservation_file,
+                run_label=run_label,
+                error_phase="REQUIRED_EXHAUSTIVE_PREFLIGHT_DRIFT",
+                error_message=err_msg,
+                candidate_sha=candidate_sha,
+                authorization_commit_sha=authorization_commit_sha,
+                authorized_sha=authorized_sha,
             )
             return 1
     except Exception as e:
         print(f"ERROR: REQUIRED_EXHAUSTIVE preflight verification failed: {e}", file=sys.stderr)
-        atomic_write_json(
-            reservation_file,
-            {
-                "status": "FAILED",
-                "error_phase": "REQUIRED_EXHAUSTIVE_PREFLIGHT_DRIFT",
-                "error_message": str(e),
-                "timestamp": datetime.now(UTC).isoformat(),
-                "candidate_git_sha": candidate_sha,
-                "authorization_commit_sha": authorization_commit_sha,
-                "git_commit_sha": authorized_sha,
-            },
+        record_precheck_rejection(
+            reservation_file=reservation_file,
+            run_label=run_label,
+            error_phase="REQUIRED_EXHAUSTIVE_PREFLIGHT_DRIFT",
+            error_message=str(e),
+            candidate_sha=candidate_sha,
+            authorization_commit_sha=authorization_commit_sha,
+            authorized_sha=authorized_sha,
         )
         return 1
 
@@ -2406,7 +2550,30 @@ def execute_internal_child(args: argparse.Namespace) -> int:
             )
             return 1
 
-        agent = SystemAnalyzerAgent(config=cfg, reasoning_effort=spec["reasoning_effort"])
+        try:
+            agent = SystemAnalyzerAgent(config=cfg, reasoning_effort=spec["reasoning_effort"])
+        except Exception as agent_err:
+            print(f"ERROR: Agent initialization failed: {agent_err}", file=sys.stderr)
+            finalize_post_model_failure(
+                artifact_dir=artifact_dir,
+                reservation_file=reservation_file,
+                error_phase="AGENT_INITIALIZATION",
+                error=agent_err,
+                spec=spec,
+                candidate_sha=candidate_sha,
+                authorization_commit_sha=authorization_commit_sha,
+                authorized_sha=authorized_sha,
+                run_label=run_label,
+                bundle=bundle,
+                parser=parser,
+                runtime_manifest=runtime_manifest,
+                metadata=None,
+                assessment=None,
+                raw_response_content=None,
+                spec_sha=spec_sha,
+                runtime_manifest_sha=runtime_manifest_sha,
+            )
+            return 1
 
         # Call invoke_raw(): returns provider response BEFORE any parsing
         try:
@@ -2559,7 +2726,7 @@ def execute_internal_child(args: argparse.Namespace) -> int:
 
         # 2. production-prompt.md
         prompt_text = load_system_v3_prompt()
-        (artifact_dir / "production-prompt.md").write_text(prompt_text, encoding="utf-8")
+        durable_atomic_write_text(artifact_dir / "production-prompt.md", prompt_text)
 
         # 3. wire-schema.json
         wire_schema = get_system_openai_wire_schema()
@@ -2577,8 +2744,9 @@ def execute_internal_child(args: argparse.Namespace) -> int:
         atomic_write_json(artifact_dir / "source-manifest.json", source_manifest)
 
         # 5. canonical-input-bundle.txt
-        (artifact_dir / "canonical-input-bundle.txt").write_text(
-            bundle.formatted_prompt_payload, encoding="utf-8"
+        durable_atomic_write_text(
+            artifact_dir / "canonical-input-bundle.txt",
+            bundle.formatted_prompt_payload,
         )
 
         # 6. parser-coverage-certificate.json
