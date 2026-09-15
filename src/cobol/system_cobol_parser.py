@@ -461,18 +461,35 @@ def is_cobol_structural_boundary(line: str) -> bool:
     return False
 
 
+RESERVED_PROCEDURAL_SCOPE_TERMINATORS: frozenset[str] = frozenset(
+    {
+        "END-IF",
+        "END-PERFORM",
+        "END-EVALUATE",
+        "END-READ",
+        "END-WRITE",
+        "END-CALL",
+        "END-COMPUTE",
+        "END-ADD",
+        "END-SUBTRACT",
+        "END-MULTIPLY",
+        "END-DIVIDE",
+        "END-RETURN",
+        "END-SEARCH",
+        "END-STRING",
+        "END-UNSTRING",
+    }
+)
+
 PROCEDURAL_KEYWORD_VOCABULARY: frozenset[str] = frozenset(
     {
         "CALL",
         "MOVE",
         "IF",
         "ELSE",
-        "END-IF",
         "EVALUATE",
         "WHEN",
-        "END-EVALUATE",
         "PERFORM",
-        "END-PERFORM",
         "GO",
         "GOTO",
         "STOP",
@@ -491,6 +508,7 @@ PROCEDURAL_KEYWORD_VOCABULARY: frozenset[str] = frozenset(
         "EXIT",
         "SECTION",
     }
+    | RESERVED_PROCEDURAL_SCOPE_TERMINATORS
 )
 
 PROCEDURAL_STATEMENT_STARTERS: frozenset[str] = frozenset(
@@ -559,24 +577,87 @@ def consume_optional_terminal_period(tokens: list[str]) -> tuple[bool, list[str]
     return True, clean, terminated
 
 
-SUPPORTED_PICTURE_PATTERN: re.Pattern[str] = re.compile(
-    r"^(?:"
-    r"[AX](?:\([1-9][0-9]*\))?|"
-    r"S?9+(?:\([1-9][0-9]*\))?(?:V9+(?:\([1-9][0-9]*\))?)?|"
-    r"V9+(?:\([1-9][0-9]*\))?|"
-    r"[+-]+(?:\([1-9][0-9]*\))?9*(?:\([1-9][0-9]*\))?(?:V9+(?:\([1-9][0-9]*\))?)?|"
-    r"\$?[Z9*]+(?:,[Z9*]+)*(?:\.[0-9Z*]+)?"
-    r")$",
-    re.IGNORECASE,
-)
-
-
 def is_valid_supported_picture(pic: str | None) -> bool:
-    """Validate picture clause against Contract 3.5.3 frozen supported picture grammar."""
+    """Validate picture clause against Contract 3.5.3 frozen supported picture grammar.
+
+    Validates supported structural forms:
+    - Alphanumeric: X, X(n)
+    - Alphabetic: A, A(n)
+    - Numeric unscaled: 9, 9(n), 999
+    - Signed numeric: S9, S9(n), S999
+    - Assumed decimal: S9(n)V99, 9(n)V9(m), S9(n)V9(m), V9(n), 9+V9+
+    - Edited sign: -(n)9, +(n)9, -9(n), +9(n)
+    - Edited currency/zero-suppress: $ZZ,ZZZ,ZZZ,ZZ9.99, ZZZ,ZZ9.99, ***,**9.99
+    Rejects malformed combinations:
+    - Mixed signs: +-9, ++--9, -+9, +-
+    - Mixed suppression/digits out of order: 9Z9, Z*9, *Z9, 9*9
+    - Double repeats: +(2)(3), -(2)(3), 9(2)(3), X(2)(3)
+    - Unclosed / invalid parentheses: X(, 9(abc), 9(0)
+    - Garbage: PIC GARBAGE
+    """
     if not pic:
         return False
     p = pic.strip()
-    return bool(SUPPORTED_PICTURE_PATTERN.match(p))
+    if not p or p.endswith("."):
+        return False
+    p = p.upper()
+
+    # Reject double repeats like (2)(3) or adjacent parens
+    if re.search(r"\([^)]*\)\s*\([^)]*\)", p):
+        return False
+    # Check parentheses syntax: all parentheses must enclose [1-9][0-9]*
+    for match in re.finditer(r"\((.*?)\)", p):
+        inner = match.group(1).strip()
+        if not re.fullmatch(r"[1-9][0-9]*", inner):
+            return False
+    if p.count("(") != p.count(")"):
+        return False
+
+    # 1. Alphanumeric / Alphabetic: X, X(n), A, A(n), XX...
+    if re.fullmatch(r"[AX]+(\([1-9][0-9]*\))?", p):
+        return True
+
+    # 2. Pure unscaled/scaled numeric with optional S and V
+    m_num = re.fullmatch(r"^(S)?(9+(?:\([1-9][0-9]*\))?)?(V9+(?:\([1-9][0-9]*\))?)?$", p)
+    if m_num:
+        has_int = bool(m_num.group(2))
+        has_dec = bool(m_num.group(3))
+        if has_int or has_dec:
+            return True
+
+    # 3. Edited sign leading: e.g. -(10)9, +(10)9, -9(10), +9(10), -9(10)V99
+    if "+" in p and "-" in p:
+        return False
+    sign_pattern = re.compile(
+        r"^([+-])(?:(\([1-9][0-9]*\))9*(?:\([1-9][0-9]*\))?|9+(?:\([1-9][0-9]*\))?)(?:V9+(?:\([1-9][0-9]*\))?)?$"
+    )
+    if sign_pattern.fullmatch(p):
+        return True
+
+    # 4. Edited currency & suppression
+    if "Z" in p and "*" in p:
+        return False
+    if "+" in p and "-" in p:
+        return False
+
+    parts = p.split(".")
+    if len(parts) > 2:
+        return False
+    int_part = parts[0]
+
+    # In int_part, once '9' is encountered, neither 'Z' nor '*' may appear after it
+    if "9" in int_part:
+        first_9 = int_part.index("9")
+        if "Z" in int_part[first_9:] or "*" in int_part[first_9:]:
+            return False
+
+    edited_pattern = re.compile(
+        r"^(\$)?([Z9*]+(?:\([1-9][0-9]*\))?(?:,[Z9*]+(?:\([1-9][0-9]*\))?)*)(\.[0-9Z*]+(?:\([1-9][0-9]*\))?)?$"
+    )
+    if edited_pattern.fullmatch(p):
+        return True
+
+    return False
 
 
 def consume_declaration_period(tokens: list[str]) -> tuple[bool, list[str], bool]:
@@ -1661,6 +1742,7 @@ class SystemCobolParser:
                         break
 
                 # 2. Look for USAGE
+                explicit_rec_usage: str | None = None
                 if "USAGE" in toks_upper:
                     idx_u = toks_upper.index("USAGE")
                     consumed_indices.add(idx_u)
@@ -1669,6 +1751,7 @@ class SystemCobolParser:
                         consumed_indices.add(next_u)
                         next_u += 1
                     if next_u < len(tokens):
+                        explicit_rec_usage = toks_upper[next_u].rstrip(".")
                         consumed_indices.add(next_u)
                     else:
                         rec_valid = False
@@ -1679,8 +1762,34 @@ class SystemCobolParser:
                             continue
                         clean_tok = tok_u.rstrip(".")
                         if clean_tok in ("PACKED-DECIMAL", "COMP-3", "COMP", "BINARY", "DISPLAY"):
+                            explicit_rec_usage = clean_tok
                             consumed_indices.add(idx_tok)
                             break
+
+                rec_usage_val = "DISPLAY"
+                if rec_valid and explicit_rec_usage is not None:
+                    if explicit_rec_usage == "PACKED-DECIMAL":
+                        rec_usage_val = "COMP-3"
+                    elif explicit_rec_usage == "COMP-3":
+                        rec_usage_val = "COMP-3"
+                    elif explicit_rec_usage in ("COMP", "BINARY"):
+                        rec_usage_val = "BINARY"
+                    elif explicit_rec_usage == "DISPLAY":
+                        rec_usage_val = "DISPLAY"
+                    else:
+                        rec_valid = False
+                        rec_err = (
+                            f"Unsupported explicit USAGE in 01 declaration: {explicit_rec_usage}"
+                        )
+
+                # Validate PICTURE and computational USAGE compatibility
+                if rec_valid and pic_val is not None and rec_usage_val in ("COMP-3", "BINARY"):
+                    if any(c in pic_val for c in ("X", "A")):
+                        rec_valid = False
+                        rec_err = (
+                            f"Incompatible PICTURE {pic_val} with computational USAGE"
+                            f" {rec_usage_val}"
+                        )
 
                 # 3. Look for VALUE
                 if "VALUE" in toks_upper:
@@ -1849,6 +1958,14 @@ class SystemCobolParser:
                 elif field_valid:
                     # Implicit missing USAGE defaults to DISPLAY
                     usage_val = "DISPLAY"
+
+                # Validate PICTURE and computational USAGE compatibility
+                if field_valid and pic_val is not None and usage_val in ("COMP-3", "BINARY"):
+                    if any(c in pic_val for c in ("X", "A")):
+                        field_valid = False
+                        field_err = (
+                            f"Incompatible PICTURE {pic_val} with computational USAGE {usage_val}"
+                        )
 
                 # Check terminal period
                 if tokens and tokens[-1] == ".":
@@ -2096,6 +2213,7 @@ class SystemCobolParser:
                 if (
                     first not in PROCEDURAL_KEYWORD_VOCABULARY
                     and first not in PROCEDURAL_STATEMENT_STARTERS
+                    and first not in RESERVED_PROCEDURAL_SCOPE_TERMINATORS
                 ):
                     if is_canonical_cobol_identifier(first):
                         self.statements.append(
@@ -2858,6 +2976,25 @@ class SystemCobolParser:
                 i += 1
                 continue
 
+            if first in RESERVED_PROCEDURAL_SCOPE_TERMINATORS:
+                self.statements.append(
+                    ClassifiedStatement(
+                        target_file.relative_path,
+                        line_num,
+                        line_num,
+                        first,
+                        raw_line,
+                        StatementClassification.UNSUPPORTED_RELEVANT,
+                        (
+                            f"Unsupported procedural scope terminator {first} in Contract 3.5.3"
+                            " frozen subset"
+                        ),
+                        has_terminal_period=line_is_terminated,
+                    )
+                )
+                i += 1
+                continue
+
             if first == "ACCEPT":
                 if (
                     len(tokens) == 2
@@ -3110,7 +3247,128 @@ class SystemCobolParser:
                 current_record.line_end = max(current_record.line_end, line_num)
             i += 1
 
+        self._validate_unit_procedural_scopes(target_file.relative_path)
         return unit
+
+    def _validate_unit_procedural_scopes(self, rel_path: str) -> None:
+        """Validate procedural scopes (IF, PERFORM UNTIL, READ, EVALUATE) in a unit.
+
+        Enforces Contract 3.5.3 procedural scope rules:
+        - Strict matching of openers and terminators:
+          IF -> END-IF
+          PERFORM UNTIL -> END-PERFORM
+          READ -> END-READ
+          EVALUATE -> END-EVALUATE
+        - Sentence period terminates all active conditional scopes within the sentence
+          (IF, READ, EVALUATE).
+        - Any explicit scope terminator appearing when no matching scope is open (or when already
+          closed by a sentence period) is reclassified as UNSUPPORTED_RELEVANT.
+        - Any open scope remaining at the end of the procedure division is reclassified as
+          UNSUPPORTED_RELEVANT.
+        """
+        unit_indices_stmts = [
+            (idx, s) for idx, s in enumerate(self.statements) if s.file_path == rel_path
+        ]
+        in_proc = False
+        scope_stack: list[dict[str, Any]] = []
+
+        for idx, s in unit_indices_stmts:
+            if s.verb == "PROCEDURE_DIVISION":
+                in_proc = True
+                scope_stack.clear()
+                continue
+            if not in_proc:
+                continue
+
+            if s.verb in ("SECTION_HEADER", "PARAGRAPH_HEADER"):
+                continue
+
+            # Scope openers
+            if s.verb == "IF":
+                scope_stack.append({"kind": "IF", "idx": idx, "stmt": s})
+            elif s.verb == "PERFORM" and "UNTIL" in s.raw_text.upper():
+                scope_stack.append({"kind": "PERFORM", "idx": idx, "stmt": s})
+            elif s.verb == "READ":
+                if not s.has_terminal_period:
+                    scope_stack.append({"kind": "READ", "idx": idx, "stmt": s})
+            elif s.verb == "EVALUATE":
+                scope_stack.append({"kind": "EVALUATE", "idx": idx, "stmt": s})
+
+            # Branch / clause helpers
+            elif s.verb == "ELSE":
+                if not scope_stack or scope_stack[-1]["kind"] != "IF":
+                    self.statements[idx] = replace(
+                        s,
+                        classification=StatementClassification.UNSUPPORTED_RELEVANT,
+                        description=f"Stray or unmatched ELSE delimiter at line {s.line_start}",
+                    )
+
+            # Scope terminators
+            elif s.verb == "END-IF":
+                if not scope_stack or scope_stack[-1]["kind"] != "IF":
+                    self.statements[idx] = replace(
+                        s,
+                        classification=StatementClassification.UNSUPPORTED_RELEVANT,
+                        description=f"Stray or unmatched END-IF delimiter at line {s.line_start}",
+                    )
+                else:
+                    scope_stack.pop()
+            elif s.verb == "END-PERFORM":
+                if not scope_stack or scope_stack[-1]["kind"] != "PERFORM":
+                    self.statements[idx] = replace(
+                        s,
+                        classification=StatementClassification.UNSUPPORTED_RELEVANT,
+                        description=(
+                            f"Stray or unmatched END-PERFORM delimiter at line {s.line_start}"
+                        ),
+                    )
+                else:
+                    scope_stack.pop()
+            elif s.verb == "END-READ":
+                if not scope_stack or scope_stack[-1]["kind"] != "READ":
+                    self.statements[idx] = replace(
+                        s,
+                        classification=StatementClassification.UNSUPPORTED_RELEVANT,
+                        description=f"Stray or unmatched END-READ delimiter at line {s.line_start}",
+                    )
+                else:
+                    scope_stack.pop()
+            elif s.verb == "END-EVALUATE":
+                if not scope_stack or scope_stack[-1]["kind"] != "EVALUATE":
+                    self.statements[idx] = replace(
+                        s,
+                        classification=StatementClassification.UNSUPPORTED_RELEVANT,
+                        description=(
+                            f"Stray or unmatched END-EVALUATE delimiter at line {s.line_start}"
+                        ),
+                    )
+                else:
+                    scope_stack.pop()
+
+            # Sentence boundary period:
+            # Terminates all active conditional scopes (IF, READ, EVALUATE).
+            if s.has_terminal_period and s.verb not in (
+                "END-IF",
+                "END-PERFORM",
+                "END-READ",
+                "END-EVALUATE",
+            ):
+                while scope_stack and scope_stack[-1]["kind"] in ("IF", "READ", "EVALUATE"):
+                    scope_stack.pop()
+
+        # Unclosed scopes at end of procedure division
+        if scope_stack:
+            for unclosed in scope_stack:
+                u_idx = unclosed["idx"]
+                u_stmt = self.statements[u_idx]
+                self.statements[u_idx] = replace(
+                    u_stmt,
+                    classification=StatementClassification.UNSUPPORTED_RELEVANT,
+                    description=(
+                        f"Unclosed {unclosed['kind']} scope starting at line "
+                        f"{unclosed['stmt'].line_start}"
+                    ),
+                )
 
     def _parse_procedural_cf_block(
         self,

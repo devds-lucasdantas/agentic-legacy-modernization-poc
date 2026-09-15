@@ -20,6 +20,7 @@ import argparse
 import copy
 import hashlib
 import json
+import re
 import tempfile
 from pathlib import Path
 from typing import Any, cast
@@ -7364,3 +7365,293 @@ def test_h7_7_c_aud_09_agent_initialization_failure_envelope(
     term_data = json.loads((art_dir / mod.TERMINAL_RESULT_FILE).read_text(encoding="utf-8"))
     assert term_data["status"] == "FAILED"
     assert term_data["error_phase"] == "AGENT_INITIALIZATION"
+
+
+# ===========================================================================
+# H7.8-A: Complete COBOL Subset Grammar & Procedural Scope Stack Regressions
+# ===========================================================================
+
+
+def test_h7_8_a_reserved_scope_terminators_and_procedural_scope_stack() -> None:
+    """H7.8-A: Reserved procedural scope terminators and scope stack validation.
+
+    Verifies:
+    - Scope terminators (END-IF, END-PERFORM, END-READ, END-EVALUATE, etc.)
+      cannot be recognized as paragraph headers even if followed by a period.
+    - Stray END-READ / END-IF without open scope fails closed as UNSUPPORTED_RELEVANT.
+    - Sentence period terminates active conditional scopes (IF, READ, EVALUATE),
+      causing subsequent explicit terminators to fail closed.
+    - Valid balanced scopes parse cleanly without UNSUPPORTED_RELEVANT.
+    - Unclosed scopes at EOF fail closed as UNSUPPORTED_RELEVANT.
+    """
+    # 1. END-READ. cannot become a paragraph header; stray END-READ fails closed
+    stray_src = """       IDENTIFICATION DIVISION.
+       PROGRAM-ID. STRAYREAD.
+       PROCEDURE DIVISION.
+       MAIN-PARA.
+           DISPLAY 'HELLO'.
+           END-READ.
+           GOBACK.
+"""
+    p_stray = SystemCobolParser(_make_multi_file_bundle({"STRAYREAD.CBL": stray_src}))
+    cert_stray = p_stray.parse_system()
+    assert cert_stray.is_evaluation_blocked is True
+    # Verify END-READ was NOT classified as PARAGRAPH_HEADER
+    assert not any(
+        s.verb == "PARAGRAPH_HEADER" and "END-READ" in s.raw_text for s in p_stray.statements
+    )
+    # Verify it is classified as UNSUPPORTED_RELEVANT
+    assert any(
+        s.verb == "END-READ" and s.classification == StatementClassification.UNSUPPORTED_RELEVANT
+        for s in p_stray.statements
+    )
+
+    # 2. Sentence period inside READ terminates conditional scope; trailing END-READ is stray
+    period_in_read_src = """       IDENTIFICATION DIVISION.
+       PROGRAM-ID. PERIODREAD.
+       ENVIRONMENT DIVISION.
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+           SELECT ACCT-FILE ASSIGN TO 'acct.dat'.
+       DATA DIVISION.
+       FILE SECTION.
+       FD ACCT-FILE.
+       01 ACCT-REC PIC X(50).
+       WORKING-STORAGE SECTION.
+       01 WS-EOF PIC X VALUE 'N'.
+       PROCEDURE DIVISION.
+       MAIN-PARA.
+           OPEN INPUT ACCT-FILE.
+           READ ACCT-FILE
+           AT END
+               MOVE 'Y' TO WS-EOF.
+           END-READ.
+           CLOSE ACCT-FILE.
+           GOBACK.
+"""
+    p_term = SystemCobolParser(_make_multi_file_bundle({"PERIODREAD.CBL": period_in_read_src}))
+    cert_term = p_term.parse_system()
+    assert cert_term.is_evaluation_blocked is True
+    assert any(
+        s.verb == "END-READ" and s.classification == StatementClassification.UNSUPPORTED_RELEVANT
+        for s in p_term.statements
+    )
+
+    # 3. Unclosed IF scope at EOF fails closed
+    unclosed_src = """       IDENTIFICATION DIVISION.
+       PROGRAM-ID. UNCLOSED.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 WS-A PIC X VALUE 'A'.
+       PROCEDURE DIVISION.
+       MAIN-PARA.
+           IF WS-A = 'A'
+               DISPLAY 'MATCH'.
+           END-IF.
+           IF WS-A = 'A'
+               DISPLAY 'MATCH'
+           GOBACK
+"""
+    p_unclosed = SystemCobolParser(_make_multi_file_bundle({"UNCLOSED.CBL": unclosed_src}))
+    cert_unclosed = p_unclosed.parse_system()
+    assert cert_unclosed.is_evaluation_blocked is True
+    assert any(
+        s.verb == "IF" and s.classification == StatementClassification.UNSUPPORTED_RELEVANT
+        for s in p_unclosed.statements
+    )
+
+    # 4. Valid balanced scopes (IF, PERFORM UNTIL, READ) parse cleanly
+    valid_src = """       IDENTIFICATION DIVISION.
+       PROGRAM-ID. VALIDSCOPES.
+       ENVIRONMENT DIVISION.
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+           SELECT ACCT-FILE ASSIGN TO 'acct.dat'
+               ORGANIZATION IS LINE SEQUENTIAL.
+       DATA DIVISION.
+       FILE SECTION.
+       FD ACCT-FILE.
+       01 ACCT-REC PIC X(50).
+       WORKING-STORAGE SECTION.
+       01 WS-EOF PIC X VALUE 'N'.
+       PROCEDURE DIVISION.
+       MAIN-PARA.
+           OPEN INPUT ACCT-FILE.
+           PERFORM UNTIL WS-EOF = 'Y'
+               READ ACCT-FILE
+               AT END
+                   MOVE 'Y' TO WS-EOF
+               NOT AT END
+                   IF WS-EOF = 'N'
+                       DISPLAY 'PROCESS'
+                   END-IF
+               END-READ
+           END-PERFORM.
+           CLOSE ACCT-FILE.
+           GOBACK.
+"""
+    p_valid = SystemCobolParser(_make_multi_file_bundle({"VALIDSCOPES.CBL": valid_src}))
+    cert_valid = p_valid.parse_system()
+    assert cert_valid.is_evaluation_blocked is False
+    assert cert_valid.unsupported_relevant_count == 0
+
+
+def test_h7_8_a_structural_picture_validation_matrix() -> None:
+    """H7.8-A: Structural PICTURE parser validation matrix.
+
+    Validates all supported structural combinations and rejects malformed ones.
+    """
+    valid_pics = [
+        "X",
+        "X(10)",
+        "XX",
+        "A",
+        "A(5)",
+        "9",
+        "9(5)",
+        "999",
+        "S9",
+        "S9(4)",
+        "S9(5)V99",
+        "9(5)V99",
+        "V99",
+        "V9(4)",
+        "-(10)9",
+        "+(10)9",
+        "-9(5)",
+        "+9(5)",
+        "$ZZ,ZZZ,ZZZ,ZZ9.99",
+        "ZZZ,ZZ9.99",
+        "***,**9.99",
+    ]
+    for vp in valid_pics:
+        assert is_valid_supported_picture(vp), f"Expected {vp} to be valid"
+
+    invalid_pics = [
+        "+-9",
+        "++--9",
+        "-+9",
+        "+-",
+        "9Z9",
+        "Z*9",
+        "*Z9",
+        "9*9",
+        "+(2)(3)",
+        "-(2)(3)",
+        "9(2)(3)",
+        "X(2)(3)",
+        "X(",
+        "9(abc)",
+        "9(0)",
+        "9(-1)",
+        "PIC GARBAGE",
+        "9(5)V99.",  # Trailing punctuation must be rejected by helper
+        "",
+        "   ",
+    ]
+    for ip in invalid_pics:
+        assert not is_valid_supported_picture(ip), f"Expected {ip} to be invalid"
+
+
+def test_h7_8_a_f05_canonical_report_gen_mutation_reproduction() -> None:
+    """H7.8-A: F-05 canonical mutation reproduction on REPORT-GEN.CBL.
+
+    Per Clarification 2:
+    - Mutate legacy/core-banking-system/REPORT-GEN.CBL:
+      Change '01 ACCOUNT-REC.' to '01 ACCOUNT-REC USAGE GARBAGE.'
+    - Parse system:
+      - Coverage is BLOCKED (UNSUPPORTED_RELEVANT > 0).
+      - ACCOUNT-REC RecordLayoutFact is ABSENT from supported facts.
+      - Dependent RecordLayoutRelationFacts involving ACCOUNT-REC are ABSENT.
+      - Sibling records (e.g. PRINT-LINE) remain intact.
+      - Unchanged 59-fact golden assessment Gate FAILS.
+    """
+    bundle = read_system_bundle(repo_root=REPO_ROOT)
+    files = {rel_path: tf.raw_content for rel_path, tf in bundle.files.items()}
+    target = "legacy/core-banking-system/REPORT-GEN.CBL"
+    files[target] = re.sub(r"01\s+ACCOUNT-REC\.", "01 ACCOUNT-REC USAGE GARBAGE.", files[target])
+    mutated_bundle = _make_multi_file_bundle(files)
+
+    parser = SystemCobolParser(mutated_bundle)
+    cert = parser.parse_system()
+
+    # 1. Coverage is blocked
+    assert cert.is_evaluation_blocked is True
+    assert cert.unsupported_relevant_count >= 1
+
+    # 2. ACCOUNT-REC layout fact is ABSENT from REPORT-GEN
+    layout_facts = [
+        sf.fact for sf in parser.supported_facts if isinstance(sf.fact, RecordLayoutFact)
+    ]
+    account_layouts = [
+        f
+        for f in layout_facts
+        if f.record_name == "ACCOUNT-REC" and f.program_id in ("REPORT-GEN", "REPORTGEN")
+    ]
+    assert len(account_layouts) == 0
+
+    # Sibling records in other files remain intact (atomic per-record isolation)
+    assert (
+        len(
+            [
+                f
+                for f in layout_facts
+                if f.record_name == "ACCOUNT-REC" and f.program_id == "INIT-DB"
+            ]
+        )
+        == 1
+    )
+    assert (
+        len(
+            [
+                f
+                for f in layout_facts
+                if f.record_name == "ACCOUNT-REC" and f.program_id == "TRANS-PROC"
+            ]
+        )
+        == 1
+    )
+    assert (
+        len(
+            [
+                f
+                for f in layout_facts
+                if f.record_name == "TEMP-REC" and f.program_id == "TRANS-PROC"
+            ]
+        )
+        == 1
+    )
+    assert (
+        len(
+            [
+                f
+                for f in layout_facts
+                if f.record_name == "ACCOUNT-RECORD" and f.program_id == "ACCOUNTS"
+            ]
+        )
+        == 1
+    )
+
+    # 3. Dependent relations involving mutated ACCOUNT-REC are ABSENT
+    rel_facts = [
+        sf.fact for sf in parser.supported_facts if isinstance(sf.fact, RecordLayoutRelationFact)
+    ]
+    assert (
+        len(rel_facts) == 6
+    )  # 4 out of 10 pairs eliminated because REPORT-GEN:ACCOUNT-REC is absent
+    for rf in rel_facts:
+        assert "REPORT-GEN:ACCOUNT-REC" not in rf.layout_a_name
+        assert "REPORT-GEN:ACCOUNT-REC" not in rf.layout_b_name
+
+    # 4. Evaluating against unchanged golden 59-fact assessment results in Gate 3 FAIL
+    golden = load_golden_assessment()
+    index = SystemSupportIndex(
+        parser.supported_facts,
+        mutated_bundle,
+        file_status_certificate=parser.file_status_certificate,
+    )
+    evaluator = SystemEvaluatorV3(index)
+    metrics, preds = evaluator.evaluate_assessment(golden)
+    assert metrics.recall < 1.0
+    assert metrics.gate_3_pass is False
+    assert cert.is_evaluation_blocked is True
