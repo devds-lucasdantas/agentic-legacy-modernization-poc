@@ -212,9 +212,7 @@ def join_abstract_path_states(
         vals = [s.get_binding(v) for s in continuing]
         # Clarification 12: Branch Join Semantics
         if any(val is None or isinstance(val, UnknownValue) for val in vals):
-            joined_vars.append(
-                (v, UnknownValue(f"Undefined or unknown across branches for {v}"))
-            )
+            joined_vars.append((v, UnknownValue(f"Undefined or unknown across branches for {v}")))
         elif all(isinstance(val, LiteralValue) for val in vals):
             lit_vals = {val.val for val in vals if isinstance(val, LiteralValue)}
             if len(lit_vals) == 1:
@@ -475,6 +473,7 @@ class ASTCompilationUnit:
     statements: list[ASTStatement] = field(default_factory=list)
     certified_system_dispatches: list[Any] = field(default_factory=list)
     feasible_statement_lines: set[int] = field(default_factory=set)
+    _analyzed_continuation_flow: FlowResult | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -2943,14 +2942,22 @@ class SystemCobolParser:
                             cond_id = left_op
                             op = tokens[3]
                             right_typed = to_typed_value(right_op)
-                            exit_is_lit = isinstance(right_typed, LiteralValue)
-                            exit_val = right_typed.val if exit_is_lit else right_op
+                            if isinstance(right_typed, LiteralValue):
+                                exit_is_lit = True
+                                exit_val = right_typed.val
+                            else:
+                                exit_is_lit = False
+                                exit_val = right_op
                         elif is_canonical_cobol_identifier(right_op):
                             cond_id = right_op
                             op = tokens[3]
                             left_typed = to_typed_value(left_op)
-                            exit_is_lit = isinstance(left_typed, LiteralValue)
-                            exit_val = left_typed.val if exit_is_lit else left_op
+                            if isinstance(left_typed, LiteralValue):
+                                exit_is_lit = True
+                                exit_val = left_typed.val
+                            else:
+                                exit_is_lit = False
+                                exit_val = left_op
 
                 if not perf_valid:
                     self.statements.append(
@@ -3723,7 +3730,8 @@ class SystemCobolParser:
                     self._mark_stmt_unsupported(
                         loop_stmt,
                         callee_unit,
-                        f"Loop condition identifier '{cond_id}' is unknown or non-literal on incoming path",
+                        f"Loop condition identifier '{cond_id}' is unknown "
+                        "or non-literal on incoming path",
                     )
                     return False
 
@@ -3871,7 +3879,8 @@ class SystemCobolParser:
                     self._mark_stmt_unsupported(
                         loop_stmt,
                         callee_unit,
-                        f"Loop exit assignment source '{ast_m.source_operand}' is an identifier, not literal value",
+                        f"Loop exit assignment source '{ast_m.source_operand}' "
+                        "is an identifier, not literal value",
                     )
                     return False
                 # F-01: Conditional EOF assignment does not prove loop termination
@@ -3986,7 +3995,8 @@ class SystemCobolParser:
                 )
                 return False
 
-        # In NOT AT END: resetting flag to non-exit literal is valid (sequential READ advances progress)
+        # In NOT AT END: resetting flag to non-exit literal is valid
+        # (sequential READ advances progress)
         for cstmt in _get_all_cstmts(not_at_end_nodes):
             if cstmt.classification == StatementClassification.UNSUPPORTED_RELEVANT:
                 self._mark_stmt_unsupported(
@@ -4005,8 +4015,7 @@ class SystemCobolParser:
             )
             if ast_m and ast_m.target_operand == cond_id:
                 if not (
-                    ast_m.is_literal_source
-                    and _safe_unquote(ast_m.source_operand) != exit_lit
+                    ast_m.is_literal_source and _safe_unquote(ast_m.source_operand) != exit_lit
                 ):
                     self._mark_stmt_unsupported(
                         loop_stmt,
@@ -4475,9 +4484,7 @@ class SystemCobolParser:
                                     fallthrough_possible=True,
                                     alternative_states=current_result.alternative_states,
                                     joined_bindings=current_result.joined_bindings,
-                                    joined_resource_states=(
-                                        current_result.joined_resource_states
-                                    ),
+                                    joined_resource_states=(current_result.joined_resource_states),
                                 )
                     else:
                         target = ast_call.target
@@ -4802,7 +4809,10 @@ class SystemCobolParser:
                             p.variable == pred_pos.variable
                             and (
                                 (p.is_positive and p.expected_value != pred_pos.expected_value)
-                                or (not p.is_positive and p.expected_value == pred_pos.expected_value)
+                                or (
+                                    not p.is_positive
+                                    and p.expected_value == pred_pos.expected_value
+                                )
                             )
                             for p in active_preds
                         ):
@@ -4943,7 +4953,7 @@ class SystemCobolParser:
         """
         curr_prog = callee_unit.program_id or ""
         if call_stack is None:
-            if hasattr(callee_unit, "_analyzed_continuation_flow"):
+            if callee_unit._analyzed_continuation_flow is not None:
                 return callee_unit._analyzed_continuation_flow
             call_stack = frozenset([curr_prog])
         elif curr_prog in call_stack:
@@ -5327,7 +5337,29 @@ class SystemCobolParser:
                                     )
                             continue
 
-                        # Command invocation (opaque command fact is derivable)
+                        dialect, unwrapped_cmd, dialect_reason = classify_command_dialect(cmd_clean)
+                        if dialect == CommandDialect.OTHER_COMMAND:
+                            fail_reason = (
+                                dialect_reason
+                                or f"Unsupported command or shell wrapper: '{cmd_clean}'"
+                            )
+                            for idx_s, s in enumerate(self.statements):
+                                if s.file_path == unit.file_path and s.line_start in (
+                                    s1.line_start,
+                                    s2.line_start,
+                                ):
+                                    self.statements[idx_s] = ClassifiedStatement(
+                                        s.file_path,
+                                        s.line_start,
+                                        s.line_end,
+                                        s.verb,
+                                        s.raw_text,
+                                        StatementClassification.UNSUPPORTED_RELEVANT,
+                                        fail_reason,
+                                    )
+                            continue
+
+                        # Opaque command invocation is grounded for recognized shell command forms
                         cmd_idx = len(commands_in_unit) + 1
                         self.supported_facts.append(
                             SupportedSystemFact(
@@ -5349,7 +5381,6 @@ class SystemCobolParser:
                         )
 
                         # Platform dependency (Contract 3.5.3 wire schema permits only WINDOWS)
-                        dialect, unwrapped_cmd, dialect_reason = classify_command_dialect(cmd_clean)
                         if dialect != CommandDialect.SUPPORTED_WINDOWS_CMD:
                             fail_reason = (
                                 dialect_reason
@@ -5434,15 +5465,15 @@ class SystemCobolParser:
 
             # F-02: Check for unsupported nonadjacent SYSTEM commands
             paired_call_lines = {c[1].line_start for c in commands_in_unit}
-            for s in unit.statements:
+            for stmt in unit.statements:
                 if (
-                    isinstance(s, ASTCall)
-                    and s.is_literal
-                    and s.target == "SYSTEM"
-                    and s.line_start in reachable_lines
-                    and s.line_start not in paired_call_lines
+                    isinstance(stmt, ASTCall)
+                    and stmt.is_literal
+                    and stmt.target == "SYSTEM"
+                    and stmt.line_start in reachable_lines
+                    and stmt.line_start not in paired_call_lines
                 ):
-                    cmd_var = s.using_args[0] if s.using_args else ""
+                    cmd_var = stmt.using_args[0] if stmt.using_args else ""
                     has_target_move = any(
                         isinstance(m, ASTMove) and m.target_operand == cmd_var
                         for m in unit.statements
@@ -5452,13 +5483,13 @@ class SystemCobolParser:
                             isinstance(other, ASTCall)
                             and other.target != "SYSTEM"
                             and cmd_var in other.using_args
-                            and other.line_start < s.line_start
+                            and other.line_start < stmt.line_start
                             for other in unit.statements
                         )
                         prior_accept = any(
                             getattr(other, "target_operand", None) == cmd_var
                             and getattr(other, "verb", None) == "ACCEPT"
-                            and other.line_start < s.line_start
+                            and other.line_start < stmt.line_start
                             for other in unit.statements
                         )
                         if prior_clobber:
@@ -5473,14 +5504,14 @@ class SystemCobolParser:
                             )
                         else:
                             desc = (
-                                "Unsupported nonadjacent SYSTEM command: missing "
-                                "immediately adjacent defining MOVE or separated by procedural barrier"
+                                "Unsupported nonadjacent SYSTEM command: missing immediately "
+                                "defining MOVE or separated by procedural barrier"
                             )
 
                         for idx_s, cur_s in enumerate(self.statements):
                             if (
                                 cur_s.file_path == unit.file_path
-                                and cur_s.line_start == s.line_start
+                                and cur_s.line_start == stmt.line_start
                                 and cur_s.classification
                                 != StatementClassification.UNSUPPORTED_RELEVANT
                             ):

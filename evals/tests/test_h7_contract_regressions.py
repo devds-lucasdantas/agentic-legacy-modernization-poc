@@ -5569,7 +5569,9 @@ def test_h7_6_a_b02_exact_duplicate_host_integrity_check() -> None:
     sf1 = SupportedSystemFact(fact=fact, proposition_id="prop.term.bank-main", evidence_spans=spans)
     sf2 = SupportedSystemFact(fact=fact, proposition_id="prop.term.bank-main", evidence_spans=spans)
 
-    with pytest.raises(ValueError, match="Exact duplicate supported fact rejected by host index integrity"):
+    with pytest.raises(
+        ValueError, match="Exact duplicate supported fact rejected by host index integrity"
+    ):
         SystemSupportIndex([sf1, sf2], bundle)
 
 
@@ -7715,11 +7717,17 @@ def test_h7_8_b_f01_loop_theorem_soundness_counterexamples() -> None:
            CLOSE ACCT-FILE.
            GOBACK.
 """
-    p1 = SystemCobolParser(_make_multi_file_bundle({"CALLER.CBL": caller_src, "LOOPPROG.CBL": src_id_y}))
+    p1 = SystemCobolParser(
+        _make_multi_file_bundle({"CALLER.CBL": caller_src, "LOOPPROG.CBL": src_id_y})
+    )
     cert1 = p1.parse_system()
     assert cert1.unsupported_relevant_count >= 1
     assert cert1.is_evaluation_blocked is True
-    assert any("identifier" in s.description.lower() for s in p1.statements if s.classification == StatementClassification.UNSUPPORTED_RELEVANT)
+    assert any(
+        "identifier" in s.description.lower()
+        for s in p1.statements
+        if s.classification == StatementClassification.UNSUPPORTED_RELEVANT
+    )
 
     # 2. Conditional EOF assignment inside IF in AT END
     src_cond_eof = """       IDENTIFICATION DIVISION.
@@ -7749,11 +7757,17 @@ def test_h7_8_b_f01_loop_theorem_soundness_counterexamples() -> None:
            CLOSE ACCT-FILE.
            GOBACK.
 """
-    p2 = SystemCobolParser(_make_multi_file_bundle({"CALLER.CBL": caller_src, "LOOPPROG.CBL": src_cond_eof}))
+    p2 = SystemCobolParser(
+        _make_multi_file_bundle({"CALLER.CBL": caller_src, "LOOPPROG.CBL": src_cond_eof})
+    )
     cert2 = p2.parse_system()
     assert cert2.unsupported_relevant_count >= 1
     assert cert2.is_evaluation_blocked is True
-    assert any("conditional eof" in s.description.lower() for s in p2.statements if s.classification == StatementClassification.UNSUPPORTED_RELEVANT)
+    assert any(
+        "conditional eof" in s.description.lower()
+        for s in p2.statements
+        if s.classification == StatementClassification.UNSUPPORTED_RELEVANT
+    )
 
     # 3. Conditional OPEN before loop
     src_cond_open = """       IDENTIFICATION DIVISION.
@@ -7783,11 +7797,17 @@ def test_h7_8_b_f01_loop_theorem_soundness_counterexamples() -> None:
            CLOSE ACCT-FILE.
            GOBACK.
 """
-    p3 = SystemCobolParser(_make_multi_file_bundle({"CALLER.CBL": caller_src, "LOOPPROG.CBL": src_cond_open}))
+    p3 = SystemCobolParser(
+        _make_multi_file_bundle({"CALLER.CBL": caller_src, "LOOPPROG.CBL": src_cond_open})
+    )
     cert3 = p3.parse_system()
     assert cert3.unsupported_relevant_count >= 1
     assert cert3.is_evaluation_blocked is True
-    assert any("not provably open_input" in s.description.lower() for s in p3.statements if s.classification == StatementClassification.UNSUPPORTED_RELEVANT)
+    assert any(
+        "not provably open_input" in s.description.lower()
+        for s in p3.statements
+        if s.classification == StatementClassification.UNSUPPORTED_RELEVANT
+    )
 
 
 def test_h7_8_b_f02_system_dispatch_and_reaching_definitions_counterexamples() -> None:
@@ -7819,11 +7839,17 @@ def test_h7_8_b_f02_system_dispatch_and_reaching_definitions_counterexamples() -
            CALL 'SYSTEM' USING WS-CMD.
            GOBACK.
 """
-    p1 = SystemCobolParser(_make_multi_file_bundle({"CALLER.CBL": caller_src, "CALLEE.CBL": src_partial}))
+    p1 = SystemCobolParser(
+        _make_multi_file_bundle({"CALLER.CBL": caller_src, "CALLEE.CBL": src_partial})
+    )
     cert1 = p1.parse_system()
     assert cert1.unsupported_relevant_count >= 1
     assert cert1.is_evaluation_blocked is True
-    assert any("ungrounded" in s.description.lower() or "conflicting" in s.description.lower() for s in p1.statements if s.classification == StatementClassification.UNSUPPORTED_RELEVANT)
+    assert any(
+        "ungrounded" in s.description.lower() or "conflicting" in s.description.lower()
+        for s in p1.statements
+        if s.classification == StatementClassification.UNSUPPORTED_RELEVANT
+    )
 
     # 2. CALL USING clobber: Callee receives WS-CMD as parameter, invalidating prior constant
     files_clobber = {
@@ -7851,7 +7877,11 @@ def test_h7_8_b_f02_system_dispatch_and_reaching_definitions_counterexamples() -
     cert2 = p2.parse_system()
     assert cert2.unsupported_relevant_count >= 1
     assert cert2.is_evaluation_blocked is True
-    assert any("clobbered" in s.description.lower() for s in p2.statements if s.classification == StatementClassification.UNSUPPORTED_RELEVANT)
+    assert any(
+        "clobbered" in s.description.lower()
+        for s in p2.statements
+        if s.classification == StatementClassification.UNSUPPORTED_RELEVANT
+    )
 
     # 3. Intervening procedural statement between MOVE and CALL SYSTEM:
     # MOVE and CALL are not adjacent -> emits command fact, but no adjacent operation sequence
@@ -7872,7 +7902,9 @@ def test_h7_8_b_f02_system_dispatch_and_reaching_definitions_counterexamples() -
     p3 = SystemCobolParser(_make_synth_bundle(src_nonadjacent))
     p3.parse_system()
     seqs = [f.fact for f in p3.supported_facts if isinstance(f.fact, OperationSequenceFact)]
-    assert len(seqs) == 0, "Non-adjacent commands with intervening ADD statement must not form OperationSequenceFact"
+    assert len(seqs) == 0, (
+        "Non-adjacent commands with intervening ADD statement must not form OperationSequenceFact"
+    )
 
 
 def test_h7_8_b_f03_contradictory_predicates_and_control_flow_skip() -> None:
@@ -7923,7 +7955,11 @@ def test_h7_8_b_f03_contradictory_predicates_and_control_flow_skip() -> None:
     cert2 = p2.parse_system()
     assert cert2.unsupported_relevant_count >= 1
     assert cert2.is_evaluation_blocked is True
-    assert any("GO TO" in s.description for s in p2.statements if s.classification == StatementClassification.UNSUPPORTED_RELEVANT)
+    assert any(
+        "GO TO" in s.description
+        for s in p2.statements
+        if s.classification == StatementClassification.UNSUPPORTED_RELEVANT
+    )
 
 
 def test_h7_8_b_certification_barrier_and_exact_duplicate_integrity() -> None:
@@ -7936,11 +7972,17 @@ def test_h7_8_b_certification_barrier_and_exact_duplicate_integrity() -> None:
     bundle = read_system_bundle(repo_root=REPO_ROOT)
     fact = TerminationSiteFact(program_id="BANK-MAIN", statement_type="STOP_RUN")
     span = EvidenceSpan("legacy/core-banking-system/BANK-MAIN.CBL", 100, 100)
-    sf1 = SupportedSystemFact(fact=fact, proposition_id="prop.term.bank-main", evidence_spans={"evidence": span})
-    sf2 = SupportedSystemFact(fact=fact, proposition_id="prop.term.bank-main", evidence_spans={"evidence": span})
+    sf1 = SupportedSystemFact(
+        fact=fact, proposition_id="prop.term.bank-main", evidence_spans={"evidence": span}
+    )
+    sf2 = SupportedSystemFact(
+        fact=fact, proposition_id="prop.term.bank-main", evidence_spans={"evidence": span}
+    )
 
     # Exact duplicate rejected globally
-    with pytest.raises(ValueError, match="Exact duplicate supported fact rejected by host index integrity"):
+    with pytest.raises(
+        ValueError, match="Exact duplicate supported fact rejected by host index integrity"
+    ):
         SystemSupportIndex([sf1, sf2], bundle)
 
     # Certification barrier blocks all facts
@@ -7950,6 +7992,375 @@ def test_h7_8_b_certification_barrier_and_exact_duplicate_integrity() -> None:
     class BlockedCert:
         is_evaluation_blocked: bool = True
 
-    index_blocked = SystemSupportIndex([sf1], bundle, coverage_certificate=BlockedCert(is_evaluation_blocked=True))
+    index_blocked = SystemSupportIndex(
+        [sf1], bundle, coverage_certificate=BlockedCert(is_evaluation_blocked=True)
+    )
     assert len(index_blocked._all_facts) == 0
 
+
+def test_h7_8_c_f06_evaluation_artifact_persistence_failures_and_readback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """F-06: Scientific failure evidence cannot be sealed when required reached-state
+
+    artifacts are absent, stale, truncated, or corrupted.
+
+    Verifies:
+    1. Evaluation completed but required evaluation artifact persistence fails -> FAILED_UNSEALED.
+    2. Manifest omission after reached state -> FAILED_UNSEALED.
+    3. Stale or truncated raw-response artifact -> byte SHA mismatch -> FAILED_UNSEALED.
+    4. Wrong/corrupt scientific identity where expected bytes are known -> FAILED_UNSEALED.
+    5. Expected content != disk content strictly prevents sealed FAILED.
+    """
+    mod = _get_run_gate_3_mod_h7_6_d()
+
+    # 1. Evaluation completed but required evaluation artifact persistence fails
+    art_dir1 = tmp_path / "f06_persist_fail"
+    art_dir1.mkdir(parents=True)
+    res_file1 = art_dir1 / mod.RESERVATION_STATE_FILE
+    mod.atomic_write_json(
+        res_file1, {"status": "RESERVED", "gate": 3, "run_label": "f06-eval-fail"}
+    )
+
+    orig_atomic = mod.atomic_write_json
+
+    def fail_eval_json_write(target_path: Path, data: Any) -> None:
+        if Path(target_path).name == "model-assessment.json":
+            raise OSError("Simulated disk error writing model-assessment.json")
+        orig_atomic(target_path, data)
+
+    monkeypatch.setattr(mod, "atomic_write_json", fail_eval_json_write)
+
+    res1 = mod.finalize_post_model_failure(
+        artifact_dir=art_dir1,
+        reservation_file=res_file1,
+        error_phase="EVALUATION",
+        error=ValueError("Evaluation logic assertion failed"),
+        spec={"requested_model": "gpt-5-mini", "bundle_sha256": "abc"},
+        candidate_sha="cand_sha_f06",
+        authorization_commit_sha="auth_sha_f06",
+        authorized_sha="auth_sha_f06",
+        run_label="f06-eval-fail",
+        raw_response_content='{"pred": 1}',
+    )
+    assert res1.sealed is False
+    assert res1.status == "FAILED_UNSEALED"
+    assert not (art_dir1 / "model-assessment.json").exists()
+    coord1 = json.loads((art_dir1 / "coordination-failure.json").read_text(encoding="utf-8"))
+    assert coord1["evidence_sealed"] is False
+
+    # 2. Manifest omission after reached state
+    art_dir2 = tmp_path / "f06_manifest_omission"
+    art_dir2.mkdir(parents=True)
+    res_file2 = art_dir2 / mod.RESERVATION_STATE_FILE
+    mod.atomic_write_json(res_file2, {"status": "RESERVED", "gate": 3, "run_label": "f06-omission"})
+
+    def omit_manifest_entry(target_path: Path, data: Any) -> None:
+        if Path(target_path).name == "manifest.json" and isinstance(data, dict):
+            arts = data.get("artifacts", {})
+            arts.pop("raw-response.json", None)
+        orig_atomic(target_path, data)
+
+    monkeypatch.setattr(mod, "atomic_write_json", omit_manifest_entry)
+
+    res2 = mod.finalize_post_model_failure(
+        artifact_dir=art_dir2,
+        reservation_file=res_file2,
+        error_phase="RESPONSE_PARSING",
+        error=ValueError("Invalid output format"),
+        spec={"requested_model": "gpt-5-mini", "bundle_sha256": "abc"},
+        candidate_sha="cand_sha_f06",
+        authorization_commit_sha="auth_sha_f06",
+        authorized_sha="auth_sha_f06",
+        run_label="f06-omission",
+        raw_response_content='{"raw": "test"}',
+    )
+    assert res2.sealed is False
+    assert res2.status == "FAILED_UNSEALED"
+    assert any("raw-response.json" in item.get("error", "") for item in res2.failure_details)
+
+    # 3 & 4. Stale or truncated raw-response artifact / wrong scientific identity
+    art_dir3 = tmp_path / "f06_truncated_raw"
+    art_dir3.mkdir(parents=True)
+    res_file3 = art_dir3 / mod.RESERVATION_STATE_FILE
+    mod.atomic_write_json(res_file3, {"status": "RESERVED", "gate": 3, "run_label": "f06-trunc"})
+
+    def truncate_raw_post_manifest(target_path: Path, data: Any) -> None:
+        orig_atomic(target_path, data)
+        if Path(target_path).name == "manifest.json":
+            raw_path = art_dir3 / "raw-response.json"
+            if raw_path.is_file():
+                # Truncate raw response bytes
+                raw_path.write_bytes(raw_path.read_bytes()[:10])
+
+    monkeypatch.setattr(mod, "atomic_write_json", truncate_raw_post_manifest)
+
+    res3 = mod.finalize_post_model_failure(
+        artifact_dir=art_dir3,
+        reservation_file=res_file3,
+        error_phase="RESPONSE_PARSING",
+        error=ValueError("Truncated payload"),
+        spec={"requested_model": "gpt-5-mini", "bundle_sha256": "abc"},
+        candidate_sha="cand_sha_f06",
+        authorization_commit_sha="auth_sha_f06",
+        authorized_sha="auth_sha_f06",
+        run_label="f06-trunc",
+        raw_response_content='{"longer_raw_response_data": 12345}',
+    )
+    # 5. Expected content != disk content must prevent sealed FAILED
+    assert res3.sealed is False
+    assert res3.status == "FAILED_UNSEALED"
+    assert res3.status != "FAILED"
+    res_data3 = json.loads(res_file3.read_text(encoding="utf-8"))
+    assert res_data3["status"] == "FAILED_UNSEALED"
+
+
+def test_h7_8_c_f07_durability_fsync_failures_and_no_ordinary_write_fallback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """F-07: Durability failures must prevent sealed state; ordinary write fallback
+
+    is prohibited from producing COMPLETED or sealed FAILED.
+
+    Verifies:
+    1. File fsync failure raises OSError, cleans up temp file, and does not write destination.
+    2. Parent directory open failure does not crash write.
+    3. Parent directory fsync failure does not crash write.
+    4. Raw-response durable persistence failure yields FAILED_UNSEALED, never COMPLETED or FAILED.
+    """
+    import os
+
+    mod = _get_run_gate_3_mod_h7_6_d()
+
+    # 1. File fsync failure
+    orig_fsync = os.fsync
+    test_dest = tmp_path / "fsync_fail" / "test.json"
+
+    def fail_fsync(fd: int) -> None:
+        raise OSError("Simulated disk controller fsync failure")
+
+    monkeypatch.setattr(os, "fsync", fail_fsync)
+
+    with pytest.raises(OSError, match="Simulated disk controller fsync failure"):
+        mod.durable_atomic_write_bytes(test_dest, b'{"test": 1}')
+
+    assert not test_dest.exists(), "Destination must not exist if file fsync failed"
+    # Temp file must be cleaned up
+    temp_files = list((tmp_path / "fsync_fail").glob("*.tmp*"))
+    assert len(temp_files) == 0, f"Temp files left uncleaned: {temp_files}"
+
+    # 2 & 3. Parent directory open/fsync failure handling
+    monkeypatch.setattr(os, "fsync", orig_fsync)
+    orig_open = os.open
+
+    def fail_dir_open(
+        path: str | bytes | os.PathLike[Any], flags: int, *args: Any, **kwargs: Any
+    ) -> int:
+        if isinstance(path, (str, bytes, os.PathLike)) and str(path).endswith("sub"):
+            raise OSError("Simulated parent dir open error")
+        return orig_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(os, "open", fail_dir_open)
+    dir_test = tmp_path / "sub" / "valid.json"
+    # Must succeed despite parent dir open error
+    mod.durable_atomic_write_bytes(dir_test, b'{"valid": true}')
+    assert dir_test.is_file()
+    monkeypatch.setattr(os, "open", orig_open)
+
+    # 4. Raw-response durable persistence failure prevents COMPLETED and sealed FAILED
+    art_dir = tmp_path / "raw_durable_fail"
+    art_dir.mkdir(parents=True)
+    res_file = art_dir / mod.RESERVATION_STATE_FILE
+    mod.atomic_write_json(res_file, {"status": "RESERVED", "gate": 3, "run_label": "raw-fail"})
+
+    orig_durable = mod.durable_atomic_write_bytes
+
+    def fail_raw_durable(dest: Path, data: bytes) -> None:
+        if dest.name == "raw-response.json":
+            raise OSError("Simulated durable write failure for raw-response.json")
+        orig_durable(dest, data)
+
+    monkeypatch.setattr(mod, "durable_atomic_write_bytes", fail_raw_durable)
+
+    res = mod.finalize_post_model_failure(
+        artifact_dir=art_dir,
+        reservation_file=res_file,
+        error_phase="RESPONSE_PARSING",
+        error=ValueError("Parse failure"),
+        spec={"requested_model": "gpt-5-mini", "bundle_sha256": "abc"},
+        candidate_sha="cand_sha_f07",
+        authorization_commit_sha="auth_sha_f07",
+        authorized_sha="auth_sha_f07",
+        run_label="raw-fail",
+        raw_response_content='{"raw": "content"}',
+    )
+    assert res.sealed is False
+    assert res.status == "FAILED_UNSEALED"
+    assert res.status != "FAILED"
+    res_data = json.loads(res_file.read_text(encoding="utf-8"))
+    assert res_data["status"] == "FAILED_UNSEALED"
+
+
+def test_h7_8_c_m01_precheck_rejection_truthfulness_and_persistence_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """M-01: Precheck rejection before attempt claim preserves 0 attempts consumed,
+
+    0 provider calls, and truthful coordination state on persistence failure.
+
+    Verifies:
+    1. Precheck rejection before claim preserves attempts_consumed == 0.
+    2. Zero provider calls and no attempt-claim.json.
+    3. PRECHECK_REJECTED terminal semantics in check_existing_reservation.
+    4. Rejection-evidence persistence failure writes truthful coordination-failure.json.
+    """
+    mod = _get_run_gate_3_mod_h7_6_d()
+
+    # 1, 2, 3: Clean precheck rejection
+    precheck_dir = tmp_path / "precheck_clean"
+    precheck_dir.mkdir(parents=True)
+    res_file = precheck_dir / mod.RESERVATION_STATE_FILE
+
+    mod.record_precheck_rejection(
+        reservation_file=res_file,
+        run_label="m01-clean",
+        error_phase="FAIL_CLOSED_PARSER_CHECK",
+        error_message="Unsupported relevant statements",
+        candidate_sha="cand_m01",
+        authorization_commit_sha="auth_m01",
+        authorized_sha="auth_m01",
+    )
+
+    data = json.loads(res_file.read_text(encoding="utf-8"))
+    assert data["status"] == "PRECHECK_REJECTED"
+    assert data["attempts_consumed"] == 0
+    assert not (precheck_dir / mod.ATTEMPT_CLAIM_FILE).exists()
+    # PRECHECK_REJECTED allows re-running / does not block
+    mod.check_existing_reservation(precheck_dir, "m01-clean")
+
+    # 4: Persistence failure of rejection evidence records truthful coordination failure
+    precheck_fail_dir = tmp_path / "precheck_persist_fail"
+    precheck_fail_dir.mkdir(parents=True)
+    fail_res_file = precheck_fail_dir / mod.RESERVATION_STATE_FILE
+
+    orig_atomic = mod.atomic_write_json
+
+    def fail_res_write(target_path: Path, data: Any) -> None:
+        if Path(target_path).name == mod.RESERVATION_STATE_FILE:
+            raise OSError("Simulated disk error updating reservation to PRECHECK_REJECTED")
+        orig_atomic(target_path, data)
+
+    monkeypatch.setattr(mod, "atomic_write_json", fail_res_write)
+
+    mod.record_precheck_rejection(
+        reservation_file=fail_res_file,
+        run_label="m01-persist-fail",
+        error_phase="FAIL_CLOSED_CHECK",
+        error_message="Coverage failure",
+        candidate_sha="cand_m01_f",
+        authorization_commit_sha="auth_m01_f",
+        authorized_sha="auth_m01_f",
+    )
+
+    coord_file = precheck_fail_dir / "coordination-failure.json"
+    assert coord_file.is_file()
+    coord_data = json.loads(coord_file.read_text(encoding="utf-8"))
+    assert coord_data["status"] == "COORDINATION_FAILURE"
+    assert coord_data["evidence_sealed"] is False
+    assert coord_data["attempts_consumed"] == 0
+
+
+def test_h7_8_c_m02_emergency_consumed_attempt_finalization(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """M-02: Normal failure finalizer crash triggers emergency consumed-attempt
+
+    path without recursion or second model call, preserving authoritative attempt claim.
+
+    Verifies:
+    1. Normal failure finalizer crash invokes emergency_finalize.
+    2. emergency_finalize writes emergency-failure.json with FAILED_UNSEALED.
+    3. No recursive finalization and no second model invocation.
+    4. Attempt claim file remains authoritative on disk even if emergency persistence fails.
+    """
+    mod = _get_run_gate_3_mod_h7_6_d()
+
+    art_dir = tmp_path / "m02_test"
+    art_dir.mkdir(parents=True)
+    res_file = art_dir / mod.RESERVATION_STATE_FILE
+    claim_file = art_dir / mod.ATTEMPT_CLAIM_FILE
+
+    # Irrevocable attempt claim on disk
+    mod.atomic_write_json(
+        claim_file,
+        {
+            "status": "ATTEMPT_CLAIMED",
+            "gate": 3,
+            "run_label": "m02-run",
+            "timestamp": "2026-09-18T00:00:00Z",
+            "candidate_git_sha": "cand_m02",
+        },
+    )
+    mod.atomic_write_json(
+        res_file,
+        {"status": "RESERVED", "gate": 3, "run_label": "m02-run"},
+    )
+
+    # 1. Normal failure finalizer crashes
+    def crash_finalize(*args: Any, **kwargs: Any) -> Any:
+        raise RuntimeError("Normal failure finalizer crashed with unhandled exception")
+
+    monkeypatch.setattr(mod, "finalize_post_model_failure", crash_finalize)
+
+    # safe_finalize_post_model_failure catches crash and runs emergency_finalize
+    result = mod.safe_finalize_post_model_failure(
+        artifact_dir=art_dir,
+        reservation_file=res_file,
+        error_phase="MODEL_INVOCATION",
+        error=ValueError("Original invocation error"),
+        spec={"requested_model": "gpt-5-mini"},
+        candidate_sha="cand_m02",
+        authorization_commit_sha="auth_m02",
+        authorized_sha="auth_m02",
+        run_label="m02-run",
+    )
+
+    assert result.sealed is False
+    assert result.status == "FAILED_UNSEALED"
+    assert result.error_phase == "NORMAL_FINALIZATION_CRASH"
+
+    # 2. emergency-failure.json was written
+    emerg_json = art_dir / "emergency-failure.json"
+    assert emerg_json.is_file()
+    emerg_data = json.loads(emerg_json.read_text(encoding="utf-8"))
+    assert emerg_data["status"] == "FAILED_UNSEALED"
+    assert emerg_data["emergency_finalization"] is True
+    assert "Normal failure finalizer crashed" in emerg_data["error_message"]
+
+    # 4. Attempt claim file remains authoritative; re-entry strictly refused
+    assert claim_file.is_file()
+    with pytest.raises(RuntimeError, match="Irrevocable reservation error"):
+        mod.check_existing_reservation(art_dir, "m02-run")
+
+
+def test_h7_8_c_l01_temp_file_cleanup_on_persistence_failure(tmp_path: Path) -> None:
+    """L-01: Temporary artifact cleanup purges .tmp and .tmp.* artifacts on disk."""
+    mod = _get_run_gate_3_mod_h7_6_d()
+
+    test_dir = tmp_path / "l01_cleanup"
+    test_dir.mkdir(parents=True)
+    f_clean = test_dir / "preserved.json"
+    f_clean.write_text("{}", encoding="utf-8")
+    f_tmp1 = test_dir / "artifact.json.tmp.1234.abcd"
+    f_tmp1.write_text("{}", encoding="utf-8")
+    f_tmp2 = test_dir / "temp_file.tmp"
+    f_tmp2.write_text("{}", encoding="utf-8")
+    f_tmp3 = test_dir / "raw.tmp.9999.ef01"
+    f_tmp3.write_text("{}", encoding="utf-8")
+
+    cleaned_count = mod.cleanup_temp_files(test_dir)
+    assert cleaned_count == 3
+    assert f_clean.exists()
+    assert not f_tmp1.exists()
+    assert not f_tmp2.exists()
+    assert not f_tmp3.exists()

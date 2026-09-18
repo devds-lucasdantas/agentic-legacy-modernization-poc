@@ -44,7 +44,9 @@ class SystemSupportIndex:
         self._facts_by_semantic_key: dict[str, list[SupportedSystemFact]] = {}
         self._facts_by_file: dict[str, list[SupportedSystemFact]] = {}
 
-        seen_exact_host_facts: set[tuple[str, tuple[tuple[str, str, int, int], ...]]] = set()
+        seen_exact_host_facts: set[
+            tuple[SystemAtomicFact, tuple[tuple[str, str, int, int], ...]]
+        ] = set()
         for sf in self._all_facts:
             key = sf.fact.get_semantic_key()
             canon_spans: list[tuple[str, str, int, int]] = []

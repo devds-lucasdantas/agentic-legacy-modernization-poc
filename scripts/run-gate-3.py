@@ -1043,12 +1043,20 @@ def durable_atomic_write_bytes(destination: Path, data_bytes: bytes) -> None:
     temp_file = destination.with_suffix(f".tmp.{os.getpid()}.{digest_prefix}")
     expected_sha = hashlib.sha256(data_bytes).hexdigest()
 
-    with open(temp_file, "wb") as f:
-        f.write(data_bytes)
-        f.flush()
-        os.fsync(f.fileno())
+    try:
+        with open(temp_file, "wb") as f:
+            f.write(data_bytes)
+            f.flush()
+            os.fsync(f.fileno())
 
-    os.replace(temp_file, destination)
+        os.replace(temp_file, destination)
+    except Exception:
+        if temp_file.exists():
+            try:
+                temp_file.unlink()
+            except OSError:
+                pass
+        raise
 
     # Directory durability on platforms supporting directory fd fsync
     if hasattr(os, "O_DIRECTORY") or os.name != "nt":
@@ -1069,6 +1077,63 @@ def durable_atomic_write_bytes(destination: Path, data_bytes: bytes) -> None:
             f"Read-back integrity verification failed for '{destination}': "
             f"expected={expected_sha}, actual={read_sha}"
         )
+
+
+def cleanup_temp_files(directory: Path) -> int:
+    """Clean up any stray temporary files matching .tmp patterns in directory.
+
+    Returns the count of cleaned up files.
+    """
+    if not directory.is_dir():
+        return 0
+    cleaned = 0
+    try:
+        for item in directory.iterdir():
+            if item.is_file() and (".tmp." in item.name or item.name.endswith(".tmp")):
+                try:
+                    item.unlink()
+                    cleaned += 1
+                except OSError:
+                    pass
+    except OSError:
+        pass
+    return cleaned
+
+
+def emergency_finalize(
+    artifact_dir: Path,
+    reservation_file: Path,
+    error: Exception | str,
+    run_label: str,
+    candidate_sha: str,
+    authorization_commit_sha: str,
+    authorized_sha: str,
+    error_phase: str = "EMERGENCY_UNHANDLED_EXCEPTION",
+) -> None:
+    """Emergency finalization fallback when standard finalization crashes or cannot proceed."""
+    cleanup_temp_files(artifact_dir)
+    err_str = str(error)
+    emergency_data: dict[str, Any] = {
+        "status": "FAILED_UNSEALED",
+        "emergency_finalization": True,
+        "error_phase": error_phase,
+        "error_message": err_str,
+        "run_label": run_label,
+        "gate": 3,
+        "timestamp": datetime.now(UTC).isoformat(),
+        "candidate_git_sha": candidate_sha,
+        "authorization_commit_sha": authorization_commit_sha,
+        "git_commit_sha": authorized_sha,
+    }
+    try:
+        atomic_write_json(artifact_dir / "emergency-failure.json", emergency_data)
+    except Exception:
+        pass
+
+    try:
+        atomic_write_json(reservation_file, emergency_data)
+    except Exception:
+        pass
 
 
 def durable_atomic_write_text(destination: Path, text: str, encoding: str = "utf-8") -> None:
@@ -1116,6 +1181,21 @@ def record_precheck_rejection(
         atomic_write_json(reservation_file, data)
     except Exception as e:
         print(f"WARNING: Failed to record precheck rejection: {e}", file=sys.stderr)
+        coord_file = reservation_file.parent / "coordination-failure.json"
+        try:
+            atomic_write_json(
+                coord_file,
+                {
+                    "status": "COORDINATION_FAILURE",
+                    "error": f"Failed to record precheck rejection: {e}",
+                    "evidence_sealed": False,
+                    "attempts_consumed": 0,
+                    "run_label": run_label,
+                    "timestamp": datetime.now(UTC).isoformat(),
+                },
+            )
+        except Exception:
+            pass
 
 
 def check_existing_reservation(out_dir: Path, run_label: str) -> None:
@@ -1622,6 +1702,7 @@ def finalize_post_model_failure(
     )
 
     # 11. manifest.json (written LAST of immutable set)
+    cleanup_temp_files(artifact_dir)
     excluded_from_manifest = {
         "manifest.json",
         RESERVATION_STATE_FILE,
@@ -1932,6 +2013,7 @@ def finalize_post_model_failure(
         except Exception:
             pass
 
+    cleanup_temp_files(artifact_dir)
     return FailureFinalizationResult(
         sealed=is_sealed,
         reservation_updated=reservation_updated,
@@ -1940,6 +2022,74 @@ def finalize_post_model_failure(
         verified_artifacts=verified_artifacts,
         failure_details=failures + verification_errors,
     )
+
+
+def safe_finalize_post_model_failure(
+    artifact_dir: Path,
+    reservation_file: Path,
+    error_phase: str,
+    error: Exception | str,
+    spec: dict[str, Any] | None,
+    candidate_sha: str,
+    authorization_commit_sha: str,
+    authorized_sha: str,
+    run_label: str,
+    bundle: Any = None,
+    parser: Any = None,
+    runtime_manifest: Any = None,
+    metadata: Any = None,
+    assessment: Any = None,
+    raw_response_content: str | None = None,
+    spec_sha: str = "",
+    runtime_manifest_sha: str = "",
+    evaluation_result: Any = None,
+    evaluated_predictions: Any = None,
+) -> FailureFinalizationResult:
+    """Safely execute failure finalization, falling back to emergency finalization
+
+    if the normal finalizer itself raises an unhandled exception.
+    """
+    try:
+        return finalize_post_model_failure(
+            artifact_dir=artifact_dir,
+            reservation_file=reservation_file,
+            error_phase=error_phase,
+            error=error,
+            spec=spec,
+            candidate_sha=candidate_sha,
+            authorization_commit_sha=authorization_commit_sha,
+            authorized_sha=authorized_sha,
+            run_label=run_label,
+            bundle=bundle,
+            parser=parser,
+            runtime_manifest=runtime_manifest,
+            metadata=metadata,
+            assessment=assessment,
+            raw_response_content=raw_response_content,
+            spec_sha=spec_sha,
+            runtime_manifest_sha=runtime_manifest_sha,
+            evaluation_result=evaluation_result,
+            evaluated_predictions=evaluated_predictions,
+        )
+    except Exception as fin_err:
+        print(f"CRITICAL: Normal failure finalization crashed: {fin_err}", file=sys.stderr)
+        emergency_finalize(
+            artifact_dir=artifact_dir,
+            reservation_file=reservation_file,
+            error=fin_err,
+            run_label=run_label,
+            candidate_sha=candidate_sha,
+            authorization_commit_sha=authorization_commit_sha,
+            authorized_sha=authorized_sha,
+            error_phase="NORMAL_FINALIZATION_CRASH",
+        )
+        return FailureFinalizationResult(
+            sealed=False,
+            reservation_updated=True,
+            status="FAILED_UNSEALED",
+            error_phase="NORMAL_FINALIZATION_CRASH",
+            failure_details=[{"error": str(fin_err)}],
+        )
 
 
 def execute_internal_child(args: argparse.Namespace) -> int:
@@ -2529,7 +2679,7 @@ def execute_internal_child(args: argparse.Namespace) -> int:
                 f"ERROR: Failed to update reservation to MODEL_INVOCATION after claim: {res_err}",
                 file=sys.stderr,
             )
-            finalize_post_model_failure(
+            safe_finalize_post_model_failure(
                 artifact_dir=artifact_dir,
                 reservation_file=reservation_file,
                 error_phase="MODEL_INVOCATION_RESERVATION",
@@ -2554,7 +2704,7 @@ def execute_internal_child(args: argparse.Namespace) -> int:
             agent = SystemAnalyzerAgent(config=cfg, reasoning_effort=spec["reasoning_effort"])
         except Exception as agent_err:
             print(f"ERROR: Agent initialization failed: {agent_err}", file=sys.stderr)
-            finalize_post_model_failure(
+            safe_finalize_post_model_failure(
                 artifact_dir=artifact_dir,
                 reservation_file=reservation_file,
                 error_phase="AGENT_INITIALIZATION",
@@ -2585,7 +2735,7 @@ def execute_internal_child(args: argparse.Namespace) -> int:
             )
         except Exception as e:
             print(f"ERROR: Raw model invocation failed: {e}", file=sys.stderr)
-            finalize_post_model_failure(
+            safe_finalize_post_model_failure(
                 artifact_dir=artifact_dir,
                 reservation_file=reservation_file,
                 error_phase="MODEL_INVOCATION",
@@ -2671,7 +2821,7 @@ def execute_internal_child(args: argparse.Namespace) -> int:
             ):
                 err_phase = "MALFORMED_OUTPUT"
 
-            finalize_post_model_failure(
+            safe_finalize_post_model_failure(
                 artifact_dir=artifact_dir,
                 reservation_file=reservation_file,
                 error_phase=err_phase,
@@ -2807,6 +2957,7 @@ def execute_internal_child(args: argparse.Namespace) -> int:
         atomic_write_json(artifact_dir / TERMINAL_RESULT_FILE, terminal_result)
 
         # 14. manifest.json (written LAST; maps filename -> SHA256 of all 13 immutable artifacts)
+        cleanup_temp_files(artifact_dir)
         excluded_from_manifest = {
             "manifest.json",
             RESERVATION_STATE_FILE,
@@ -2841,7 +2992,7 @@ def execute_internal_child(args: argparse.Namespace) -> int:
     except Exception as e:
         err_phase = "EVALUATOR" if eval_result is None else "ARTIFACT_GENERATION"
         print(f"ERROR: Pre-seal execution failed ({err_phase}): {e}", file=sys.stderr)
-        finalize_post_model_failure(
+        safe_finalize_post_model_failure(
             artifact_dir=artifact_dir,
             reservation_file=reservation_file,
             error_phase=err_phase,
