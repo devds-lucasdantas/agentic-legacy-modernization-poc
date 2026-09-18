@@ -82,25 +82,102 @@ class TerminationWitness:
 
 
 @dataclass(frozen=True)
+class LiteralValue:
+    val: str
+
+
+@dataclass(frozen=True)
+class IdentifierValue:
+    name: str
+
+
+@dataclass(frozen=True)
+class UnknownValue:
+    reason: str
+
+
+TypedValue = LiteralValue | IdentifierValue | UnknownValue
+
+
+@dataclass(frozen=True)
+class PathPredicate:
+    variable: str
+    operator: str  # "=" or "!="
+    expected_value: str
+    is_positive: bool = True  # True: variable == expected_value, False: variable != expected_value
+
+
+@dataclass(frozen=True)
 class AbstractPathState:
     """Path-sensitive abstract state tracking bindings, resources, and control outcome."""
 
     reachable: bool = True
-    variable_bindings: tuple[tuple[str, str], ...] = ()
+    variable_bindings: tuple[tuple[str, TypedValue], ...] = ()
     resource_states: tuple[tuple[str, str], ...] = ()
+    path_predicates: tuple[PathPredicate, ...] = ()
     outcome: str = "CONTINUING"  # "CONTINUING", "PROCESS_TERMINATE", "RETURN", "UNKNOWN"
 
-    def get_binding(self, var: str) -> str | None:
+    def get_binding(self, var: str) -> TypedValue | None:
         for k, v in self.variable_bindings:
             if k == var:
                 return v
         return None
 
-    def with_binding(self, var: str, val: str) -> "AbstractPathState":
+    def with_binding(self, var: str, val: TypedValue) -> "AbstractPathState":
         new_bindings = tuple(
-            sorted([(k, v) for k, v in self.variable_bindings if k != var] + [(var, val)])
+            sorted(
+                [(k, v) for k, v in self.variable_bindings if k != var] + [(var, val)],
+                key=lambda x: x[0],
+            )
         )
-        return replace(self, variable_bindings=new_bindings)
+        # F-04 / Clarification 4: Writes to var kill all prior path predicates involving var
+        new_preds = tuple(p for p in self.path_predicates if p.variable != var)
+        return replace(self, variable_bindings=new_bindings, path_predicates=new_preds)
+
+    def with_predicate(self, pred: PathPredicate) -> "AbstractPathState":
+        if not self.reachable:
+            return self
+
+        # Contradiction against existing path predicates
+        for existing in self.path_predicates:
+            if existing.variable == pred.variable:
+                if (
+                    existing.is_positive
+                    and pred.is_positive
+                    and existing.expected_value != pred.expected_value
+                ):
+                    return replace(self, reachable=False)
+                if (
+                    existing.is_positive
+                    and not pred.is_positive
+                    and existing.expected_value == pred.expected_value
+                ):
+                    return replace(self, reachable=False)
+                if (
+                    not existing.is_positive
+                    and pred.is_positive
+                    and existing.expected_value == pred.expected_value
+                ):
+                    return replace(self, reachable=False)
+
+        cur_bind = self.get_binding(pred.variable)
+        new_bindings = self.variable_bindings
+        if pred.is_positive and (cur_bind is None or not isinstance(cur_bind, LiteralValue)):
+            new_bindings = tuple(
+                sorted(
+                    [(k, v) for k, v in self.variable_bindings if k != pred.variable]
+                    + [(pred.variable, LiteralValue(pred.expected_value))],
+                    key=lambda x: x[0],
+                )
+            )
+
+        new_preds = tuple(
+            sorted(
+                self.path_predicates + (pred,),
+                key=lambda p: (p.variable, p.expected_value, p.is_positive),
+            )
+        )
+        return replace(self, variable_bindings=new_bindings, path_predicates=new_preds)
 
     def get_resource(self, res: str) -> str | None:
         for k, v in self.resource_states:
@@ -109,7 +186,12 @@ class AbstractPathState:
         return None
 
     def with_resource(self, res: str, st: str) -> "AbstractPathState":
-        new_res = tuple(sorted([(k, v) for k, v in self.resource_states if k != res] + [(res, st)]))
+        new_res = tuple(
+            sorted(
+                [(k, v) for k, v in self.resource_states if k != res] + [(res, st)],
+                key=lambda x: x[0],
+            )
+        )
         return replace(self, resource_states=new_res)
 
     def with_outcome(self, outcome: str) -> "AbstractPathState":
@@ -118,24 +200,36 @@ class AbstractPathState:
 
 def join_abstract_path_states(
     states: tuple[AbstractPathState, ...] | list[AbstractPathState],
-) -> tuple[tuple[tuple[str, str], ...], tuple[tuple[str, str], ...]]:
+) -> tuple[tuple[tuple[str, TypedValue], ...], tuple[tuple[str, str], ...]]:
     """Conservative lattice join over continuing abstract path states."""
     continuing = [s for s in states if s.reachable and s.outcome == "CONTINUING"]
     if not continuing:
         return (), ()
 
     all_vars = sorted({k for s in continuing for k, _ in s.variable_bindings})
-    joined_vars: list[tuple[str, str]] = []
+    joined_vars: list[tuple[str, TypedValue]] = []
     for v in all_vars:
-        vals = {s.get_binding(v) for s in continuing}
-        if len(vals) == 1:
-            val = next(iter(vals))
-            if val is not None and val != "?UNKNOWN?":
-                joined_vars.append((v, val))
+        vals = [s.get_binding(v) for s in continuing]
+        # Clarification 12: Branch Join Semantics
+        if any(val is None or isinstance(val, UnknownValue) for val in vals):
+            joined_vars.append(
+                (v, UnknownValue(f"Undefined or unknown across branches for {v}"))
+            )
+        elif all(isinstance(val, LiteralValue) for val in vals):
+            lit_vals = {val.val for val in vals if isinstance(val, LiteralValue)}
+            if len(lit_vals) == 1:
+                joined_vars.append((v, LiteralValue(next(iter(lit_vals)))))
             else:
-                joined_vars.append((v, "?UNKNOWN?"))
+                joined_vars.append(
+                    (
+                        v,
+                        UnknownValue(
+                            f"Divergent literal bindings across branches for {v}: {lit_vals}"
+                        ),
+                    )
+                )
         else:
-            joined_vars.append((v, "?UNKNOWN?"))
+            joined_vars.append((v, UnknownValue(f"Non-literal bindings across branches for {v}")))
 
     all_res = sorted({k for s in continuing for k, _ in s.resource_states})
     joined_res: list[tuple[str, str]] = []
@@ -162,7 +256,7 @@ class FlowResult:
     return_witnesses: tuple[TerminationWitness, ...] = ()
     unknown: bool = False
     alternative_states: tuple[AbstractPathState, ...] = ()
-    joined_bindings: tuple[tuple[str, str], ...] = ()
+    joined_bindings: tuple[tuple[str, TypedValue], ...] = ()
     joined_resource_states: tuple[tuple[str, str], ...] = ()
 
     @property
@@ -364,6 +458,7 @@ class ASTPerformUntil(ASTStatement):
     condition_identifier: str
     comparison_operator: str
     exit_literal: str
+    exit_value_is_literal: bool = True
 
 
 @dataclass
@@ -378,6 +473,8 @@ class ASTCompilationUnit:
     file_bindings: list[ASTFileBinding] = field(default_factory=list)
     record_declarations: list[ASTRecordDeclaration] = field(default_factory=list)
     statements: list[ASTStatement] = field(default_factory=list)
+    certified_system_dispatches: list[Any] = field(default_factory=list)
+    feasible_statement_lines: set[int] = field(default_factory=set)
 
 
 # ---------------------------------------------------------------------------
@@ -387,6 +484,18 @@ def _safe_unquote(token: str) -> str:
     if len(t) >= 2 and ((t[0] == "'" and t[-1] == "'") or (t[0] == '"' and t[-1] == '"')):
         return exact_syntactic_unquote(t)
     return t
+
+
+def to_typed_value(raw: str) -> TypedValue:
+    """Convert raw token or string literal to a typed abstract value."""
+    t = raw.strip()
+    if len(t) >= 2 and ((t[0] == "'" and t[-1] == "'") or (t[0] == '"' and t[-1] == '"')):
+        return LiteralValue(exact_syntactic_unquote(t))
+    if is_numeric_literal(t):
+        return LiteralValue(t)
+    if is_canonical_cobol_identifier(t):
+        return IdentifierValue(t.upper())
+    return UnknownValue(f"Unrecognized operand: {raw}")
 
 
 def tokenize_cobol_line(line: str) -> list[str]:
@@ -809,6 +918,21 @@ class CommandDialect(StrEnum):
     SUPPORTED_WINDOWS_CMD = "SUPPORTED_WINDOWS_CMD"
     UNSUPPORTED_WRAPPER = "UNSUPPORTED_WRAPPER"
     OTHER_COMMAND = "OTHER_COMMAND"
+
+
+@dataclass(frozen=True)
+class CertifiedSystemDispatch:
+    program_id: str
+    file_path: str
+    move_stmt: ClassifiedStatement
+    call_stmt: ClassifiedStatement
+    command_literal: str
+    target_operand: str
+    dialect: CommandDialect
+    unwrapped_command: str
+    mutation_result: MutationCommandResult
+    line_start: int
+    line_end: int
 
 
 def classify_command_dialect(cmd_text: str) -> tuple[CommandDialect, str, str | None]:
@@ -1803,7 +1927,7 @@ class SystemCobolParser:
                         consumed_indices.add(next_v)
                         next_v += 1
                     if next_v < len(tokens):
-                        init_val = _safe_unquote(tokens[next_v].rstrip("."))
+                        init_val = tokens[next_v].rstrip(".")
                         consumed_indices.add(next_v)
                     else:
                         rec_valid = False
@@ -2811,17 +2935,22 @@ class SystemCobolParser:
                         or (right_op.startswith("'") and right_op.endswith("'"))
                         or (right_op.startswith('"') and right_op.endswith('"'))
                     )
+                    exit_is_lit = True
                     if left_ok and right_ok:
                         perf_valid = True
                         is_until = True
                         if is_canonical_cobol_identifier(left_op):
                             cond_id = left_op
                             op = tokens[3]
-                            exit_val = exact_syntactic_unquote(right_op)
+                            right_typed = to_typed_value(right_op)
+                            exit_is_lit = isinstance(right_typed, LiteralValue)
+                            exit_val = right_typed.val if exit_is_lit else right_op
                         elif is_canonical_cobol_identifier(right_op):
                             cond_id = right_op
                             op = tokens[3]
-                            exit_val = exact_syntactic_unquote(left_op)
+                            left_typed = to_typed_value(left_op)
+                            exit_is_lit = isinstance(left_typed, LiteralValue)
+                            exit_val = left_typed.val if exit_is_lit else left_op
 
                 if not perf_valid:
                     self.statements.append(
@@ -2846,6 +2975,7 @@ class SystemCobolParser:
                                 condition_identifier=cond_id,
                                 comparison_operator=op,
                                 exit_literal=exit_val,
+                                exit_value_is_literal=exit_is_lit,
                             )
                         )
                     self.statements.append(
@@ -3161,71 +3291,34 @@ class SystemCobolParser:
                 continue
 
             if first == "GO":
-                if (
-                    len(tokens) == 3
-                    and tokens[1].upper() == "TO"
-                    and is_canonical_cobol_identifier(tokens[2])
-                    and not is_unquoted_procedural_starter(tokens[2])
-                ):
-                    self.statements.append(
-                        ClassifiedStatement(
-                            target_file.relative_path,
-                            line_num,
-                            line_num,
-                            first,
-                            raw_line,
-                            StatementClassification.RECOGNIZED_BUT_UNSCORED,
-                            "Procedural control-flow barrier GO TO",
-                            has_terminal_period=line_is_terminated,
-                        )
+                self.statements.append(
+                    ClassifiedStatement(
+                        target_file.relative_path,
+                        line_num,
+                        line_num,
+                        first,
+                        raw_line,
+                        StatementClassification.UNSUPPORTED_RELEVANT,
+                        "Unsupported control-flow transfer GO TO",
+                        has_terminal_period=line_is_terminated,
                     )
-                else:
-                    self.statements.append(
-                        ClassifiedStatement(
-                            target_file.relative_path,
-                            line_num,
-                            line_num,
-                            first,
-                            raw_line,
-                            StatementClassification.UNSUPPORTED_RELEVANT,
-                            "Unsupported GO TO syntax or unconsumed tokens",
-                            has_terminal_period=line_is_terminated,
-                        )
-                    )
+                )
                 i += 1
                 continue
 
             if first == "GOTO":
-                if (
-                    len(tokens) == 2
-                    and is_canonical_cobol_identifier(tokens[1])
-                    and not is_unquoted_procedural_starter(tokens[1])
-                ):
-                    self.statements.append(
-                        ClassifiedStatement(
-                            target_file.relative_path,
-                            line_num,
-                            line_num,
-                            first,
-                            raw_line,
-                            StatementClassification.RECOGNIZED_BUT_UNSCORED,
-                            "Procedural control-flow barrier GOTO",
-                            has_terminal_period=line_is_terminated,
-                        )
+                self.statements.append(
+                    ClassifiedStatement(
+                        target_file.relative_path,
+                        line_num,
+                        line_num,
+                        first,
+                        raw_line,
+                        StatementClassification.UNSUPPORTED_RELEVANT,
+                        "Unsupported control-flow transfer GOTO",
+                        has_terminal_period=line_is_terminated,
                     )
-                else:
-                    self.statements.append(
-                        ClassifiedStatement(
-                            target_file.relative_path,
-                            line_num,
-                            line_num,
-                            first,
-                            raw_line,
-                            StatementClassification.UNSUPPORTED_RELEVANT,
-                            "Unsupported GOTO syntax or unconsumed tokens",
-                            has_terminal_period=line_is_terminated,
-                        )
-                    )
+                )
                 i += 1
                 continue
 
@@ -3547,6 +3640,7 @@ class SystemCobolParser:
         loop_stmt: ClassifiedStatement,
         body_nodes: list[Any],
         callee_unit: ASTCompilationUnit,
+        incoming_states: tuple[AbstractPathState, ...] = (),
     ) -> bool:
         """Verify that a PERFORM UNTIL loop has proven finite-progress semantics."""
         perf_node = next(
@@ -3569,7 +3663,7 @@ class SystemCobolParser:
         op = perf_node.comparison_operator
         exit_lit = perf_node.exit_literal
 
-        if op != "=" or not cond_id or not exit_lit:
+        if op != "=" or not cond_id or not exit_lit or not perf_node.exit_value_is_literal:
             self._mark_stmt_unsupported(
                 loop_stmt,
                 callee_unit,
@@ -3577,69 +3671,7 @@ class SystemCobolParser:
             )
             return False
 
-        # Premise 1: Initialization before loop
-        init_moves = [
-            s
-            for s in callee_unit.statements
-            if isinstance(s, ASTMove)
-            and s.target_operand == cond_id
-            and s.line_end < loop_stmt.line_start
-        ]
-        if init_moves:
-            latest_init = init_moves[-1]
-            if _safe_unquote(latest_init.source_operand) == exit_lit:
-                self._mark_stmt_unsupported(
-                    loop_stmt,
-                    callee_unit,
-                    "Loop exit condition was pre-initialized to exit value",
-                )
-                return False
-            check_from = latest_init.line_end
-        else:
-            rec = next(
-                (r for r in callee_unit.record_declarations if r.container_name == cond_id),
-                None,
-            )
-            if not rec or rec.initial_value is None:
-                self._mark_stmt_unsupported(
-                    loop_stmt,
-                    callee_unit,
-                    f"Loop condition identifier '{cond_id}' has no initialization before loop",
-                )
-                return False
-            if _safe_unquote(rec.initial_value) == exit_lit:
-                self._mark_stmt_unsupported(
-                    loop_stmt,
-                    callee_unit,
-                    "Loop condition identifier initialized to exit value in working storage",
-                )
-                return False
-            check_from = 0
-
-        # Ensure no intervening statement before loop overwrote cond_id with exit_lit or clobbered
-        intervening_stmts = [
-            s
-            for s in callee_unit.statements
-            if s.line_start > check_from and s.line_end < loop_stmt.line_start
-        ]
-        for s in intervening_stmts:
-            if isinstance(s, ASTMove) and s.target_operand == cond_id:
-                if _safe_unquote(s.source_operand) == exit_lit:
-                    self._mark_stmt_unsupported(
-                        loop_stmt,
-                        callee_unit,
-                        "Intervening statement overwrote loop condition with exit literal",
-                    )
-                    return False
-            if isinstance(s, ASTArithmetic) and s.target == cond_id:
-                self._mark_stmt_unsupported(
-                    loop_stmt,
-                    callee_unit,
-                    "Intervening arithmetic statement clobbered loop condition identifier",
-                )
-                return False
-
-        # Premise 2: Open sequential input resource prior to loop
+        # Open sequential input resource prior to loop
         open_ops = [
             s
             for s in callee_unit.statements
@@ -3658,23 +3690,6 @@ class SystemCobolParser:
         latest_open = open_ops[-1]
         file_id = latest_open.internal_file_name
 
-        # Ensure file was not closed between OPEN and loop
-        intervening_closes = [
-            s
-            for s in callee_unit.statements
-            if isinstance(s, ASTFileOp)
-            and s.verb == "CLOSE"
-            and s.internal_file_name == file_id
-            and latest_open.line_end < s.line_start < loop_stmt.line_start
-        ]
-        if intervening_closes:
-            self._mark_stmt_unsupported(
-                loop_stmt,
-                callee_unit,
-                f"Resource '{file_id}' was closed prior to loop start",
-            )
-            return False
-
         binding = next(
             (fb for fb in callee_unit.file_bindings if fb.internal_file_name == file_id),
             None,
@@ -3687,7 +3702,77 @@ class SystemCobolParser:
             )
             return False
 
-        # Premise 3: Loop body progress measure inspection
+        # F-01 / Clarification 11: Resource and condition check over incoming abstract states
+        reachable_incoming = [
+            st for st in incoming_states if st.reachable and st.outcome == "CONTINUING"
+        ]
+        if reachable_incoming:
+            for st in reachable_incoming:
+                res_st = st.get_resource(file_id)
+                if res_st != "OPEN_INPUT":
+                    self._mark_stmt_unsupported(
+                        loop_stmt,
+                        callee_unit,
+                        f"Resource '{file_id}' is not provably OPEN_INPUT on all incoming paths",
+                    )
+                    return False
+
+            for st in reachable_incoming:
+                b = st.get_binding(cond_id)
+                if not isinstance(b, LiteralValue):
+                    self._mark_stmt_unsupported(
+                        loop_stmt,
+                        callee_unit,
+                        f"Loop condition identifier '{cond_id}' is unknown or non-literal on incoming path",
+                    )
+                    return False
+
+            # If all reachable states already satisfy cond_id == exit_lit, zero iterations execute
+            if all(
+                isinstance(st.get_binding(cond_id), LiteralValue)
+                and getattr(st.get_binding(cond_id), "val", None) == exit_lit
+                for st in reachable_incoming
+            ):
+                return True
+        else:
+            # Fallback to AST declarations if incoming_states not provided
+            init_moves = [
+                s
+                for s in callee_unit.statements
+                if isinstance(s, ASTMove)
+                and s.target_operand == cond_id
+                and s.line_end < loop_stmt.line_start
+            ]
+            if init_moves:
+                latest_init = init_moves[-1]
+                if _safe_unquote(latest_init.source_operand) == exit_lit:
+                    self._mark_stmt_unsupported(
+                        loop_stmt,
+                        callee_unit,
+                        "Loop exit condition was pre-initialized to exit value",
+                    )
+                    return False
+            else:
+                rec = next(
+                    (r for r in callee_unit.record_declarations if r.container_name == cond_id),
+                    None,
+                )
+                if not rec or rec.initial_value is None:
+                    self._mark_stmt_unsupported(
+                        loop_stmt,
+                        callee_unit,
+                        f"Loop condition identifier '{cond_id}' has no initialization before loop",
+                    )
+                    return False
+                if _safe_unquote(rec.initial_value) == exit_lit:
+                    self._mark_stmt_unsupported(
+                        loop_stmt,
+                        callee_unit,
+                        "Loop condition identifier initialized to exit value in working storage",
+                    )
+                    return False
+
+        # Loop body progress measure inspection
         def _collect_kinds(nodes: list[Any], target_kind: str) -> list[Any]:
             res: list[Any] = []
             for n in nodes:
@@ -3745,7 +3830,7 @@ class SystemCobolParser:
             )
             return False
 
-        # Premise 4: AT END sets condition_identifier to exit_literal
+        # AT END sets condition_identifier to exit_literal
         at_end_nodes = rn[2]
 
         def _get_all_cstmts(nodes: list[Any]) -> list[ClassifiedStatement]:
@@ -3764,6 +3849,7 @@ class SystemCobolParser:
                         res.extend(_get_all_cstmts(wb))
             return res
 
+        top_level_at_end = [n[1] for n in at_end_nodes if n[0] == "STMT"]
         at_end_stmts = _get_all_cstmts(at_end_nodes)
         exit_move_idx: int | None = None
         for idx_ae, cstmt in enumerate(at_end_stmts):
@@ -3780,6 +3866,22 @@ class SystemCobolParser:
                 and ast_m.target_operand == cond_id
                 and _safe_unquote(ast_m.source_operand) == exit_lit
             ):
+                # F-01: Identifier Y vs literal 'Y'
+                if not ast_m.is_literal_source:
+                    self._mark_stmt_unsupported(
+                        loop_stmt,
+                        callee_unit,
+                        f"Loop exit assignment source '{ast_m.source_operand}' is an identifier, not literal value",
+                    )
+                    return False
+                # F-01: Conditional EOF assignment does not prove loop termination
+                if cstmt not in top_level_at_end:
+                    self._mark_stmt_unsupported(
+                        loop_stmt,
+                        callee_unit,
+                        "Conditional EOF assignment does not prove loop termination",
+                    )
+                    return False
                 exit_move_idx = idx_ae
                 break
 
@@ -3831,16 +3933,14 @@ class SystemCobolParser:
                 )
                 return False
 
-        # Premise 5: Continuing execution paths must NEVER modify cond_id
+        # Continuing execution paths
         not_at_end_nodes = rn[3]
         read_top_idx = next(i for i, n in enumerate(body_nodes) if n[0] == "READ")
         before_read_nodes = body_nodes[:read_top_idx]
         after_read_nodes = body_nodes[read_top_idx + 1 :]
 
-        continuing_nodes = not_at_end_nodes + before_read_nodes + after_read_nodes
-        continuing_stmts = _get_all_cstmts(continuing_nodes)
-
-        for cstmt in continuing_stmts:
+        # Before and after READ: cond_id must NEVER be modified
+        for cstmt in _get_all_cstmts(before_read_nodes + after_read_nodes):
             if cstmt.classification == StatementClassification.UNSUPPORTED_RELEVANT:
                 self._mark_stmt_unsupported(
                     loop_stmt,
@@ -3883,6 +3983,57 @@ class SystemCobolParser:
                     loop_stmt,
                     callee_unit,
                     f"Continuing path modifies condition identifier '{cond_id}' via ACCEPT",
+                )
+                return False
+
+        # In NOT AT END: resetting flag to non-exit literal is valid (sequential READ advances progress)
+        for cstmt in _get_all_cstmts(not_at_end_nodes):
+            if cstmt.classification == StatementClassification.UNSUPPORTED_RELEVANT:
+                self._mark_stmt_unsupported(
+                    loop_stmt,
+                    callee_unit,
+                    "Loop body contains unsupported statements",
+                )
+                return False
+            ast_m = next(
+                (
+                    m
+                    for m in callee_unit.statements
+                    if isinstance(m, ASTMove) and m.line_start == cstmt.line_start
+                ),
+                None,
+            )
+            if ast_m and ast_m.target_operand == cond_id:
+                if not (
+                    ast_m.is_literal_source
+                    and _safe_unquote(ast_m.source_operand) != exit_lit
+                ):
+                    self._mark_stmt_unsupported(
+                        loop_stmt,
+                        callee_unit,
+                        f"NOT AT END clause invalidly modifies condition identifier '{cond_id}'",
+                    )
+                    return False
+            ast_a = next(
+                (
+                    a
+                    for a in callee_unit.statements
+                    if isinstance(a, ASTArithmetic) and a.line_start == cstmt.line_start
+                ),
+                None,
+            )
+            if ast_a and ast_a.target == cond_id:
+                self._mark_stmt_unsupported(
+                    loop_stmt,
+                    callee_unit,
+                    f"NOT AT END modifies condition identifier '{cond_id}' via arithmetic",
+                )
+                return False
+            if cstmt.verb == "ACCEPT" and cond_id in tokenize_cobol_line(cstmt.raw_text):
+                self._mark_stmt_unsupported(
+                    loop_stmt,
+                    callee_unit,
+                    f"NOT AT END modifies condition identifier '{cond_id}' via ACCEPT",
                 )
                 return False
 
@@ -3949,6 +4100,29 @@ class SystemCobolParser:
                     classification=StatementClassification.UNSUPPORTED_RELEVANT,
                     description=f"Finite loop progress invariant not proven: {reason}",
                 )
+
+    def _find_reaching_move(
+        self, callee_unit: ASTCompilationUnit, var_name: str, before_line: int
+    ) -> ClassifiedStatement | None:
+        """Find the most recent reaching MOVE statement targeting var_name before before_line."""
+        unit_stmts = [
+            s
+            for s in self.statements
+            if s.file_path == callee_unit.file_path and s.line_end < before_line
+        ]
+        for s in reversed(unit_stmts):
+            if s.verb == "MOVE":
+                ast_m = next(
+                    (
+                        m
+                        for m in callee_unit.statements
+                        if isinstance(m, ASTMove) and m.line_start == s.line_start
+                    ),
+                    None,
+                )
+                if ast_m and ast_m.target_operand == var_name:
+                    return s
+        return None
 
     def _compose_branch_union(self, branches: list[FlowResult]) -> FlowResult:
         if not branches:
@@ -4029,16 +4203,16 @@ class SystemCobolParser:
     ) -> FlowResult:
         """Trace CFG nodes to conservatively determine execution effect."""
         if not initial_states:
-            init_bindings: list[tuple[str, str]] = []
+            init_bindings: list[tuple[str, TypedValue]] = []
             for r in callee_unit.record_declarations:
                 if r.initial_value is not None:
-                    init_bindings.append((r.container_name, _safe_unquote(r.initial_value)))
+                    init_bindings.append((r.container_name, to_typed_value(r.initial_value)))
             init_resources = tuple(
                 sorted((fb.internal_file_name, "CLOSED") for fb in callee_unit.file_bindings)
             )
             default_state = AbstractPathState(
                 reachable=True,
-                variable_bindings=tuple(sorted(init_bindings)),
+                variable_bindings=tuple(sorted(init_bindings, key=lambda x: x[0])),
                 resource_states=init_resources,
                 outcome="CONTINUING",
             )
@@ -4078,7 +4252,22 @@ class SystemCobolParser:
 
             if kind == "STMT":
                 s: ClassifiedStatement = node[1]
-                if s.classification == StatementClassification.UNSUPPORTED_RELEVANT:
+                cont_states = [
+                    st
+                    for st in current_result.alternative_states
+                    if st.reachable and st.outcome == "CONTINUING"
+                ]
+                if cont_states:
+                    callee_unit.feasible_statement_lines.add(s.line_start)
+
+                if not cont_states:
+                    node_res = FlowResult(
+                        fallthrough_possible=False,
+                        alternative_states=current_result.alternative_states,
+                        joined_bindings=current_result.joined_bindings,
+                        joined_resource_states=current_result.joined_resource_states,
+                    )
+                elif s.classification == StatementClassification.UNSUPPORTED_RELEVANT:
                     node_res = FlowResult(fallthrough_possible=False, unknown=True)
                 elif s.verb in ("GO", "GOTO"):
                     node_res = FlowResult(fallthrough_possible=False, unknown=True)
@@ -4129,9 +4318,16 @@ class SystemCobolParser:
                         for st in current_result.alternative_states:
                             if st.reachable and st.outcome == "CONTINUING":
                                 if ast_m.is_literal_source:
-                                    val = _safe_unquote(ast_m.source_operand)
+                                    val: TypedValue = LiteralValue(
+                                        _safe_unquote(ast_m.source_operand)
+                                    )
                                 else:
-                                    val = st.get_binding(ast_m.source_operand) or "?UNKNOWN?"
+                                    b = st.get_binding(ast_m.source_operand)
+                                    val = (
+                                        b
+                                        if b is not None
+                                        else UnknownValue(f"Uninitialized {ast_m.source_operand}")
+                                    )
                                 new_alts.append(st.with_binding(ast_m.target_operand, val))
                             else:
                                 new_alts.append(st)
@@ -4162,7 +4358,11 @@ class SystemCobolParser:
                     new_alts = []
                     for st in current_result.alternative_states:
                         if target and st.reachable and st.outcome == "CONTINUING":
-                            new_alts.append(st.with_binding(target, "?UNKNOWN?"))
+                            new_alts.append(
+                                st.with_binding(
+                                    target, UnknownValue(f"Modified by arithmetic {s.verb}")
+                                )
+                            )
                         else:
                             new_alts.append(st)
                     jb, jr = join_abstract_path_states(new_alts)
@@ -4178,7 +4378,9 @@ class SystemCobolParser:
                     new_alts = []
                     for st in current_result.alternative_states:
                         if acc_target and st.reachable and st.outcome == "CONTINUING":
-                            new_alts.append(st.with_binding(acc_target, "?UNKNOWN?"))
+                            new_alts.append(
+                                st.with_binding(acc_target, UnknownValue("Modified by ACCEPT"))
+                            )
                         else:
                             new_alts.append(st)
                     jb, jr = join_abstract_path_states(new_alts)
@@ -4240,9 +4442,17 @@ class SystemCobolParser:
                             cmd_vals = {st.get_binding(cmd_var) for st in cont_states}
                             if (
                                 not cmd_vals
-                                or None in cmd_vals
-                                or "?UNKNOWN?" in cmd_vals
-                                or len(cmd_vals) > 1
+                                or any(
+                                    v is None or not isinstance(v, LiteralValue) for v in cmd_vals
+                                )
+                                or len(
+                                    {
+                                        getattr(v, "val", None)
+                                        for v in cmd_vals
+                                        if isinstance(v, LiteralValue)
+                                    }
+                                )
+                                > 1
                             ):
                                 for idx_s, cur_s in enumerate(self.statements):
                                     if (
@@ -4261,35 +4471,14 @@ class SystemCobolParser:
                                         )
                                 node_res = FlowResult(fallthrough_possible=False, unknown=True)
                             else:
-                                cmd_lit = next(iter(cmd_vals))
-                                assert cmd_lit is not None
-                                dialect, _, dialect_reason = classify_command_dialect(cmd_lit)
-                                if dialect == CommandDialect.SUPPORTED_WINDOWS_CMD:
-                                    node_res = FlowResult(
-                                        fallthrough_possible=True,
-                                        alternative_states=current_result.alternative_states,
-                                        joined_bindings=current_result.joined_bindings,
-                                        joined_resource_states=(
-                                            current_result.joined_resource_states
-                                        ),
-                                    )
-                                else:
-                                    for idx_s, cur_s in enumerate(self.statements):
-                                        if (
-                                            cur_s.file_path == callee_unit.file_path
-                                            and cur_s.line_start == s.line_start
-                                        ):
-                                            self.statements[idx_s] = replace(
-                                                cur_s,
-                                                classification=(
-                                                    StatementClassification.UNSUPPORTED_RELEVANT
-                                                ),
-                                                description=(
-                                                    dialect_reason
-                                                    or f"Unsupported command dialect: {cmd_lit}"
-                                                ),
-                                            )
-                                    node_res = FlowResult(fallthrough_possible=False, unknown=True)
+                                node_res = FlowResult(
+                                    fallthrough_possible=True,
+                                    alternative_states=current_result.alternative_states,
+                                    joined_bindings=current_result.joined_bindings,
+                                    joined_resource_states=(
+                                        current_result.joined_resource_states
+                                    ),
+                                )
                     else:
                         target = ast_call.target
                         target_unit = next(
@@ -4314,6 +4503,19 @@ class SystemCobolParser:
                                     callee_flow.fallthrough_possible
                                     or len(callee_flow.return_witnesses) > 0
                                 )
+                                # Clarification 5: Linkage / CALL USING clobber
+                                new_alts = []
+                                for st in current_result.alternative_states:
+                                    if st.reachable and st.outcome == "CONTINUING":
+                                        cur_st = st
+                                        for arg in ast_call.using_args:
+                                            cur_st = cur_st.with_binding(
+                                                arg, UnknownValue(f"Passed to {target}")
+                                            )
+                                        new_alts.append(cur_st)
+                                    else:
+                                        new_alts.append(st)
+                                jb, jr = join_abstract_path_states(new_alts)
                                 node_res = FlowResult(
                                     fallthrough_possible=can_return_to_caller_from_callee,
                                     process_termination_witnesses=(
@@ -4321,9 +4523,9 @@ class SystemCobolParser:
                                     ),
                                     return_witnesses=(),
                                     unknown=callee_flow.unknown,
-                                    alternative_states=current_result.alternative_states,
-                                    joined_bindings=current_result.joined_bindings,
-                                    joined_resource_states=current_result.joined_resource_states,
+                                    alternative_states=tuple(new_alts),
+                                    joined_bindings=jb,
+                                    joined_resource_states=jr,
                                 )
                 elif s.verb in ("DISPLAY", "WRITE", "SENTENCE_BOUNDARY"):
                     node_res = FlowResult(
@@ -4336,27 +4538,65 @@ class SystemCobolParser:
                     node_res = FlowResult(fallthrough_possible=False, unknown=True)
 
             elif kind == "IF":
-                then_nodes, else_nodes = node[2], node[3]
+                stmt, then_nodes, else_nodes = node[1], node[2], node[3]
+                if any(
+                    st.reachable and st.outcome == "CONTINUING"
+                    for st in current_result.alternative_states
+                ):
+                    callee_unit.feasible_statement_lines.add(stmt.line_start)
+                toks = tokenize_cobol_line(stmt.raw_text)
+                pred_pos: PathPredicate | None = None
+                pred_neg: PathPredicate | None = None
+                if (
+                    len(toks) >= 4
+                    and toks[0].upper() == "IF"
+                    and toks[2] in ("=", "==")
+                    and is_canonical_cobol_identifier(toks[1])
+                ):
+                    exp_val = _safe_unquote(toks[3])
+                    pred_pos = PathPredicate(
+                        variable=toks[1], operator="=", expected_value=exp_val, is_positive=True
+                    )
+                    pred_neg = PathPredicate(
+                        variable=toks[1], operator="=", expected_value=exp_val, is_positive=False
+                    )
+
+                then_incoming = (
+                    tuple(st.with_predicate(pred_pos) for st in current_result.alternative_states)
+                    if pred_pos
+                    else current_result.alternative_states
+                )
+                else_incoming = (
+                    tuple(st.with_predicate(pred_neg) for st in current_result.alternative_states)
+                    if pred_neg
+                    else current_result.alternative_states
+                )
+
                 then_res = self._analyze_cf_nodes(
-                    then_nodes, callee_unit, call_stack, current_result.alternative_states
+                    then_nodes, callee_unit, call_stack, then_incoming
                 )
                 else_res = (
-                    self._analyze_cf_nodes(
-                        else_nodes, callee_unit, call_stack, current_result.alternative_states
-                    )
+                    self._analyze_cf_nodes(else_nodes, callee_unit, call_stack, else_incoming)
                     if else_nodes
                     else FlowResult(
-                        fallthrough_possible=True,
-                        alternative_states=current_result.alternative_states,
-                        joined_bindings=current_result.joined_bindings,
-                        joined_resource_states=current_result.joined_resource_states,
+                        fallthrough_possible=any(st.reachable for st in else_incoming),
+                        alternative_states=else_incoming,
+                        joined_bindings=join_abstract_path_states(else_incoming)[0],
+                        joined_resource_states=join_abstract_path_states(else_incoming)[1],
                     )
                 )
                 node_res = self._compose_branch_union([then_res, else_res])
 
             elif kind == "PERFORM_UNTIL":
                 loop_stmt, body_nodes = node[1], node[2]
-                if not self._verify_finite_loop_progress(loop_stmt, body_nodes, callee_unit):
+                if any(
+                    st.reachable and st.outcome == "CONTINUING"
+                    for st in current_result.alternative_states
+                ):
+                    callee_unit.feasible_statement_lines.add(loop_stmt.line_start)
+                if not self._verify_finite_loop_progress(
+                    loop_stmt, body_nodes, callee_unit, current_result.alternative_states
+                ):
                     node_res = FlowResult(fallthrough_possible=False, unknown=True)
                 else:
                     perf_node = next(
@@ -4377,11 +4617,16 @@ class SystemCobolParser:
                     for st in body_res.alternative_states:
                         if st.reachable and st.outcome == "CONTINUING":
                             if c_id and e_lit:
-                                new_alts.append(st.with_binding(c_id, e_lit))
+                                new_alts.append(st.with_binding(c_id, LiteralValue(e_lit)))
                             else:
                                 new_alts.append(st)
                         else:
                             new_alts.append(st)
+                    for st in current_result.alternative_states:
+                        if st.reachable and st.outcome == "CONTINUING":
+                            b = st.get_binding(c_id)
+                            if isinstance(b, LiteralValue) and b.val == e_lit:
+                                new_alts.append(st)
                     jb, jr = join_abstract_path_states(new_alts)
                     node_res = FlowResult(
                         fallthrough_possible=True,
@@ -4394,7 +4639,12 @@ class SystemCobolParser:
                     )
 
             elif kind == "READ":
-                at_end_nodes, not_at_end_nodes = node[2], node[3]
+                read_stmt, at_end_nodes, not_at_end_nodes = node[1], node[2], node[3]
+                if any(
+                    st.reachable and st.outcome == "CONTINUING"
+                    for st in current_result.alternative_states
+                ):
+                    callee_unit.feasible_statement_lines.add(read_stmt.line_start)
                 at_end_res = (
                     self._analyze_cf_nodes(
                         at_end_nodes, callee_unit, call_stack, current_result.alternative_states
@@ -4421,7 +4671,12 @@ class SystemCobolParser:
                 node_res = self._compose_branch_union([at_end_res, not_at_end_res])
 
             elif kind == "EVALUATE":
-                when_blocks = node[2]
+                eval_stmt, when_blocks = node[1], node[2]
+                if any(
+                    st.reachable and st.outcome == "CONTINUING"
+                    for st in current_result.alternative_states
+                ):
+                    callee_unit.feasible_statement_lines.add(eval_stmt.line_start)
                 if not when_blocks:
                     node_res = FlowResult(fallthrough_possible=True)
                 else:
@@ -4476,7 +4731,11 @@ class SystemCobolParser:
         nodes, _, _ = self._parse_procedural_cf_block(prog_stmts)
         reachable_lines: set[int] = set()
 
-        def _traverse_reachability(node_list: list[Any], is_live: bool) -> bool:
+        def _traverse_reachability(
+            node_list: list[Any],
+            is_live: bool,
+            active_preds: tuple[PathPredicate, ...] = (),
+        ) -> bool:
             cur_live = is_live
             for n in node_list:
                 kind = n[0]
@@ -4513,9 +4772,62 @@ class SystemCobolParser:
                     if cur_live:
                         reachable_lines.add(s.line_start)
                     then_nodes, else_nodes = n[2], n[3]
-                    then_fall = _traverse_reachability(then_nodes, cur_live)
+                    toks = tokenize_cobol_line(s.raw_text)
+                    pred_pos: PathPredicate | None = None
+                    pred_neg: PathPredicate | None = None
+                    if (
+                        len(toks) >= 4
+                        and toks[0].upper() == "IF"
+                        and toks[2] in ("=", "==")
+                        and is_canonical_cobol_identifier(toks[1])
+                    ):
+                        exp_val = _safe_unquote(toks[3])
+                        pred_pos = PathPredicate(
+                            variable=toks[1],
+                            operator="=",
+                            expected_value=exp_val,
+                            is_positive=True,
+                        )
+                        pred_neg = PathPredicate(
+                            variable=toks[1],
+                            operator="=",
+                            expected_value=exp_val,
+                            is_positive=False,
+                        )
+
+                    then_live = cur_live
+                    then_preds = active_preds
+                    if pred_pos and cur_live:
+                        if any(
+                            p.variable == pred_pos.variable
+                            and (
+                                (p.is_positive and p.expected_value != pred_pos.expected_value)
+                                or (not p.is_positive and p.expected_value == pred_pos.expected_value)
+                            )
+                            for p in active_preds
+                        ):
+                            then_live = False
+                        else:
+                            then_preds = active_preds + (pred_pos,)
+
+                    else_live = cur_live
+                    else_preds = active_preds
+                    if pred_neg and cur_live:
+                        if any(
+                            p.variable == pred_neg.variable
+                            and p.is_positive
+                            and p.expected_value == pred_neg.expected_value
+                            for p in active_preds
+                        ):
+                            else_live = False
+                        else:
+                            else_preds = active_preds + (pred_neg,)
+
+                    then_fall = _traverse_reachability(then_nodes, then_live, then_preds)
                     else_fall = (
-                        _traverse_reachability(else_nodes, cur_live) if else_nodes else cur_live
+                        _traverse_reachability(else_nodes, else_live, else_preds)
+                        if else_nodes
+                        else else_live
                     )
                     cur_live = then_fall or else_fall
                 elif kind == "READ":
@@ -4524,10 +4836,12 @@ class SystemCobolParser:
                         reachable_lines.add(s.line_start)
                     at_end_nodes, not_at_end_nodes = n[2], n[3]
                     ae_fall = (
-                        _traverse_reachability(at_end_nodes, cur_live) if at_end_nodes else cur_live
+                        _traverse_reachability(at_end_nodes, cur_live, active_preds)
+                        if at_end_nodes
+                        else cur_live
                     )
                     nae_fall = (
-                        _traverse_reachability(not_at_end_nodes, cur_live)
+                        _traverse_reachability(not_at_end_nodes, cur_live, active_preds)
                         if not_at_end_nodes
                         else cur_live
                     )
@@ -4547,7 +4861,7 @@ class SystemCobolParser:
                         ]
                         if w_tokens == ["WHEN", "OTHER"]:
                             has_when_other = True
-                        if _traverse_reachability(wb, cur_live):
+                        if _traverse_reachability(wb, cur_live, active_preds):
                             any_fall = True
                     if not has_when_other and cur_live:
                         any_fall = True
@@ -4556,10 +4870,12 @@ class SystemCobolParser:
                     s = n[1]
                     if cur_live:
                         reachable_lines.add(s.line_start)
-                    _traverse_reachability(n[2], cur_live)
+                    _traverse_reachability(n[2], cur_live, active_preds)
             return cur_live
 
         _traverse_reachability(nodes, True)
+        if unit.feasible_statement_lines:
+            return reachable_lines & unit.feasible_statement_lines
         return reachable_lines
 
     def _are_statements_in_same_linear_cf_segment(
@@ -4627,6 +4943,8 @@ class SystemCobolParser:
         """
         curr_prog = callee_unit.program_id or ""
         if call_stack is None:
+            if hasattr(callee_unit, "_analyzed_continuation_flow"):
+                return callee_unit._analyzed_continuation_flow
             call_stack = frozenset([curr_prog])
         elif curr_prog in call_stack:
             return FlowResult(fallthrough_possible=False, unknown=True)
@@ -4658,8 +4976,12 @@ class SystemCobolParser:
             for s in self.statements[proc_idx + 1 :]
             if s.file_path == callee_unit.file_path and s.verb != "PARAGRAPH_HEADER"
         ]
+        callee_unit.certified_system_dispatches.clear()
         nodes, _, _ = self._parse_procedural_cf_block(prog_stmts)
-        return self._analyze_cf_nodes(nodes, callee_unit, call_stack)
+        res = self._analyze_cf_nodes(nodes, callee_unit, call_stack)
+        if len(call_stack) == 1:
+            callee_unit._analyzed_continuation_flow = res
+        return res
 
     # -----------------------------------------------------------------------
     # Generic Deterministic Fact Extraction (Zero Fixture Identifiers)
@@ -4939,6 +5261,7 @@ class SystemCobolParser:
             n_stmts = len(unit.statements)
             target_unit_file = self.bundle.get_file(unit.file_path)
             unit_raw_lines = target_unit_file.get_lines()
+
             reachable_lines = self._compute_statement_reachability(unit)
             commands_in_unit: list[tuple[ASTMove, ASTCall, int, int, MutationCommandResult]] = []
 
@@ -5108,6 +5431,68 @@ class SystemCobolParser:
                                 continue
 
                         commands_in_unit.append((s1, s2, idx, idx + 1, mut_res))
+
+            # F-02: Check for unsupported nonadjacent SYSTEM commands
+            paired_call_lines = {c[1].line_start for c in commands_in_unit}
+            for s in unit.statements:
+                if (
+                    isinstance(s, ASTCall)
+                    and s.is_literal
+                    and s.target == "SYSTEM"
+                    and s.line_start in reachable_lines
+                    and s.line_start not in paired_call_lines
+                ):
+                    cmd_var = s.using_args[0] if s.using_args else ""
+                    has_target_move = any(
+                        isinstance(m, ASTMove) and m.target_operand == cmd_var
+                        for m in unit.statements
+                    )
+                    if has_target_move:
+                        prior_clobber = any(
+                            isinstance(other, ASTCall)
+                            and other.target != "SYSTEM"
+                            and cmd_var in other.using_args
+                            and other.line_start < s.line_start
+                            for other in unit.statements
+                        )
+                        prior_accept = any(
+                            getattr(other, "target_operand", None) == cmd_var
+                            and getattr(other, "verb", None) == "ACCEPT"
+                            and other.line_start < s.line_start
+                            for other in unit.statements
+                        )
+                        if prior_clobber:
+                            desc = (
+                                f"Reaching command definition for '{cmd_var}' "
+                                "was clobbered by CALL USING before SYSTEM dispatch"
+                            )
+                        elif prior_accept:
+                            desc = (
+                                f"Reaching command definition for '{cmd_var}' "
+                                "was overwritten by ACCEPT before SYSTEM dispatch"
+                            )
+                        else:
+                            desc = (
+                                "Unsupported nonadjacent SYSTEM command: missing "
+                                "immediately adjacent defining MOVE or separated by procedural barrier"
+                            )
+
+                        for idx_s, cur_s in enumerate(self.statements):
+                            if (
+                                cur_s.file_path == unit.file_path
+                                and cur_s.line_start == s.line_start
+                                and cur_s.classification
+                                != StatementClassification.UNSUPPORTED_RELEVANT
+                            ):
+                                self.statements[idx_s] = ClassifiedStatement(
+                                    cur_s.file_path,
+                                    cur_s.line_start,
+                                    cur_s.line_end,
+                                    cur_s.verb,
+                                    cur_s.raw_text,
+                                    StatementClassification.UNSUPPORTED_RELEVANT,
+                                    desc,
+                                )
 
             # Operation sequence and non-atomic risk: generic operand-aware
             if len(commands_in_unit) >= 2:

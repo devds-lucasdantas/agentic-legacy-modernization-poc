@@ -5569,11 +5569,8 @@ def test_h7_6_a_b02_exact_duplicate_host_integrity_check() -> None:
     sf1 = SupportedSystemFact(fact=fact, proposition_id="prop.term.bank-main", evidence_spans=spans)
     sf2 = SupportedSystemFact(fact=fact, proposition_id="prop.term.bank-main", evidence_spans=spans)
 
-    index = SystemSupportIndex([sf1, sf2], bundle)
-    evaluator = SystemEvaluatorV3(index)
-
-    with pytest.raises(ValueError, match="Host-oracle integrity error"):
-        evaluator.extract_host_exhaustive_obligations()
+    with pytest.raises(ValueError, match="Exact duplicate supported fact rejected by host index integrity"):
+        SystemSupportIndex([sf1, sf2], bundle)
 
 
 def test_h7_6_a_b02_system_support_index_occurrence_lookup_semantics() -> None:
@@ -6936,7 +6933,7 @@ def test_h7_7_b_aud_01_finite_loop_progress_theorem() -> None:
            STOP RUN.
 """
 
-    # 1. NOT AT END resets EOF flag -> fails closed
+    # 1. NOT AT END resets EOF flag to 'N' is valid progress (H7.8 scientific invariant)
     p1_loop = """           PERFORM UNTIL WS-EOF-FLAG = 'Y'
                READ ACCT-FILE
                    AT END
@@ -6954,13 +6951,29 @@ def test_h7_7_b_aud_01_finite_loop_progress_theorem() -> None:
         )
     )
     cert1 = p1.parse_system()
-    assert cert1.unsupported_relevant_count >= 1
-    assert cert1.is_evaluation_blocked is True
-    assert any(
-        "progress" in s.description.lower()
-        for s in p1.statements
-        if s.classification == StatementClassification.UNSUPPORTED_RELEVANT
+    assert cert1.unsupported_relevant_count == 0
+    assert cert1.is_evaluation_blocked is False
+
+    # 1b. NOT AT END resets EOF flag to exit literal 'Y' -> fails closed
+    p1b_loop = """           PERFORM UNTIL WS-EOF-FLAG = 'Y'
+               READ ACCT-FILE
+                   AT END
+                       MOVE 'Y' TO WS-EOF-FLAG
+                   NOT AT END
+                       MOVE 'Y' TO WS-EOF-FLAG
+               END-READ
+           END-PERFORM."""
+    p1b = SystemCobolParser(
+        _make_multi_file_bundle(
+            {
+                "CALLER.CBL": caller_src,
+                "LOOPPROG.CBL": base_src.format(loop_body=p1b_loop),
+            }
+        )
     )
+    cert1b = p1b.parse_system()
+    assert cert1b.unsupported_relevant_count >= 1
+    assert cert1b.is_evaluation_blocked is True
 
     # 2. AT END clobbers EOF flag subsequently -> fails closed
     p2_loop = """           PERFORM UNTIL WS-EOF-FLAG = 'Y'
@@ -7655,3 +7668,288 @@ def test_h7_8_a_f05_canonical_report_gen_mutation_reproduction() -> None:
     assert metrics.recall < 1.0
     assert metrics.gate_3_pass is False
     assert cert.is_evaluation_blocked is True
+
+
+# ===========================================================================
+# H7.8-B: Path-Sensitive State, SYSTEM Dispatch, Loop Theorem, & Barriers
+# ===========================================================================
+
+
+def test_h7_8_b_f01_loop_theorem_soundness_counterexamples() -> None:
+    """H7.8-B / F-01: Finite-loop progress theorem negative acceptance cases.
+
+    Verifies:
+    1. Identifier Y vs literal 'Y' in AT END exit assignment fails closed.
+    2. Conditional EOF assignment (inside IF in AT END) fails closed.
+    3. Conditional OPEN before loop fails closed.
+    """
+    caller_src = """       IDENTIFICATION DIVISION.
+       PROGRAM-ID. CALLER.
+       PROCEDURE DIVISION.
+           CALL 'LOOPPROG'.
+           STOP RUN.
+"""
+    # 1. Identifier Y instead of literal 'Y'
+    src_id_y = """       IDENTIFICATION DIVISION.
+       PROGRAM-ID. LOOPPROG.
+       ENVIRONMENT DIVISION.
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+           SELECT ACCT-FILE ASSIGN TO 'ACCOUNTS.DAT'
+               ORGANIZATION IS LINE SEQUENTIAL.
+       DATA DIVISION.
+       FILE SECTION.
+       FD ACCT-FILE.
+       01 ACCT-REC PIC X(50).
+       WORKING-STORAGE SECTION.
+       01 WS-EOF-FLAG PIC X VALUE 'N'.
+       01 Y           PIC X VALUE 'Y'.
+       PROCEDURE DIVISION.
+           OPEN INPUT ACCT-FILE.
+           PERFORM UNTIL WS-EOF-FLAG = 'Y'
+               READ ACCT-FILE
+                   AT END
+                       MOVE Y TO WS-EOF-FLAG
+               END-READ
+           END-PERFORM.
+           CLOSE ACCT-FILE.
+           GOBACK.
+"""
+    p1 = SystemCobolParser(_make_multi_file_bundle({"CALLER.CBL": caller_src, "LOOPPROG.CBL": src_id_y}))
+    cert1 = p1.parse_system()
+    assert cert1.unsupported_relevant_count >= 1
+    assert cert1.is_evaluation_blocked is True
+    assert any("identifier" in s.description.lower() for s in p1.statements if s.classification == StatementClassification.UNSUPPORTED_RELEVANT)
+
+    # 2. Conditional EOF assignment inside IF in AT END
+    src_cond_eof = """       IDENTIFICATION DIVISION.
+       PROGRAM-ID. LOOPPROG.
+       ENVIRONMENT DIVISION.
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+           SELECT ACCT-FILE ASSIGN TO 'ACCOUNTS.DAT'
+               ORGANIZATION IS LINE SEQUENTIAL.
+       DATA DIVISION.
+       FILE SECTION.
+       FD ACCT-FILE.
+       01 ACCT-REC PIC X(50).
+       WORKING-STORAGE SECTION.
+       01 WS-EOF-FLAG PIC X VALUE 'N'.
+       01 WS-FLAG     PIC X VALUE 'Y'.
+       PROCEDURE DIVISION.
+           OPEN INPUT ACCT-FILE.
+           PERFORM UNTIL WS-EOF-FLAG = 'Y'
+               READ ACCT-FILE
+                   AT END
+                       IF WS-FLAG = 'Y'
+                           MOVE 'Y' TO WS-EOF-FLAG
+                       END-IF
+               END-READ
+           END-PERFORM.
+           CLOSE ACCT-FILE.
+           GOBACK.
+"""
+    p2 = SystemCobolParser(_make_multi_file_bundle({"CALLER.CBL": caller_src, "LOOPPROG.CBL": src_cond_eof}))
+    cert2 = p2.parse_system()
+    assert cert2.unsupported_relevant_count >= 1
+    assert cert2.is_evaluation_blocked is True
+    assert any("conditional eof" in s.description.lower() for s in p2.statements if s.classification == StatementClassification.UNSUPPORTED_RELEVANT)
+
+    # 3. Conditional OPEN before loop
+    src_cond_open = """       IDENTIFICATION DIVISION.
+       PROGRAM-ID. LOOPPROG.
+       ENVIRONMENT DIVISION.
+       INPUT-OUTPUT SECTION.
+       FILE-CONTROL.
+           SELECT ACCT-FILE ASSIGN TO 'ACCOUNTS.DAT'
+               ORGANIZATION IS LINE SEQUENTIAL.
+       DATA DIVISION.
+       FILE SECTION.
+       FD ACCT-FILE.
+       01 ACCT-REC PIC X(50).
+       WORKING-STORAGE SECTION.
+       01 WS-EOF-FLAG PIC X VALUE 'N'.
+       01 WS-FLAG     PIC X VALUE 'Y'.
+       PROCEDURE DIVISION.
+           IF WS-FLAG = 'Y'
+               OPEN INPUT ACCT-FILE
+           END-IF.
+           PERFORM UNTIL WS-EOF-FLAG = 'Y'
+               READ ACCT-FILE
+                   AT END
+                       MOVE 'Y' TO WS-EOF-FLAG
+               END-READ
+           END-PERFORM.
+           CLOSE ACCT-FILE.
+           GOBACK.
+"""
+    p3 = SystemCobolParser(_make_multi_file_bundle({"CALLER.CBL": caller_src, "LOOPPROG.CBL": src_cond_open}))
+    cert3 = p3.parse_system()
+    assert cert3.unsupported_relevant_count >= 1
+    assert cert3.is_evaluation_blocked is True
+    assert any("not provably open_input" in s.description.lower() for s in p3.statements if s.classification == StatementClassification.UNSUPPORTED_RELEVANT)
+
+
+def test_h7_8_b_f02_system_dispatch_and_reaching_definitions_counterexamples() -> None:
+    """H7.8-B / F-02: Authoritative SYSTEM dispatch failure modes.
+
+    Verifies:
+    1. Unsupported nonadjacent SYSTEM command (intervening statement) does not form sequences.
+    2. Divergent branch command values fail closed.
+    3. Partial branch definition (command defined only on one path) fails closed.
+    4. Real CALL USING clobber before CALL 'SYSTEM' fails closed.
+    """
+    caller_src = """       IDENTIFICATION DIVISION.
+       PROGRAM-ID. CALLER.
+       PROCEDURE DIVISION.
+           CALL 'CALLEE'.
+           STOP RUN.
+"""
+    # 1. Partial branch definition: CMD only moved on one branch
+    src_partial = """       IDENTIFICATION DIVISION.
+       PROGRAM-ID. CALLEE.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 WS-FLAG PIC X.
+       01 WS-CMD  PIC X(50).
+       PROCEDURE DIVISION.
+           IF WS-FLAG = 'Y'
+               MOVE 'cmd /c echo A' TO WS-CMD
+           END-IF.
+           CALL 'SYSTEM' USING WS-CMD.
+           GOBACK.
+"""
+    p1 = SystemCobolParser(_make_multi_file_bundle({"CALLER.CBL": caller_src, "CALLEE.CBL": src_partial}))
+    cert1 = p1.parse_system()
+    assert cert1.unsupported_relevant_count >= 1
+    assert cert1.is_evaluation_blocked is True
+    assert any("ungrounded" in s.description.lower() or "conflicting" in s.description.lower() for s in p1.statements if s.classification == StatementClassification.UNSUPPORTED_RELEVANT)
+
+    # 2. CALL USING clobber: Callee receives WS-CMD as parameter, invalidating prior constant
+    files_clobber = {
+        "CALLER.CBL": """       IDENTIFICATION DIVISION.
+       PROGRAM-ID. CALLER.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 WS-CMD PIC X(50).
+       PROCEDURE DIVISION.
+           MOVE 'cmd /c echo 1' TO WS-CMD.
+           CALL 'SUBPROG' USING WS-CMD.
+           CALL 'SYSTEM' USING WS-CMD.
+           STOP RUN.
+""",
+        "SUBPROG.CBL": """       IDENTIFICATION DIVISION.
+       PROGRAM-ID. SUBPROG.
+       DATA DIVISION.
+       LINKAGE SECTION.
+       01 LK-CMD PIC X(50).
+       PROCEDURE DIVISION USING LK-CMD.
+           GOBACK.
+""",
+    }
+    p2 = SystemCobolParser(_make_multi_file_bundle(files_clobber))
+    cert2 = p2.parse_system()
+    assert cert2.unsupported_relevant_count >= 1
+    assert cert2.is_evaluation_blocked is True
+    assert any("clobbered" in s.description.lower() for s in p2.statements if s.classification == StatementClassification.UNSUPPORTED_RELEVANT)
+
+    # 3. Intervening procedural statement between MOVE and CALL SYSTEM:
+    # MOVE and CALL are not adjacent -> emits command fact, but no adjacent operation sequence
+    src_nonadjacent = """       IDENTIFICATION DIVISION.
+       PROGRAM-ID. NONADJ.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 WS-CMD PIC X(100).
+       01 WS-CNT PIC 9(2) VALUE 0.
+       PROCEDURE DIVISION.
+           MOVE 'cmd /c del a.dat' TO WS-CMD.
+           ADD 1 TO WS-CNT.
+           CALL 'SYSTEM' USING WS-CMD.
+           MOVE 'cmd /c ren b.dat a.dat' TO WS-CMD.
+           CALL 'SYSTEM' USING WS-CMD.
+           STOP RUN.
+"""
+    p3 = SystemCobolParser(_make_synth_bundle(src_nonadjacent))
+    p3.parse_system()
+    seqs = [f.fact for f in p3.supported_facts if isinstance(f.fact, OperationSequenceFact)]
+    assert len(seqs) == 0, "Non-adjacent commands with intervening ADD statement must not form OperationSequenceFact"
+
+
+def test_h7_8_b_f03_contradictory_predicates_and_control_flow_skip() -> None:
+    """H7.8-B / F-03: Contradictory nested predicates and GO TO fail closed.
+
+    Verifies:
+    1. Contradictory nested IF predicates make body unreachable (0 facts emitted).
+    2. GO TO statement fails closed as UNSUPPORTED_RELEVANT.
+    """
+    # 1. Contradictory nested predicates
+    src_contra = """       IDENTIFICATION DIVISION.
+       PROGRAM-ID. CONTRA.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 WS-FLAG PIC X.
+       01 WS-CMD  PIC X(50).
+       PROCEDURE DIVISION.
+           IF WS-FLAG = 'Y'
+               IF WS-FLAG = 'N'
+                   MOVE 'cmd /c echo NEVER' TO WS-CMD
+                   CALL 'SYSTEM' USING WS-CMD
+               END-IF
+           END-IF.
+           STOP RUN.
+"""
+    p1 = SystemCobolParser(_make_synth_bundle(src_contra))
+    cert1 = p1.parse_system()
+    assert cert1.unsupported_relevant_count == 0
+    cmd_facts = [f.fact for f in p1.supported_facts if isinstance(f.fact, CommandInvocationFact)]
+    assert len(cmd_facts) == 0, "Unreachable body from contradictory predicates emits 0 facts"
+
+    # 2. GO TO statement fails closed
+    src_goto = """       IDENTIFICATION DIVISION.
+       PROGRAM-ID. TGOTO.
+       DATA DIVISION.
+       WORKING-STORAGE SECTION.
+       01 WS-CMD PIC X(50).
+       PROCEDURE DIVISION.
+           MOVE 'cmd /c del a.dat' TO WS-CMD.
+           CALL 'SYSTEM' USING WS-CMD.
+           GO TO SKIP-REN.
+           MOVE 'cmd /c ren b.dat a.dat' TO WS-CMD.
+           CALL 'SYSTEM' USING WS-CMD.
+       SKIP-REN.
+           STOP RUN.
+"""
+    p2 = SystemCobolParser(_make_synth_bundle(src_goto))
+    cert2 = p2.parse_system()
+    assert cert2.unsupported_relevant_count >= 1
+    assert cert2.is_evaluation_blocked is True
+    assert any("GO TO" in s.description for s in p2.statements if s.classification == StatementClassification.UNSUPPORTED_RELEVANT)
+
+
+def test_h7_8_b_certification_barrier_and_exact_duplicate_integrity() -> None:
+    """H7.8-B: Certification barrier and global exact duplicate rejection.
+
+    Verifies:
+    1. Certification barrier: When coverage is blocked, host index contains 0 authoritative facts.
+    2. Global duplicate rejection: SystemSupportIndex rejects exact duplicate supported fact.
+    """
+    bundle = read_system_bundle(repo_root=REPO_ROOT)
+    fact = TerminationSiteFact(program_id="BANK-MAIN", statement_type="STOP_RUN")
+    span = EvidenceSpan("legacy/core-banking-system/BANK-MAIN.CBL", 100, 100)
+    sf1 = SupportedSystemFact(fact=fact, proposition_id="prop.term.bank-main", evidence_spans={"evidence": span})
+    sf2 = SupportedSystemFact(fact=fact, proposition_id="prop.term.bank-main", evidence_spans={"evidence": span})
+
+    # Exact duplicate rejected globally
+    with pytest.raises(ValueError, match="Exact duplicate supported fact rejected by host index integrity"):
+        SystemSupportIndex([sf1, sf2], bundle)
+
+    # Certification barrier blocks all facts
+    from dataclasses import dataclass
+
+    @dataclass
+    class BlockedCert:
+        is_evaluation_blocked: bool = True
+
+    index_blocked = SystemSupportIndex([sf1], bundle, coverage_certificate=BlockedCert(is_evaluation_blocked=True))
+    assert len(index_blocked._all_facts) == 0
+

@@ -26,19 +26,44 @@ class SystemSupportIndex:
         supported_facts: list[SupportedSystemFact],
         bundle: MultiSourceBundle,
         file_status_certificate: Any | None = None,
+        coverage_certificate: Any | None = None,
     ) -> None:
         self.bundle = bundle
         self.file_status_certificate = file_status_certificate
-        self._all_facts: tuple[SupportedSystemFact, ...] = tuple(supported_facts)
+        self.coverage_certificate = coverage_certificate
+
+        # Certification barrier: If coverage is blocked, host index accepts 0 authoritative facts
+        if coverage_certificate is not None and getattr(
+            coverage_certificate, "is_evaluation_blocked", False
+        ):
+            self._all_facts: tuple[SupportedSystemFact, ...] = ()
+        else:
+            self._all_facts = tuple(supported_facts)
+
         self._facts_by_prop_id: dict[str, list[SupportedSystemFact]] = {}
         self._facts_by_semantic_key: dict[str, list[SupportedSystemFact]] = {}
         self._facts_by_file: dict[str, list[SupportedSystemFact]] = {}
 
+        seen_exact_host_facts: set[tuple[str, tuple[tuple[str, str, int, int], ...]]] = set()
         for sf in self._all_facts:
+            key = sf.fact.get_semantic_key()
+            canon_spans: list[tuple[str, str, int, int]] = []
+            for role, span in sf.evidence_spans.items():
+                try:
+                    canon_p = self.bundle.resolve_canonical_file_path(span.file_path)
+                except (KeyError, ValueError):
+                    canon_p = span.file_path.replace("\\", "/")
+                canon_spans.append((role, canon_p, span.line_start, span.line_end))
+            exact_id = (sf.fact, tuple(sorted(canon_spans)))
+            if exact_id in seen_exact_host_facts:
+                raise ValueError(
+                    "Exact duplicate supported fact rejected by host index integrity: "
+                    f"proposition_id='{sf.proposition_id}', fact='{sf.fact}'"
+                )
+            seen_exact_host_facts.add(exact_id)
+
             prop_id = sf.proposition_id
             self._facts_by_prop_id.setdefault(prop_id, []).append(sf)
-
-            key = sf.fact.get_semantic_key()
             self._facts_by_semantic_key.setdefault(key, []).append(sf)
 
             for span in sf.evidence_spans.values():
