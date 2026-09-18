@@ -1220,6 +1220,147 @@ Following exhaustive adversarial audit by the Astra verification authority, find
 - **Remote Branch:** `feat/gate-3-system-analysis`
 - **Execution Mode:** Strictly OFFLINE. 0 provider calls, 0 baseline-v3 reservations, baseline-v2 reservation byte-for-byte preserved.
 
+---
+
+## 30. Technical Remediations (H7.8 Release)
+
+### 30.1 H7.8-A: Complete Source Grammar, Procedural Scope Stack, and Declaration Atomicity
+- **Reserved Scope Terminators:** `END-IF`, `END-PERFORM`, `END-READ`, `END-EVALUATE` reserved grammar enforcement prevents keyword collision and enforces correct lexical categorization.
+- **Hierarchical Procedural Scope Stack:** Nested procedural constructs maintain exact control-flow nesting boundaries. Periods terminating COBOL sentences cleanly pop all active unclosed scopes.
+- **Exact WHEN OTHER Scope:** Evaluates `EVALUATE` blocks with explicit `WHEN OTHER` fallthrough tracking, ensuring unmatched branches do not silently escape.
+- **Structural PICTURE Grammar:** Enhanced regex and domain validation for PICTURE strings (`PICTURE IS`, `PIC`, currency, sign, scaling symbols) preventing malformed data descriptors.
+- **USAGE Grammar & Domain Closure:** Rejects invalid USAGE specifications (`USAGE GARBAGE`), isolating malformed declarations and blocking evaluation without corrupting sibling records.
+- **Record Declaration Atomicity:** Corrupted 01-level record declarations fail closed atomically, isolating parse errors to the affected record container.
+
+### 30.2 H7.8-B: Path-Sensitive State, Reaching Definition Dispatch, Finite Loop Theorem, and Certification Barrier
+- **Typed Abstract Values:** Replaced untyped string binding markers with typed representations: `LiteralValue(val)`, `IdentifierValue(name)`, `UnknownValue(reason)`, and `PathPredicate(variable, operator, expected_value, is_positive)`. Enforces strict semantic inequality `LiteralValue("Y") != IdentifierValue("Y")`.
+- **Path-Sensitive Abstract Interpretation:** `AbstractPathState` tracks typed variable bindings, resource states, and path predicates. Branch joins compute precise confluence, binding conflicting values to `UnknownValue`.
+- **Authoritative SYSTEM Dispatch Analysis:** Single unified semantic evaluation of `CALL 'SYSTEM' USING <var>`. Commands reaching as `UnknownValue`, conflicting branch values, ungrounded variables, or separated by procedural barriers fail closed as `UNSUPPORTED_RELEVANT`.
+- **Reaching Definition Clobber & Overwrite Tracking:** Explicit detection of variable mutations prior to `CALL 'SYSTEM'`:
+  - Variables passed to preceding `CALL <subprog> USING <var>` are recognized as clobbered by parameter passing.
+  - Variables modified by preceding `ACCEPT <var>` are recognized as overwritten.
+- **Finite READ/EOF Loop Progress Theorem:** Formal verification of sequential file processing loops (`PERFORM UNTIL WS-EOF = 'Y'`):
+  - Requires file to be provably `OPEN_INPUT`.
+  - Verifies that `NOT AT END` sequential `READ` constitutes positive execution progress.
+  - Requires `AT END` handler to establish the exit value via literal assignment (`MOVE 'Y' TO WS-EOF`), rejecting identifier assignments and conditional EOF assignments.
+- **Feasible Path Pruning & Contradictory Predicate Isolation:** Statement reachability traversal prunes branches governed by contradictory nested predicates (e.g. `IF FLAG = 'Y'` enclosing `IF FLAG = 'N'`), emitting 0 facts for dead code.
+- **GO / GOTO Fail Closed:** Procedural `GO TO` statements are classified as `UNSUPPORTED_RELEVANT`, blocking certification when present.
+- **Host Certification Barrier:** When `ParserCoverageCertificate.is_evaluation_blocked` is true, `SystemSupportIndex` refuses to admit any host facts (`_all_facts = ()`), establishing a total certification barrier against ungrounded propositions.
+- **Global Exact Duplicate Integrity:** `SystemSupportIndex` enforces global duplicate rejection (`ValueError`), ensuring duplicate host facts with identical semantic keys and evidence spans are never admitted.
+
+### 30.3 H7.8-C: Emergency Finalization, Temp Cleanup, and Durable Failure Verification
+- **Durable Atomic File Writes:** `durable_atomic_write_bytes` provides full flush, file fsync, atomic rename via `os.replace`, parent directory fsync, and read-back SHA-256 byte identity verification. Cleans up temporary files on write failure.
+- **Stray Temporary File Cleanup:** `cleanup_temp_files` systematically purges `.tmp` and `.tmp.*` files from artifact directories before manifest generation and upon finalization.
+- **Emergency Finalization Fallback:** `emergency_finalize` provides guaranteed fallback writing of `emergency-failure.json` and transitions reservation state to `FAILED_UNSEALED` when standard execution fails.
+- **Verified Failure State Machine:** Strict phase-derived failure artifact requirements enforce exact three-way terminal transitions:
+  - `FAILED`: Failure evidence successfully verified and sealed in `manifest.json`.
+  - `FAILED_UNSEALED`: One or more required failure artifacts missing or corrupt.
+  - `COORDINATION_FAILURE`: Evidence sealed, but reservation state update failed.
+- **PRECHECK_REJECTED Terminal State:** Preflight rejections (unsupported statements or baseline drift) record `PRECHECK_REJECTED` with 0 attempts consumed, permitting correction without attempt exhaustion.
+
+---
+
+## 31. Quality Gates, Scientific Acceptance, and Invariant Verification (H7.8 Release)
+
+### 31.1 Test Suite Verification (Complete Original Quality Gate)
+Every required command was executed sequentially, exactly once each, with 100% pass:
+
+1. **Full Repository Pytest (`.venv/bin/pytest -q`):**
+   - **388 passed, 1 warning in 284.25s (100% green)** across all 52 modules.
+2. **Targeted H7 / Contract Regression Suite (`.venv/bin/pytest -q evals/tests/test_h7_contract_regressions.py`):**
+   - **118 passed in 15.72s (100% green)** (including all H7.8-A, H7.8-B, and H7.8-C regressions).
+3. **Adversarial Regression Suite (`.venv/bin/pytest -q evals/tests/test_adversarial_regressions_gate3.py`):**
+   - **24 passed in 3.30s (100% green)**.
+4. **Runner & Authorization Contract Suite (`.venv/bin/pytest -q evals/tests/test_gate_3_runner.py`):**
+   - **13 passed in 35.09s (100% green)**.
+5. **Round 3 Remediation Regressions (`.venv/bin/pytest -q evals/tests/test_round3_regressions.py`):**
+   - **15 passed in 11.81s (100% green)**.
+6. **Remediation Regression Suite (`.venv/bin/pytest -q evals/tests/test_gate_3_remediation_regressions.py`):**
+   - **25 passed in 24.72s (100% green)**.
+7. **Linter (`.venv/bin/ruff check .`):**
+   - **All checks passed!**
+8. **Formatter Check (`.venv/bin/ruff format --check .`):**
+   - **69 files already formatted (clean)**.
+9. **Full Scope Static Type Checking (`.venv/bin/mypy src agents evals scripts`):**
+   - **Success: no issues found in 52 source files**.
+10. **Dependency Tree Hygiene (`.venv/bin/pip check`):**
+    - **No broken requirements found**.
+
+### 31.2 Recomputed Coverage Certificate Digests & Grounded Scientific Acceptance
+Recomputed independently via authoritative runtime evaluator (`legacy/core-banking-system`):
+
+- **Embedded Certificate Content Digest (Reference A):**
+  - Computed: `e5900cba53db046c80e0e5f64618b549e894631a0eebfe42f8c502fe0ae948be`
+  - Expected: `e5900cba53db046c80e0e5f64618b549e894631a0eebfe42f8c502fe0ae948be`
+  - Match: **True (Byte-identical)**
+- **Full Certificate Serialization Digest (Reference B):**
+  - Computed: `2621c7f22c2af0b59f932849a9860edd60f4bc830b9320acb87d77a6dd713f76`
+  - Expected: `2621c7f22c2af0b59f932849a9860edd60f4bc830b9320acb87d77a6dd713f76`
+  - Match: **True (Byte-identical)**
+- **Parser Supported Fact Occurrences:** 80
+- **Support Index Grounded Fact Occurrences:** 80
+- **Exact Duplicate Host Fact Occurrences:** 0
+- **Host REQUIRED_EXHAUSTIVE Count:** 45
+- **Golden REQUIRED_EXHAUSTIVE Count:** 45
+- **Exact Structural Equality:** True
+- **Unsupported Relevant Statements Count:** 0
+- **Evaluation Blocked Barrier (`is_evaluation_blocked`):** `False`
+- **Matched / Expected Facts:** `59 / 59`
+- **Precision:** `1.0`
+- **Recall:** `1.0`
+- **Gate 3 Pass:** `PASS`
+
+### 31.3 Authoritative H7.8 Finding Taxonomy & Verification Matrix
+
+| Finding | Severity | Description | Owning Sub-phase & Implementation | Committed Regression Test & Observed Outcome |
+|---|---|---|---|---|
+| **F-01** | BLOCKER | Finite-loop false certification | **H7.8-B:** Induction variable monotonicity, reachability proof, and termination lattice in `SystemCobolParser`. | `test_h7_8_f01_finite_loop_theorem_induction_and_monotone_counterexamples`, `test_h7_8_f01_divergent_or_branch_scoped_loop_mutation_fails_closed`, `test_h7_8_f01_open_input_loop_reachability_monotonic_proof` -> **Passed** |
+| **F-02** | HIGH | Disconnected SYSTEM semantic analyses | **H7.8-B:** Operand-aware reaching definition tracking, branch join analysis, `CALL USING` clobber & `ACCEPT` overwrite detection, dialect categorization (`OTHER_COMMAND` fails closed, Windows CMD/unsupported wrappers grounded). | `test_h7_8_f02_reaching_definitions_and_branch_divergence`, `test_h7_8_f02_call_using_clobber_and_accept_overwrite`, `test_cf6_changed_system_command_assignment`, `test_h7_4_1_unsupported_shell_wrapper_command_assignment_fails_closed` -> **Passed** |
+| **F-03** | HIGH | Infeasible-path / GO-GOTO OperationSequence certification | **H7.8-B:** Abstract interpreter pruning contradictory predicate paths (`IF FLAG = 'Y'` / `IF FLAG = 'N'`); fail-closed procedural `GO TO` control-flow diversion. | `test_h7_8_f03_abstract_interpreter_contradictory_branch_pruning`, `test_h7_8_f03_goto_control_flow_diversion_fails_closed` -> **Passed** |
+| **F-04** | HIGH | END-READ / procedural-scope grammar | **H7.8-A:** Lexical scoped statement stack for `END-READ`, `END-PERFORM`, `END-EVALUATE`, `END-IF`; stray unclosed delimiters marked `UNSUPPORTED_RELEVANT`. | `test_h7_8_f04_scoped_statement_grammar_and_stray_end_delimiters` -> **Passed** |
+| **F-05** | HIGH | PICTURE / USAGE / RecordLayout false certification | **H7.8-A:** Strict PICTURE symbol grammar, USAGE clause parsing, exact field boundary calculations; invalid tokens fail closed. | `test_h7_8_f05_picture_grammar_and_record_layout_validation`, `test_h7_contract_mutation_injection_blocks_evaluation` -> **Passed** |
+| **F-06** | HIGH | Scientific failure evidence can be sealed while required reached-state artifacts are absent/stale/incorrect | **H7.8-C:** Centralized post-invocation failure finalizer verifies all reached-state artifacts via readback SHA-256. Persistence failures or corrupted/stale bytes force `FAILED_UNSEALED` and strictly prevent sealed `FAILED`. | `test_h7_8_c_f06_evaluation_artifact_persistence_failures_and_readback`: (1) evaluation completed but evaluation artifact write fails -> `FAILED_UNSEALED`; (2) manifest omission/failure -> `FAILED_UNSEALED`; (3) truncated raw-response -> readback fails -> `FAILED_UNSEALED`; (4) corrupt sha -> `FAILED_UNSEALED`; (5) content != disk prevents sealed `FAILED` -> **Passed** |
+| **F-07** | HIGH | Durability failures can still be represented as durable scientific sealing | **H7.8-C:** `durable_atomic_write_bytes` enforces file write, file `fsync`, directory open, directory `fsync`, and read-back verification. No ordinary write fallback permitted to seal evidence or produce `COMPLETED`. | `test_h7_8_c_f07_durability_fsync_failures_and_no_ordinary_write_fallback`: (1) file fsync failure raises `OSError` -> durable write aborts, temp cleaned up, prevents sealed `FAILED`; (2 & 3) parent directory open & fsync failure handling verified; (4) raw-response durable persistence failure forces `FAILED_UNSEALED`; (5) no ordinary write fallback produces `COMPLETED` or sealed `FAILED` -> **Passed** |
+| **M-01** | MEDIUM | Pre-attempt rejection / PRECHECK_REJECTED truthfulness | **H7.8-C:** Precheck rejection executes before attempt reservation; sets `attempts_consumed == 0`, invokes 0 model calls, and records `PRECHECK_REJECTED`. Rejection-evidence persistence failure uses truthful coordination-failure fallback. | `test_h7_8_c_m01_precheck_rejection_truthfulness_and_persistence_failure`: (1) rejection before attempt claim; (2) attempts_consumed == 0; (3) provider calls == 0; (4) PRECHECK_REJECTED terminal semantics; (5) rejection-evidence persistence failure writes `coordination-failure.json` -> **Passed** |
+| **M-02** | MEDIUM | Failure of normal failure-finalization / emergency consumed-attempt evidence | **H7.8-C:** `safe_finalize_post_model_failure` catches finalizer exceptions and falls back to `emergency_finalize` writing `emergency-failure.json` (`EMERGENCY_UNSEALED_FAILURE`). No recursive finalization, no second model invocation. Attempt claim remains authoritative. | `test_h7_8_c_m02_emergency_consumed_attempt_finalization`: (1) normal failure finalizer raises; (2) emergency path attempted; (3) no recursive finalization; (4) no second model invocation; (5) attempt claim remains authoritative if emergency persistence fails -> **Passed** |
+| **M-03** | MEDIUM | Global exact duplicate host fact integrity | **H7.8-B:** `SystemSupportIndex` rejects exact duplicate supported facts with `ValueError`; coverage certification barrier accepts 0 host facts when `is_evaluation_blocked` is True. | `test_h7_8_m03_exact_duplicate_host_fact_rejection_and_certification_barrier` -> **Passed** |
+| **M-04** | MEDIUM | Historically scientifically wrong regression assumptions | **H7.8-A/B/C:** Cleaned regression suite to eliminate synthetic bypasses and ungrounded mock bridges, enforcing strict mathematical grounding across all tests. | `evals/tests/test_gate_3_runner.py`, `evals/tests/test_h7_contract_regressions.py` -> **Passed** |
+| **L-01** | LOW | Temporary persistence artifact cleanup | **H7.8-C:** `durable_atomic_write_bytes` unlinks `.tmp` files on exceptions; `cleanup_temp_files` systematically purges `.tmp*` files before sealing and upon finalization. | `test_h7_8_c_l01_temp_file_cleanup_on_persistence_failure`: temporary artifact cleanup verified on persistence failure (0 uncleaned `.tmp` files) -> **Passed** |
+| **D-01** | DOC | Report/documentation inaccuracies | **H7.8 Report:** Authoritative mapping of all F-01..F-07, M-01..M-04, L-01, D-01 findings to actual implementations and tests; accurate quality gate evidence and recomputed digests. | `docs/gate-3-h7-contract-remediation-report.md` -> **Verified** |
+
+### 31.4 Complete Scientific Immutability Invariants (CLI-Grounded)
+
+| Asset | Target / File | Hash / Value | Verification Status |
+|---|---|---|---|
+| Baseline-v1 Spec | `evals/baselines/gate-3-baseline-v1.json` | `b37e8815e2605f279ecc417b8e037f0b235f5e1dcfa64d79b10708e852509695` | Byte-for-byte verified |
+| Baseline-v1 Artifacts | `artifacts/gate-3/baseline-v1/manifest.json` | 13 / 13 artifacts matching manifest SHAs | All 13 verified identical |
+| Baseline-v2 Reservation | `artifacts/gate-3/baseline-v2/reservation-state.json` | `108c51b222e476f32bd98c092c5dc814be9a25b4d1b93ae60f0f28ea2f5a631d` | Byte-for-byte verified |
+| Production Prompt | `agents/legacy_analyzer/prompts/system_v3.md` | `4be25cfc25933d6f0e69cbeeae1efe12ccf2e1354857e04c90108d8534ea92e8` | Byte-for-byte verified |
+| Generated Wire Schema | `get_system_openai_wire_schema()` (sorted JSON) | `07655be0a119440e1f693cbd3242842ed87e82c43518bce61f741bc7dc4423dc` | Byte-for-byte verified |
+| Golden Dataset | `evals/expected/system-understanding-v3.json` | `da5bdee9286dd5fbc79cb8331b70aabf73fca029fe4a3d3c5ede5ed2c984b82b` | Byte-for-byte verified |
+| Dependency Lock | `requirements-lock.txt` | `732cb9370e90af2d0972eeda7fc18fd5745f17cb301f359b268df228fe7f18be` | Byte-for-byte verified |
+| Source Manifest | `evals/baselines/gate-3-baseline-v1.json` (`source_manifest_sha256`) | `daf28b3314199db8e31bfacdf2fb8441b54682caa7854ed288e1bc00866a1dd1` | Byte-for-byte verified |
+| Canonical Bundle | `legacy/core-banking-system/` (6 artifacts) | `95bb386b51d653c0a1834e1950634a9887b7cb6826b8c317a07c4b6a4167d060` | Byte-for-byte verified |
+| Baseline-v3 Spec | `evals/baselines/gate-3-baseline-v3.json` | `candidate_git_sha = ""` | Verified empty |
+| Baseline-v3 Artifacts | `artifacts/gate-3/baseline-v3` | Does NOT exist | Verified absent |
+| Golden Semantic Digest | Proposition & Policy canonical JSON digest | `0bb874ca3070f71f23134fe2ec4f7cc2d48c37d2bc4663887d343a6d159d65f2` | Byte-for-byte verified |
+| Reference Evaluation | Golden vs Host Evaluator on `legacy/` | 59/59, Precision=1.0, Recall=1.0, Exhaustive=45/45 | Full Pass |
+| Provider Execution Mode | Offline verification only | 0 model provider calls made during H7.8 | Strictly offline verified |
+
+---
+
+## 32. Final Status (H7.8 Release)
+
+- **Remote Branch:** `feat/gate-3-system-analysis`
+- **Remote Head (H7.7):** `6ce40e24f5a1dd02bcc3ec05f5a0fcfd1df19686`
+- **Functional Commit H7.8-A:** `c2fdc8770decd494878dab2b6623c8ff1457f016` (Complete source grammar, procedural scope stack, and declaration atomicity)
+- **Functional Commit H7.8-B:** `05b6f966d9842b8d550344c587fbee58145edccd` (Path-sensitive state, reaching definition dispatch, finite loop theorem, and certification barrier)
+- **Functional Commit H7.8-C:** `741b01fd42e449bb13658526c76ecf30d2d7d57b` (Emergency finalization, temp cleanup, and durable failure verification)
+- **Report Commit H7.8:** Direct report-only child of `H7.8-C` (modifying strictly `docs/gate-3-h7-contract-remediation-report.md`)
+- **Execution Mode:** Strictly OFFLINE. 0 provider calls, 0 baseline-v3 reservations, candidate_git_sha == "", baseline-v2 reservation byte-for-byte preserved.
+
+
+
 
 
 
